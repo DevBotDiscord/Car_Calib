@@ -212,3 +212,4 @@ notebooks/
 # Test video sample
 videos/
 logs/
+temp/
