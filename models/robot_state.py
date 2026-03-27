@@ -78,8 +78,8 @@ class RobotState:
     max_steering_offset: float = 30.0
     last_valid_servo_angle: float = 90.0
     last_valid_command: float = 0.0
-    roi_height_pct: float = 0.4
-    roi_top_width_pct: float = 0.6
+    roi_height_pct: float = 0.6
+    roi_top_width_pct: float = 0.75
     roi_bottom_width_pct: float = 1.0
     debug_mode: bool = False
     fsm_state: FSMState = FSMState.SEARCHING
