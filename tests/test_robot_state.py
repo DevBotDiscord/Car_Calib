@@ -34,7 +34,13 @@ class TestRobotState:
     def test_defaults(self):
         state = RobotState()
         assert state.servo_center_angle == pytest.approx(90.0)
+        assert state.max_steering_offset == pytest.approx(30.0)
         assert state.last_valid_servo_angle == pytest.approx(90.0)
+        assert state.last_valid_command == pytest.approx(0.0)
+        assert state.roi_height_pct == pytest.approx(0.4)
+        assert state.roi_top_width_pct == pytest.approx(0.6)
+        assert state.roi_bottom_width_pct == pytest.approx(1.0)
+        assert state.debug_mode is False
         assert state.fsm_state == FSMState.SEARCHING
         assert state.pid_integral == pytest.approx(0.0)
         assert state.pid_last_error == pytest.approx(0.0)
@@ -60,3 +66,21 @@ class TestRobotState:
         state.pid_integral = 42.0
         state.reset_pid_integral()
         assert state.pid_integral == pytest.approx(0.0)
+
+    def test_custom_max_steering_offset(self):
+        state = RobotState(max_steering_offset=45.0)
+        assert state.max_steering_offset == pytest.approx(45.0)
+
+    def test_custom_roi_parameters(self):
+        state = RobotState(roi_height_pct=0.5, roi_top_width_pct=0.4,
+                           roi_bottom_width_pct=0.8)
+        assert state.roi_height_pct == pytest.approx(0.5)
+        assert state.roi_top_width_pct == pytest.approx(0.4)
+        assert state.roi_bottom_width_pct == pytest.approx(0.8)
+
+    def test_debug_mode_default_false(self):
+        assert RobotState().debug_mode is False
+
+    def test_debug_mode_can_be_enabled(self):
+        state = RobotState(debug_mode=True)
+        assert state.debug_mode is True

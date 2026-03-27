@@ -5,7 +5,7 @@ import time
 import pytest
 
 from control.heading_controller import HeadingController, _HYSTERESIS_HIGH, _HYSTERESIS_LOW
-from models.state import FSMState, RobotState
+from models.robot_state import FSMState, RobotState
 
 
 @pytest.fixture()
@@ -19,10 +19,10 @@ def controller(state):
 
 
 class TestSparseSignal:
-    def test_none_input_enters_dead_reckoning(self, controller, state):
-        state.transition_to(FSMState.CALIBRATING)
+    def test_none_input_enters_gapping(self, controller, state):
+        state.transition_to(FSMState.LOCKED)
         controller.update(None)
-        assert state.fsm_state == FSMState.DEAD_RECKONING
+        assert state.fsm_state == FSMState.GAPPING
 
     def test_none_input_returns_last_valid_command(self, controller, state):
         state.last_valid_command = 7.5
@@ -71,16 +71,16 @@ class TestHysteresis:
 
 
 class TestIntegralReset:
-    def test_integral_reset_on_reentry_from_dead_reckoning(self, controller, state):
+    def test_integral_reset_on_reentry_from_gapping(self, controller, state):
         """Returning vision after a gap should zero the integral term."""
-        state.transition_to(FSMState.DEAD_RECKONING)
+        state.transition_to(FSMState.GAPPING)
         state.pid_integral = 99.9
         controller.update(6.0)  # valid signal after gap
         assert state.pid_integral == pytest.approx(0.0, abs=1.0)
 
-    def test_no_integral_reset_if_already_calibrating(self, controller, state):
+    def test_no_integral_reset_if_already_locked(self, controller, state):
         """Consecutive valid frames should NOT reset the integral."""
-        state.transition_to(FSMState.CALIBRATING)
+        state.transition_to(FSMState.LOCKED)
         controller.update(6.0)  # first valid frame
         state.pid_integral = 5.0
         controller.update(6.0)  # second valid frame – no reset
@@ -88,16 +88,16 @@ class TestIntegralReset:
 
 
 class TestFSMTransitions:
-    def test_calibrating_on_valid_signal(self, controller, state):
+    def test_locked_on_valid_signal(self, controller, state):
         controller.update(6.0)
-        assert state.fsm_state == FSMState.CALIBRATING
+        assert state.fsm_state == FSMState.LOCKED
 
-    def test_dead_reckoning_on_none(self, controller, state):
+    def test_gapping_on_none(self, controller, state):
         controller.update(None)
-        assert state.fsm_state == FSMState.DEAD_RECKONING
+        assert state.fsm_state == FSMState.GAPPING
 
-    def test_returns_to_calibrating_after_dead_reckoning(self, controller, state):
+    def test_returns_to_locked_after_gapping(self, controller, state):
         controller.update(None)
-        assert state.fsm_state == FSMState.DEAD_RECKONING
+        assert state.fsm_state == FSMState.GAPPING
         controller.update(6.0)
-        assert state.fsm_state == FSMState.CALIBRATING
+        assert state.fsm_state == FSMState.LOCKED

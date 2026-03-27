@@ -1,13 +1,19 @@
-"""Vision module: heading-error detection via camera frames.
+"""Vision module: tile-gap line detection for the heading-hold system.
 
 Pipeline per frame:
-1. ROI masking – discard the top 60 % of the frame (keep bottom 40 %).
+1. ROI masking   – apply a trapezoidal mask centred on the lower region,
+   defined by percentages stored in :class:`~models.robot_state.RobotState`.
 2. Pre-processing – CLAHE equalisation followed by a 5×5 Gaussian blur.
 3. Edge extraction – Canny edge detection.
-4. Line detection – Probabilistic Progressive Hough Transform (PPHT).
-5. Angle calculation – ``e = |mean_theta - 90°|``.
+4. Line detection  – Probabilistic Progressive Hough Transform (PPHT).
+5. Angle calculation – ``θ = atan2(y2-y1, x2-x1) × 180/π``; a line
+   parallel to the robot's forward path gives ``θ ≈ 90°`` (error ``e = 0``).
+6. Line grouping   – cluster segments with |Δθ| < 3°.
+7. Reference select – pick the group closest to the robot (highest y-mid).
+8. Sanity check    – discard angles that shift by more than 20° in one frame.
 
-Returns ``None`` when no lines are detected.
+Returns the angle θ (degrees, relative to the x-axis, in ``[0°, 180°)``) of
+the reference tile-gap line, or ``None`` if no valid line is found.
 """
 
 import logging
@@ -17,7 +23,13 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from models.robot_state import RobotState
+
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------#
+# Tunable constants
+# ---------------------------------------------------------------------------#
 
 # CLAHE parameters
 _CLAHE_CLIP_LIMIT = 2.0
@@ -33,51 +45,126 @@ _CANNY_HIGH = 150
 # PPHT parameters
 _HOUGH_RHO = 1                # distance resolution in pixels
 _HOUGH_THETA = math.pi / 180  # angle resolution in radians
-_HOUGH_THRESHOLD = 50         # minimum number of votes
-_HOUGH_MIN_LINE_LEN = 30      # minimum line length in pixels
-_HOUGH_MAX_LINE_GAP = 10      # maximum gap between line segments
+_HOUGH_THRESHOLD = 50         # minimum votes
+_HOUGH_MIN_LINE_LEN = 30      # minimum segment length in pixels
+_HOUGH_MAX_LINE_GAP = 10      # maximum gap between collinear segments
+
+# Grouping thresholds
+_ANGLE_THRESHOLD: float = 3.0    # degrees – maximum Δθ to merge two segments
+_MIDPOINT_THRESHOLD: float = 50.0  # pixels – maximum midpoint distance to merge
+
+# Sanity check: discard frames where the angle shifts more than this amount
+_SANITY_MAX_DELTA: float = 20.0  # degrees
+
+# Debug output filename
+_DEBUG_MASK_FILE = "debug_mask.jpg"
 
 
-class HeadingDetector:
-    """Detects robot heading error from a camera frame.
+def _angle_diff(a: float, b: float) -> float:
+    """Minimum angular difference in [0°, 90°] (handles the 0°/180° wrap).
 
     Args:
-        roi_keep_fraction: Fraction of frame height to *keep* (from the
-            bottom).  Default ``0.4`` discards the top 60 %.
+        a: First angle in degrees.
+        b: Second angle in degrees.
+
+    Returns:
+        Absolute angular difference in degrees, clamped to [0°, 90°].
+    """
+    diff = abs(a - b) % 180.0
+    return min(diff, 180.0 - diff)
+
+
+class LineDetector:
+    """Detects the reference tile-gap line angle from a camera frame.
+
+    Uses a trapezoidal ROI mask whose geometry is defined by the percentages
+    stored in the shared :class:`~models.robot_state.RobotState` instance.
+
+    Args:
+        state: Shared :class:`~models.robot_state.RobotState` instance
+            supplying ROI parameters and the ``debug_mode`` flag.
     """
 
-    def __init__(self, roi_keep_fraction: float = 0.4) -> None:
-        self._roi_keep_fraction = roi_keep_fraction
+    def __init__(self, state: RobotState) -> None:
+        self._state = state
         self._clahe = cv2.createCLAHE(
             clipLimit=_CLAHE_CLIP_LIMIT,
             tileGridSize=_CLAHE_TILE_GRID,
         )
+        self._last_angle: Optional[float] = None
+        self._debug_saved: bool = False
 
-    def _apply_roi(self, frame: np.ndarray) -> np.ndarray:
-        """Crop the frame, keeping only the bottom *roi_keep_fraction*.
+    # ---------------------------------------------------------------------- #
+    # Private pipeline helpers
+    # ---------------------------------------------------------------------- #
+
+    def _build_trapezoid_pts(self, h: int, w: int) -> np.ndarray:
+        """Compute the 4 vertices of the trapezoidal ROI, centred horizontally.
+
+        The trapezoid spans the bottom ``roi_height_pct`` of the frame.  Its
+        top edge has width ``roi_top_width_pct × w`` and its bottom edge has
+        width ``roi_bottom_width_pct × w``.
 
         Args:
-            frame: Input BGR or grayscale frame.
+            h: Frame height in pixels.
+            w: Frame width in pixels.
 
         Returns:
-            Cropped frame (bottom portion only).
+            Array of shape ``(1, 4, 2)`` (int32) suitable for
+            :func:`cv2.fillPoly`.
         """
-        height = frame.shape[0]
-        start_row = int(height * (1.0 - self._roi_keep_fraction))
-        return frame[start_row:, :]
+        s = self._state
+        roi_h = int(h * s.roi_height_pct)
+        top_w = int(w * s.roi_top_width_pct)
+        bot_w = int(w * s.roi_bottom_width_pct)
+        cx = w // 2
+        top_y = h - roi_h
+        return np.array(
+            [[
+                [cx - top_w // 2, top_y],
+                [cx + top_w // 2, top_y],
+                [cx + bot_w // 2, h - 1],
+                [cx - bot_w // 2, h - 1],
+            ]],
+            dtype=np.int32,
+        )
+
+    def _apply_roi(self, frame: np.ndarray) -> np.ndarray:
+        """Apply a trapezoidal mask to *frame*.
+
+        Pixels outside the trapezoid are zeroed.  On the first call when
+        ``state.debug_mode`` is ``True``, the binary mask is saved to
+        ``debug_mask.jpg`` for visual inspection.
+
+        Args:
+            frame: Grayscale input image (2-D).
+
+        Returns:
+            Masked image of the same shape as *frame* (zero outside trapezoid).
+        """
+        h, w = frame.shape[:2]
+        mask = np.zeros((h, w), dtype=np.uint8)
+        pts = self._build_trapezoid_pts(h, w)
+        cv2.fillPoly(mask, pts, 255)
+
+        if self._state.debug_mode and not self._debug_saved:
+            cv2.imwrite(_DEBUG_MASK_FILE, mask)
+            self._debug_saved = True
+            logger.info("Debug mask saved to %s", _DEBUG_MASK_FILE)
+
+        return cv2.bitwise_and(frame, frame, mask=mask)
 
     def _preprocess(self, roi: np.ndarray) -> np.ndarray:
         """Apply CLAHE and Gaussian blur to a grayscale ROI.
 
         Args:
-            roi: Grayscale ROI image.
+            roi: Grayscale image (may contain zero-padded areas outside mask).
 
         Returns:
             Blurred, contrast-enhanced grayscale image.
         """
         equalized = self._clahe.apply(roi)
-        blurred = cv2.GaussianBlur(equalized, _BLUR_KERNEL, 0)
-        return blurred
+        return cv2.GaussianBlur(equalized, _BLUR_KERNEL, 0)
 
     def _detect_edges(self, preprocessed: np.ndarray) -> np.ndarray:
         """Run Canny edge detection.
@@ -109,39 +196,167 @@ class HeadingDetector:
         )
 
     @staticmethod
-    def _lines_to_angle(lines: np.ndarray) -> float:
-        """Compute the mean orientation angle of detected line segments.
+    def _segment_props(
+        x1: int, y1: int, x2: int, y2: int
+    ) -> tuple[float, float, float, float]:
+        """Compute ``(angle_deg, length, mid_x, mid_y)`` for a segment.
 
-        Each segment is converted to an angle in [0°, 180°) using
-        ``atan2(dy, dx)``, then the mean is taken.
+        ``angle_deg = atan2(y2-y1, x2-x1) × 180/π`` (mod 180, range [0°, 180°)).
+        A segment parallel to the robot's forward path (vertical in the image)
+        gives ``angle_deg ≈ 90°``, yielding error ``e = angle_deg - 90° = 0``.
 
         Args:
-            lines: Array of line segments shaped ``(N, 1, 4)``.
+            x1, y1, x2, y2: Segment endpoints.
 
         Returns:
-            Mean angle in degrees in the range [0°, 180°).
+            Tuple of ``(angle_deg, length, mid_x, mid_y)``.
         """
-        angles: list[float] = []
+        angle_deg = math.degrees(math.atan2(float(y2 - y1), float(x2 - x1))) % 180.0
+        # atan2 returns values in (-180°, 180°]; applying % 180.0 maps the
+        # result to [0°, 180°) regardless of sign (Python modulo convention).
+        length = math.hypot(x2 - x1, y2 - y1)
+        mid_x = (x1 + x2) / 2.0
+        mid_y = (y1 + y2) / 2.0
+        return angle_deg, length, mid_x, mid_y
+
+    def _group_lines(
+        self, lines: np.ndarray
+    ) -> list[list[tuple[int, int, int, int, float, float, float, float]]]:
+        """Group segments with similar slopes (|Δθ| < 3°) and close midpoints.
+
+        Each segment is represented as
+        ``(x1, y1, x2, y2, angle_deg, length, mid_x, mid_y)``.
+
+        Args:
+            lines: Array of shape ``(N, 1, 4)`` from PPHT.
+
+        Returns:
+            List of groups; each group is a list of segment tuples.
+        """
+        segments = []
         for line in lines:
             x1, y1, x2, y2 = line[0]
-            angle_rad = math.atan2(float(y2 - y1), float(x2 - x1))
-            angle_deg = math.degrees(angle_rad) % 180.0
-            angles.append(angle_deg)
-        return float(np.mean(angles))
+            angle, length, mid_x, mid_y = self._segment_props(x1, y1, x2, y2)
+            segments.append((x1, y1, x2, y2, angle, length, mid_x, mid_y))
 
-    def compute_heading_error(self, frame: np.ndarray) -> Optional[float]:
-        """Run the full detection pipeline and return the heading error *e*.
+        assigned = [False] * len(segments)
+        groups: list[list] = []
 
-        ``e = |theta_robot - 90°|``
+        for i, seg_i in enumerate(segments):
+            if assigned[i]:
+                continue
+            group = [seg_i]
+            assigned[i] = True
+            for j in range(i + 1, len(segments)):
+                if assigned[j]:
+                    continue
+                seg_j = segments[j]
+                if (
+                    _angle_diff(seg_i[4], seg_j[4]) < _ANGLE_THRESHOLD
+                    and math.hypot(seg_i[6] - seg_j[6], seg_i[7] - seg_j[7])
+                    < _MIDPOINT_THRESHOLD
+                ):
+                    group.append(seg_j)
+                    assigned[j] = True
+            groups.append(group)
+
+        return groups
+
+    @staticmethod
+    def _weighted_angle(
+        group: list[tuple[int, int, int, int, float, float, float, float]],
+    ) -> float:
+        """Return the length-weighted average angle for *group*.
+
+        ``θ_avg = Σ(θ_i · length_i) / Σ(length_i)``
 
         Args:
-            frame: Full BGR camera frame.
+            group: List of segment tuples (x1, y1, x2, y2, angle, length, ...).
 
         Returns:
-            Heading error ``e`` in degrees, or ``None`` if no lines are
-            found.
+            Weighted average angle in degrees.
         """
-        # Convert to grayscale if needed
+        total_length = sum(seg[5] for seg in group)
+        if total_length == 0.0:
+            logger.warning(
+                "All segments in group have zero length; using first segment angle."
+            )
+            return group[0][4]
+        return sum(seg[4] * seg[5] for seg in group) / total_length
+
+    @staticmethod
+    def _group_max_y(
+        group: list[tuple[int, int, int, int, float, float, float, float]],
+    ) -> float:
+        """Return the highest y midpoint in *group* (lowest in image, nearest robot).
+
+        Args:
+            group: List of segment tuples.
+
+        Returns:
+            Maximum midpoint-y value across all segments in the group.
+        """
+        return max(seg[7] for seg in group)
+
+    def _select_reference(
+        self,
+        groups: list[list[tuple[int, int, int, int, float, float, float, float]]],
+    ) -> float:
+        """Pick the reference group: the one lowest in the image (closest to robot).
+
+        Args:
+            groups: Non-empty list of segment groups from :meth:`_group_lines`.
+
+        Returns:
+            Length-weighted average angle of the winning group in degrees.
+        """
+        best_group = max(groups, key=self._group_max_y)
+        return self._weighted_angle(best_group)
+
+    def _sanity_check(self, angle: float) -> bool:
+        """Return ``True`` if *angle* passes the inter-frame sanity check.
+
+        Discards any angle that would require a steering change of more than
+        20° compared to the previous valid detection.
+
+        Args:
+            angle: Candidate angle in degrees.
+
+        Returns:
+            ``True`` if the angle is acceptable; ``False`` if it should be
+            discarded.
+        """
+        if self._last_angle is None:
+            return True
+        delta = _angle_diff(angle, self._last_angle)
+        if delta > _SANITY_MAX_DELTA:
+            logger.warning(
+                "Sanity check failed: Δθ=%.2f° > %.1f° (new=%.2f°, last=%.2f°)",
+                delta,
+                _SANITY_MAX_DELTA,
+                angle,
+                self._last_angle,
+            )
+            return False
+        return True
+
+    # ---------------------------------------------------------------------- #
+    # Public API
+    # ---------------------------------------------------------------------- #
+
+    def get_reference_angle(self, frame: np.ndarray) -> Optional[float]:
+        """Run the full pipeline and return the reference tile-gap angle θ.
+
+        A line parallel to the robot's forward path gives ``θ ≈ 90°`` so that
+        the heading error ``e = θ - 90° = 0``.
+
+        Args:
+            frame: Full BGR or grayscale camera frame.
+
+        Returns:
+            Angle θ in degrees relative to the x-axis (range ``[0°, 180°)``),
+            or ``None`` if no valid tile-gap line is found.
+        """
         if frame.ndim == 3:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         else:
@@ -156,7 +371,21 @@ class HeadingDetector:
             logger.debug("No lines detected in frame.")
             return None
 
-        theta = self._lines_to_angle(lines)
-        error = abs(theta - 90.0)
-        logger.debug("Detected angle=%.2f°, heading_error=%.2f°", theta, error)
-        return error
+        groups = self._group_lines(lines)
+        if not groups:
+            logger.debug("No line groups formed.")
+            return None
+
+        theta = self._select_reference(groups)
+
+        if not self._sanity_check(theta):
+            return None
+
+        self._last_angle = theta
+        logger.debug(
+            "Reference angle θ=%.2f°  error=%.2f°  (groups=%d)",
+            theta,
+            theta - 90.0,
+            len(groups),
+        )
+        return theta

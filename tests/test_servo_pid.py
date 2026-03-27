@@ -2,7 +2,7 @@
 
 import pytest
 
-from control.servo_pid import ServoPID, _STEERING_CLAMP
+from control.servo_pid import ServoPID
 from models.robot_state import FSMState, RobotState
 
 
@@ -68,14 +68,20 @@ class TestValidSignal:
 
 class TestSteeringClamp:
     def test_large_positive_error_clamped(self, controller, state):
-        """Very large positive error must not exceed center + 30°."""
+        """Very large positive error must not exceed center + max_steering_offset."""
         result = controller.update(200.0)  # error = 110°
-        assert result <= state.servo_center_angle + _STEERING_CLAMP
+        assert result <= state.servo_center_angle + state.max_steering_offset
 
     def test_large_negative_error_clamped(self, controller, state):
-        """Very large negative error must not go below center - 30°."""
+        """Very large negative error must not go below center - max_steering_offset."""
         result = controller.update(0.0)  # error = -90°
-        assert result >= state.servo_center_angle - _STEERING_CLAMP
+        assert result >= state.servo_center_angle - state.max_steering_offset
+
+    def test_custom_max_steering_offset_respected(self, controller, state):
+        """Setting a custom max_steering_offset should change the clamp range."""
+        state.max_steering_offset = 10.0
+        result = controller.update(200.0)  # very large error
+        assert result <= state.servo_center_angle + 10.0
 
 
 class TestIntegralReset:
