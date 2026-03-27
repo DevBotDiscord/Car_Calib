@@ -203,6 +203,7 @@ def _draw_overlay(
     show_guidance_overlay: bool,
     start_calib_threshold_deg: float,
     stop_calib_threshold_deg: float,
+    selected_group_bbox: tuple[int, int, int, int] | None = None,
 ) -> np.ndarray:
 
     """Render pipeline values onto a frame before writing to output video."""
@@ -295,6 +296,19 @@ def _draw_overlay(
 
         legend = "Blue=accepted region | Green=stop-calibrating region | Red=current theta"
         cv2.putText(frame, legend, (16, 238), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (220, 220, 220), 1)
+
+        if selected_group_bbox is not None:
+            x, y, w, h = selected_group_bbox
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 255), 2)
+            cv2.putText(
+                frame,
+                "Selected horizontal line group",
+                (x, max(20, y - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.50,
+                (0, 255, 255),
+                1,
+            )
 
     return frame
 
@@ -421,7 +435,7 @@ def process_video(
 
             # --- 2. Vision: detect reference tile-gap angle --------------- #
             detector_debug: dict[str, Any] | None = None
-            if show_detector_debug:
+            if show_detector_debug or show_guidance_overlay:
                 theta, detector_debug = detector.get_reference_angle_debug(frame)
             else:
                 theta = detector.get_reference_angle(frame)
@@ -476,6 +490,11 @@ def process_video(
                 show_guidance_overlay=show_guidance_overlay,
                 start_calib_threshold_deg=start_calib_threshold_deg,
                 stop_calib_threshold_deg=stop_calib_threshold_deg,
+                selected_group_bbox=(
+                    None
+                    if detector_debug is None
+                    else detector_debug.get("selected_group_bbox")
+                ),
             )
             output_frame = annotated
             if show_detector_debug and detector_debug is not None:
