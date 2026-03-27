@@ -1,0 +1,5 @@
+# Core computer-vision dependency (pre-built wheel on Jetson Nano)
+opencv-python-headless>=4.5.0
+
+# NumPy is bundled with OpenCV but listed explicitly for clarity
+numpy>=1.21.0
