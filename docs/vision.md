@@ -27,7 +27,7 @@ Frame
   ▼ (3) Edge detection  – Canny
   ▼ (4) Line detection  – Probabilistic Hough Transform (PPHT)
   ▼ (5) Grouping        – merge segments with |Δθ| < 3° and close midpoints
-  ▼ (6) Reference       – pick the group lowest in the image (nearest the robot)
+  ▼ (6) Reference       – pick the most horizontal group (angle nearest 0°/180°)
   ▼ (7) Sanity check    – reject if Δθ from previous frame > 20°
   │
   └─→ angle θ (float, degrees, range [0°, 180°)) or None
@@ -90,6 +90,41 @@ bot_left  = (cx − bot_w // 2,  frame_height − 1)
 
 The mask is applied with `cv2.fillPoly`; all pixels outside the trapezoid are zeroed.
 
+### ROI Border Removal
+
+**Problem:**  
+Even after masking the ROI, Canny edge detection can respond to the sharp intensity discontinuity at the ROI boundary—the transition from the interior image texture to black (0) outside the mask. This causes spurious edges that form the trapezoid outline, which can be falsely detected as tile-gap lines.
+
+**Solution:**  
+A two-stage border-suppression approach:
+
+#### Stage 1: Mask-Level Border Stripping  
+The function `_strip_roi_border_hits()` removes the outermost white pixels from the binary ROI mask:
+- **Vertical pass:** For each column, scans from the ROI start row downward and clears the first non-zero pixel found. This removes the top edge of the trapezoid.
+- **Horizontal pass:** For each row, clears the leftmost and rightmost non-zero pixels to remove the side edges.
+- **Bottom cleanup:** Clears the final image row to remove the bottom edge.
+
+Controlled by:
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `_ROI_BORDER_BLACK_PX` | `2` | Polyline thickness (additional border blacking) applied when drawing the ROI boundary. |
+
+#### Stage 2: Edge-Space ROI Erosion  
+The `_detect_edges()` function suppresses boundary-induced Canny responses by restricting edges to an eroded inner ROI:
+- Build a fresh trapezoid mask after Canny.
+- Erode it inward by `_ROI_EDGE_MARGIN_PX` to create a safety margin.
+- Apply the eroded mask with `cv2.bitwise_and()` to keep only interior edges.
+- Force-clear the bottom `_ROI_BOTTOM_CLEAR_ROWS` rows (where blur/Canny often misses the true image edge) to suppress any remaining horizontal boundary artifacts.
+
+Controlled by:
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `_ROI_EDGE_MARGIN_PX` | `4` px | Inward erosion radius to create a safety margin from ROI boundaries in edge space. |
+| `_ROI_BOTTOM_CLEAR_ROWS` | `3` rows | Number of rows cleared from the bottom of the edge map to suppress boundary responses caused by blur shift. |
+
+**Result:**  
+The tile-gap line is clearly isolated in the edge map without trapezoid-outline interference.
+
 ### Debug Mode
 
 When `state.debug_mode = True`, the binary mask is written to `debug_mask.jpg` **once** on the first call to `get_reference_angle()`.  
@@ -114,7 +149,8 @@ After PPHT, segments are merged into groups using a greedy algorithm:
 
 ### Reference Selection
 
-The group with the **highest y-midpoint** (closest to the bottom of the image — nearest the robot) is chosen as the reference.  
+The group whose **length-weighted angle is nearest horizontal** (closest to `0°` or `180°`) is chosen as the reference.  
+If two groups are equally horizontal, the tie is broken by choosing the one with the higher y-midpoint (closer to the robot).  
 The final angle is the **length-weighted average** of all segments in the winning group:
 
 ```
@@ -147,6 +183,9 @@ This prevents sudden large steering corrections caused by transient noise.
 | `_BLUR_KERNEL` | `(5, 5)` | Gaussian blur kernel size (must be odd). |
 | `_CANNY_LOW` | `50` | Canny lower hysteresis threshold. |
 | `_CANNY_HIGH` | `150` | Canny upper hysteresis threshold. |
+| `_ROI_BORDER_BLACK_PX` | `2` px | Polyline thickness for initial ROI border blacking. |
+| `_ROI_EDGE_MARGIN_PX` | `4` px | Inward erosion radius to suppress boundary-induced Canny responses. |
+| `_ROI_BOTTOM_CLEAR_ROWS` | `3` rows | Number of bottom rows cleared in edge map to remove boundary blur artifacts. |
 | `_HOUGH_RHO` | `1` px | Distance resolution for Hough transform. |
 | `_HOUGH_THETA` | `π/180` rad | Angle resolution for Hough transform. |
 | `_HOUGH_THRESHOLD` | `50` | Minimum votes to consider a Hough line. |

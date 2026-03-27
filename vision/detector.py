@@ -9,7 +9,7 @@ Pipeline per frame:
 5. Angle calculation – ``θ = atan2(y2-y1, x2-x1) × 180/π``; a line
    parallel to the robot's forward path gives ``θ ≈ 90°`` (error ``e = 0``).
 6. Line grouping   – cluster segments with |Δθ| < 3°.
-7. Reference select – pick the group closest to the robot (highest y-mid).
+7. Reference select – pick the most horizontal group (angle nearest 0°/180°).
 8. Sanity check    – discard angles that shift by more than 20° in one frame.
 
 Returns the angle θ (degrees, relative to the x-axis, in ``[0°, 180°)``) of
@@ -65,7 +65,7 @@ _ROI_EDGE_MARGIN_PX: int = 4
 
 # Clear a small bottom band in the edge map; Canny can place boundary response
 # a couple of rows above the true image edge after blur.
-_ROI_BOTTOM_CLEAR_ROWS: int = 3
+_ROI_BOTTOM_CLEAR_ROWS: int = 10
 
 # Debug output filename
 _DEBUG_MASK_FILE = "debug_mask.jpg"
@@ -177,7 +177,7 @@ class LineDetector:
                 mask[y, right_x] = 0
 
         # Ensure the ROI bottom edge is fully removed.
-        mask[h - 5, :] = 0
+        mask[h - 1, :] = 0
 
     def _apply_roi(self, frame: np.ndarray) -> np.ndarray:
         """Apply a trapezoidal mask to *frame*.
@@ -326,11 +326,7 @@ class LineDetector:
                 if assigned[j]:
                     continue
                 seg_j = segments[j]
-                if (
-                    _angle_diff(seg_i[4], seg_j[4]) < _ANGLE_THRESHOLD
-                    and math.hypot(seg_i[6] - seg_j[6], seg_i[7] - seg_j[7])
-                    < _MIDPOINT_THRESHOLD
-                ):
+                if _angle_diff(seg_i[4], seg_j[4]) < _ANGLE_THRESHOLD: #Group by angle similarity
                     group.append(seg_j)
                     assigned[j] = True
             groups.append(group)
@@ -373,11 +369,32 @@ class LineDetector:
         """
         return max(seg[7] for seg in group)
 
+    def _group_horizontal_error(
+        self,
+        group: list[tuple[int, int, int, int, float, float, float, float]],
+    ) -> float:
+        """Return distance (degrees) from perfect horizontal (0°/180°)."""
+        angle = self._weighted_angle(group)
+        return _angle_diff(angle, 0.0)
+
+    def _select_reference_group_index(
+        self,
+        groups: list[list[tuple[int, int, int, int, float, float, float, float]]],
+    ) -> int:
+        """Pick the most horizontal group; break ties by nearest robot."""
+        return min(
+            range(len(groups)),
+            key=lambda idx: (
+                self._group_horizontal_error(groups[idx]),
+                -self._group_max_y(groups[idx]),
+            ),
+        )
+
     def _select_reference(
         self,
         groups: list[list[tuple[int, int, int, int, float, float, float, float]]],
     ) -> float:
-        """Pick the reference group: the one lowest in the image (closest to robot).
+        """Pick the reference group: the one most horizontal.
 
         Args:
             groups: Non-empty list of segment groups from :meth:`_group_lines`.
@@ -385,8 +402,22 @@ class LineDetector:
         Returns:
             Length-weighted average angle of the winning group in degrees.
         """
-        best_group = max(groups, key=self._group_max_y)
+        best_group = groups[self._select_reference_group_index(groups)]
         return self._weighted_angle(best_group)
+
+    @staticmethod
+    def _group_bounding_rect(
+        group: list[tuple[int, int, int, int, float, float, float, float]],
+    ) -> tuple[int, int, int, int]:
+        """Return an axis-aligned bounding rectangle for all segments in *group*."""
+        pts: list[tuple[int, int]] = []
+        for seg in group:
+            pts.append((int(seg[0]), int(seg[1])))
+            pts.append((int(seg[2]), int(seg[3])))
+
+        arr = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
+        x, y, w, h = cv2.boundingRect(arr)
+        return int(x), int(y), int(w), int(h)
 
     @staticmethod
     def _draw_raw_lines(
@@ -536,12 +567,16 @@ class LineDetector:
         if lines is not None:
             groups = self._group_lines(lines)
             if groups:
-                reference_idx = max(range(len(groups)), key=lambda idx: self._group_max_y(groups[idx]))
+                reference_idx = self._select_reference_group_index(groups)
                 theta_candidate = self._weighted_angle(groups[reference_idx])
                 sanity_ok = self._sanity_check(theta_candidate)
                 if sanity_ok:
                     self._last_angle = theta_candidate
                     theta_out = theta_candidate
+
+        selected_group_bbox: Optional[tuple[int, int, int, int]] = None
+        if reference_idx is not None:
+            selected_group_bbox = self._group_bounding_rect(groups[reference_idx])
 
         hough_vis = self._draw_raw_lines(base, lines)
         grouped_vis = self._draw_grouped_lines(base, groups, reference_idx)
@@ -556,6 +591,7 @@ class LineDetector:
             "lines_count": 0 if lines is None else int(len(lines)),
             "groups_count": len(groups),
             "reference_group_index": reference_idx,
+            "selected_group_bbox": selected_group_bbox,
             "theta_candidate": theta_candidate,
             "sanity_ok": sanity_ok,
             "theta_output": theta_out,
