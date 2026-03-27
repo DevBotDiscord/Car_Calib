@@ -37,7 +37,7 @@ The robot uses a downward-facing camera to detect floor tile-gap lines and appli
 
 ```
 UOG_AIS_AUTOBOT_CALIBRATION/
-├── main.py                   # Entry point – 30 Hz control loop
+├── main.py                   # Entry point – 30 Hz control loop + CSV logging
 ├── requirements.txt          # Python dependencies
 │
 ├── control/                  # PID heading controllers
@@ -52,13 +52,11 @@ UOG_AIS_AUTOBOT_CALIBRATION/
 │
 ├── models/                   # Shared state and FSM definitions
 │   ├── __init__.py
-│   ├── robot_state.py        # RobotState for heading-hold system
-│   └── state.py              # RobotState for motor-command system
+│   └── robot_state.py        # RobotState – single source of truth for all MVC layers
 │
 ├── vision/                   # Computer-vision pipeline
 │   ├── __init__.py
-│   ├── detector.py           # HeadingDetector – heading error detection
-│   └── line_processor.py     # LineProcessor – tile-gap angle detection
+│   └── detector.py           # LineDetector – trapezoid ROI, grouping, tile-gap angle
 │
 ├── tests/                    # Unit tests (pytest)
 │   ├── test_detector.py
@@ -67,8 +65,7 @@ UOG_AIS_AUTOBOT_CALIBRATION/
 │   ├── test_motors.py
 │   ├── test_robot_state.py
 │   ├── test_servo_driver.py
-│   ├── test_servo_pid.py
-│   └── test_state.py
+│   └── test_servo_pid.py
 │
 └── docs/                     # Per-module documentation
     ├── vision.md
@@ -85,7 +82,7 @@ UOG_AIS_AUTOBOT_CALIBRATION/
 Camera
   │  (BGR frame)
   ▼
-vision.LineProcessor.get_reference_angle()
+vision.LineDetector.get_reference_angle()
   │  θ (degrees) or None
   ▼
 control.ServoPID.update()
@@ -99,9 +96,7 @@ Servo Hardware
 
 ### Finite State Machine
 
-The system uses two FSM variants depending on the active controller:
-
-**Heading-hold FSM** (`models.robot_state`):
+All FSM states live in `models.robot_state`:
 
 | State        | Description                                                        |
 |--------------|--------------------------------------------------------------------|
@@ -109,13 +104,18 @@ The system uses two FSM variants depending on the active controller:
 | `LOCKED`     | Vision active; robot tracks the detected tile-gap angle.           |
 | `GAPPING`    | Vision lost; robot holds the last known servo angle (~2 s gap).    |
 
-**Motor-command FSM** (`models.state`):
+**FSM transition diagram:**
 
-| State            | Description                                                    |
-|------------------|----------------------------------------------------------------|
-| `IDLE`           | Robot stationary, awaiting a start command.                    |
-| `CALIBRATING`    | Actively detecting tiles and computing heading error.          |
-| `DEAD_RECKONING` | Vision lost; motor commands coast on the last valid output.    |
+```
+           ┌──────────────────────────────────────────┐
+           │  (vision returns None while in SEARCHING) │
+           ▼                                           │
+       SEARCHING ──── vision detected ────► LOCKED ───┘
+           ▲                                  │
+           │                                  │ vision lost
+           │                                  ▼
+           └────── vision restored ────── GAPPING
+```
 
 ---
 
@@ -170,8 +170,9 @@ python main.py
 The process will:
 1. Open the camera at index `0`.
 2. Start the 30 Hz heading-hold control loop.
-3. Log each cycle's timestamp, detected angle θ, and FSM state.
-4. Centre the servo and release the camera on exit (`Ctrl+C`) or on a fatal error.
+3. Log each cycle's timestamp, detected angle θ, FSM state, and PID values to the console.
+4. Append the same telemetry to `run_log.csv` in the working directory.
+5. Centre the servo and release the camera on exit (`Ctrl+C`) or on a fatal error.
 
 ### Changing the camera index
 
@@ -181,21 +182,40 @@ Edit `_CAMERA_INDEX` at the top of `main.py`:
 _CAMERA_INDEX: int = 1   # use camera device /dev/video1
 ```
 
+### CSV telemetry log
+
+Every control cycle appends one row to `run_log.csv`:
+
+| Column | Description |
+|--------|-------------|
+| `timestamp` | `time.monotonic()` value at loop start |
+| `fsm_state` | FSM state name (`SEARCHING`, `LOCKED`, or `GAPPING`) |
+| `theta` | Detected tile-gap angle θ (degrees), empty when `None` |
+| `servo_angle` | Servo angle command sent to hardware (degrees) |
+| `pid_integral` | Current accumulated integral term |
+| `pid_last_error` | Error value from the previous cycle |
+
 ---
 
 ## Configuration
 
-All tunable parameters live as module-level constants at the top of each source file.
+All tunable parameters are fields on `RobotState` or module-level constants in each source file.
 
-### PID gains (`models/robot_state.py`, `models/state.py`)
+### `RobotState` fields (`models/robot_state.py`)
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `kp` | `1.0` | Proportional gain |
-| `ki` | `0.05` | Integral gain |
-| `kd` | `0.1` | Derivative gain |
+| Field | Default | Description |
+|-------|---------|-------------|
+| `pid.kp` | `1.0` | Proportional gain |
+| `pid.ki` | `0.05` | Integral gain |
+| `pid.kd` | `0.1` | Derivative gain |
+| `servo_center_angle` | `90.0°` | Neutral servo angle |
+| `max_steering_offset` | `30.0°` | Maximum steering deviation from centre |
+| `roi_height_pct` | `0.4` | Fraction of frame height used for the trapezoidal ROI |
+| `roi_top_width_pct` | `0.6` | Top-edge width of the trapezoid as a fraction of frame width |
+| `roi_bottom_width_pct` | `1.0` | Bottom-edge width of the trapezoid as a fraction of frame width |
+| `debug_mode` | `False` | Save `debug_mask.jpg` once on first detection call |
 
-### Vision pipeline (`vision/line_processor.py`)
+### Vision pipeline constants (`vision/detector.py`)
 
 | Constant | Default | Description |
 |----------|---------|-------------|
@@ -207,13 +227,12 @@ All tunable parameters live as module-level constants at the top of each source 
 | `_ANGLE_THRESHOLD` | `3.0°` | Max angle difference to merge segments |
 | `_SANITY_MAX_DELTA` | `20.0°` | Max inter-frame angle jump before rejection |
 
-### Servo limits (`drivers/servo_driver.py`)
+### Servo hardware constants (`drivers/servo_driver.py`)
 
 | Constant | Default | Description |
 |----------|---------|-------------|
 | `_PULSE_MIN_US` | `1000` µs | Pulse width at 0° |
 | `_PULSE_MAX_US` | `2000` µs | Pulse width at 180° |
-| `_STEERING_CLAMP` | `±30°` | Maximum steering offset from centre |
 
 ---
 

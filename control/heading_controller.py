@@ -5,15 +5,15 @@ Behaviour:
   once ``e < 3°``.
 - **Sparse signal**: if vision returns ``None``, the last valid command
   is re-applied instead of resetting the PID.
-- **Integral wind-up guard**: when the FSM re-enters CALIBRATING after a
-  DEAD_RECKONING gap, the integral term is zeroed.
+- **Integral wind-up guard**: when the FSM re-enters LOCKED after a
+  GAPPING gap, the integral term is zeroed.
 """
 
 import logging
 import time
 from typing import Optional
 
-from models.state import FSMState, RobotState
+from models.robot_state import FSMState, RobotState
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ class HeadingController:
     """PID controller for robot heading stabilisation.
 
     Args:
-        state: Shared :class:`~models.state.RobotState` instance.
+        state: Shared :class:`~models.robot_state.RobotState` instance.
     """
 
     def __init__(self, state: RobotState) -> None:
@@ -101,11 +101,10 @@ class HeadingController:
         """Compute and return the motor command for this control cycle.
 
         When *heading_error* is ``None`` (vision lost), the method enters
-        DEAD_RECKONING and re-applies ``state.last_valid_command``.
+        GAPPING and re-applies ``state.last_valid_command``.
 
         When *heading_error* is a valid value and the previous state was
-        DEAD_RECKONING, the integral term is reset before switching back
-        to CALIBRATING.
+        GAPPING, the integral term is reset before switching back to LOCKED.
 
         Args:
             heading_error: Heading error from the vision module, or
@@ -118,8 +117,8 @@ class HeadingController:
 
         if heading_error is None:
             # --- Sparse signal path ---
-            if state.fsm_state != FSMState.DEAD_RECKONING:
-                state.transition_to(FSMState.DEAD_RECKONING)
+            if state.fsm_state != FSMState.GAPPING:
+                state.transition_to(FSMState.GAPPING)
 
             logger.info(
                 "Vision Lost: Applying Last Known Correction (%.4f)",
@@ -128,14 +127,12 @@ class HeadingController:
             return state.last_valid_command
 
         # --- Valid signal path ---
-        # On re-entry from dead reckoning, reset integral to avoid windup
-        if state.fsm_state == FSMState.DEAD_RECKONING:
+        # On re-entry from GAPPING, reset integral to avoid windup
+        if state.fsm_state == FSMState.GAPPING:
             state.reset_pid_integral()
 
-        if state.fsm_state != FSMState.CALIBRATING:
-            state.transition_to(FSMState.CALIBRATING)
-
-        state.heading_error = heading_error
+        if state.fsm_state != FSMState.LOCKED:
+            state.transition_to(FSMState.LOCKED)
 
         if not self._should_correct(heading_error):
             # Within hysteresis dead-band – no correction needed

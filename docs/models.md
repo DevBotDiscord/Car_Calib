@@ -2,18 +2,15 @@
 
 The `models` package defines the **shared mutable state** and **Finite State Machine (FSM)** used across the vision, control, and driver layers.
 
-There are two parallel implementations that serve different controller paths:
+All state lives in a single canonical file:
 
 | File | `FSMState` values | Used by |
 |------|-------------------|---------|
-| `models/robot_state.py` | `SEARCHING`, `LOCKED`, `GAPPING` | `control.ServoPID` / `main.py` |
-| `models/state.py` | `IDLE`, `CALIBRATING`, `DEAD_RECKONING` | `control.HeadingController` |
-
-Both files follow the same structure: an `FSMState` enum, a `PIDConstants` dataclass, and a `RobotState` dataclass.
+| `models/robot_state.py` | `SEARCHING`, `LOCKED`, `GAPPING` | `control.ServoPID`, `control.HeadingController`, `vision.LineDetector`, `main.py` |
 
 ---
 
-## `models/robot_state.py` — Heading-Hold State
+## `models/robot_state.py`
 
 ### `FSMState` (enum)
 
@@ -25,7 +22,7 @@ from models.robot_state import FSMState
 |--------|-------|-------------|
 | `SEARCHING` | `auto()` | No valid tile-gap line detected; robot is looking for a reference. |
 | `LOCKED` | `auto()` | Vision is active; robot is tracking a detected tile-gap line. |
-| `GAPPING` | `auto()` | Vision lost; robot coasts on the last known servo angle. |
+| `GAPPING` | `auto()` | Vision lost; robot coasts on the last known servo angle (~2 s gap). |
 
 ### `PIDConstants` (dataclass)
 
@@ -42,16 +39,41 @@ pid = PIDConstants(kp=1.0, ki=0.05, kd=0.1)
 
 ### `RobotState` (dataclass)
 
+`RobotState` is the single source of truth shared across all MVC layers.
+
 ```python
 from models.robot_state import RobotState
 state = RobotState()
 ```
 
+#### Servo configuration
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `servo_center_angle` | `float` | `90.0` | Neutral servo angle in degrees. |
+| `max_steering_offset` | `float` | `30.0` | Maximum allowed steering deviation from centre (degrees). Used as the PID output clamp in `ServoPID`. |
+
+#### Vision / ROI parameters
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `roi_height_pct` | `float` | `0.4` | Height of the trapezoidal ROI as a fraction of frame height (bottom portion). |
+| `roi_top_width_pct` | `float` | `0.6` | Width of the top edge of the trapezoid as a fraction of frame width. |
+| `roi_bottom_width_pct` | `float` | `1.0` | Width of the bottom edge of the trapezoid as a fraction of frame width. |
+| `debug_mode` | `bool` | `False` | When `True`, `LineDetector` saves `debug_mask.jpg` once on first call to verify the trapezoid ROI. |
+
+#### Hold-state and history
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `last_valid_servo_angle` | `float` | `90.0` | Most recent servo angle issued while `LOCKED`; returned by `ServoPID` during `GAPPING`. |
+| `last_valid_command` | `float` | `0.0` | Most recent motor-command output; returned by `HeadingController` during `GAPPING`. |
+
+#### PID accumulators
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `pid` | `PIDConstants` | `PIDConstants()` | PID gain constants. |
-| `servo_center_angle` | `float` | `90.0` | Neutral servo angle in degrees. |
-| `last_valid_servo_angle` | `float` | `90.0` | Most recent servo angle issued while `LOCKED`; used as fallback during `GAPPING`. |
 | `fsm_state` | `FSMState` | `FSMState.SEARCHING` | Current FSM state. |
 | `pid_integral` | `float` | `0.0` | Accumulated integral term. |
 | `pid_last_error` | `float` | `0.0` | Previous error for derivative calculation. |
@@ -72,7 +94,7 @@ state.transition_to(FSMState.GAPPING) # logs: "FSM transition: LOCKED -> GAPPING
 ##### `reset_pid_integral() → None`
 
 Reset `pid_integral` to `0.0`.  
-Called by the controller when re-entering from `GAPPING` to prevent integral windup accumulated during the blind period.
+Called by controllers when re-entering `LOCKED` from `GAPPING` to prevent integral windup accumulated during the blind period.
 
 ```python
 state.reset_pid_integral()
@@ -80,89 +102,28 @@ state.reset_pid_integral()
 
 ---
 
-## `models/state.py` — Motor-Command State
+## Adjusting Parameters at Runtime
 
-### `FSMState` (enum)
-
-```python
-from models.state import FSMState
-```
-
-| Member | Value | Description |
-|--------|-------|-------------|
-| `IDLE` | `auto()` | Robot stationary, awaiting a start command. |
-| `CALIBRATING` | `auto()` | Robot actively detecting floor tiles and computing heading error. |
-| `DEAD_RECKONING` | `auto()` | Vision signal lost; robot coasts on the last valid command. |
-
-### `PIDConstants` (dataclass)
-
-Identical structure to `models.robot_state.PIDConstants`.
-
-```python
-from models.state import PIDConstants
-pid = PIDConstants(kp=1.0, ki=0.05, kd=0.1)
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `kp` | `float` | `1.0` | Proportional gain. |
-| `ki` | `float` | `0.05` | Integral gain. |
-| `kd` | `float` | `0.1` | Derivative gain. |
-
-### `RobotState` (dataclass)
-
-```python
-from models.state import RobotState
-state = RobotState()
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `heading_error` | `float` | `0.0` | Current heading error `e = \|θ − 90°\|` in degrees. |
-| `pid` | `PIDConstants` | `PIDConstants()` | PID gain constants. |
-| `last_valid_command` | `float` | `0.0` | Most recent non-`None` PID output sent to motors; used as fallback during `DEAD_RECKONING`. |
-| `fsm_state` | `FSMState` | `FSMState.IDLE` | Current FSM state. |
-| `pid_integral` | `float` | `0.0` | Accumulated integral term. |
-| `pid_last_error` | `float` | `0.0` | Previous error for derivative calculation. |
-
-#### Methods
-
-##### `transition_to(new_state: FSMState) → None`
-
-Transition the FSM to `new_state`.  
-Logs the transition at `INFO` level only when the state actually changes.
-
-```python
-state.transition_to(FSMState.CALIBRATING)
-state.transition_to(FSMState.DEAD_RECKONING)
-```
-
-##### `reset_pid_integral() → None`
-
-Reset `pid_integral` to `0.0`.
-
-```python
-state.reset_pid_integral()
-```
-
----
-
-## Adjusting PID Gains at Runtime
-
-Both `RobotState` variants store gains in a `PIDConstants` dataclass, so they can be updated without restarting:
+All fields on `RobotState` are mutable and take effect immediately:
 
 ```python
 state = RobotState()
+
+# Tune PID gains
 state.pid.kp = 1.5
 state.pid.ki = 0.02
 state.pid.kd = 0.2
+
+# Widen the steering clamp
+state.max_steering_offset = 45.0
+
+# Enable debug mask output
+state.debug_mode = True
 ```
 
 ---
 
-## FSM Transition Diagrams
-
-### Heading-Hold FSM (`models/robot_state.py`)
+## FSM Transition Diagram
 
 ```
            ┌──────────────────────────────────────────┐
@@ -173,14 +134,4 @@ state.pid.kd = 0.2
            │                                  │ vision lost
            │                                  ▼
            └────── vision restored ────── GAPPING
-```
-
-### Motor-Command FSM (`models/state.py`)
-
-```
-         IDLE ──── start ────► CALIBRATING
-                                   │   ▲
-                        vision lost│   │vision restored
-                                   ▼   │
-                             DEAD_RECKONING
 ```

@@ -1,5 +1,5 @@
 """Vision package for the autonomous robot heading-stability system."""
 
-from vision.detector import HeadingDetector
+from vision.detector import LineDetector
 
-__all__ = ["HeadingDetector"]
+__all__ = ["LineDetector"]

@@ -1,102 +1,134 @@
-"""Unit tests for vision/detector.py."""
+"""Unit tests for vision/detector.py (LineDetector)."""
 
 import math
 
 import numpy as np
 import pytest
 
-from vision.detector import HeadingDetector
+from models.robot_state import RobotState
+from vision.detector import LineDetector, _angle_diff
 
 
 @pytest.fixture()
-def detector():
-    return HeadingDetector(roi_keep_fraction=0.4)
+def state():
+    """RobotState with roi_height_pct=0.4, roi_top_width_pct=0.6, roi_bottom_width_pct=1.0."""
+    s = RobotState()
+    s.roi_height_pct = 0.4
+    s.roi_top_width_pct = 0.6
+    s.roi_bottom_width_pct = 1.0
+    return s
 
 
-class TestROIMasking:
-    def test_roi_keeps_bottom_fraction(self, detector):
-        """Bottom 40 % of a 100-row frame should be rows 60–99."""
-        frame = np.zeros((100, 200, 3), dtype=np.uint8)
-        frame[:60, :] = 255  # top 60 % is white
-        frame[60:, :] = 0   # bottom 40 % is black
-        # Gray conversion
-        gray = frame[:, :, 0]
-        roi = detector._apply_roi(gray)
-        assert roi.shape[0] == 40
-        assert roi.max() == 0  # bottom portion is black
+@pytest.fixture()
+def detector(state):
+    return LineDetector(state)
 
-    def test_roi_start_row(self, detector):
-        gray = np.arange(100, dtype=np.uint8).reshape(100, 1)
-        roi = detector._apply_roi(gray)
-        # With keep_fraction=0.4, start_row = 60
-        assert roi[0, 0] == 60
 
-    def test_roi_custom_fraction(self):
-        det = HeadingDetector(roi_keep_fraction=0.5)
+class TestTrapezoidMask:
+    def test_build_trapezoid_pts_shape(self, detector):
+        """_build_trapezoid_pts must return an array of shape (1, 4, 2)."""
+        pts = detector._build_trapezoid_pts(100, 200)
+        assert pts.shape == (1, 4, 2)
+
+    def test_top_y_at_roi_boundary(self, detector):
+        """Top vertices must sit at h - roi_h = 100 - 40 = 60."""
+        pts = detector._build_trapezoid_pts(100, 200)
+        top_left_y = pts[0][0][1]
+        top_right_y = pts[0][1][1]
+        assert top_left_y == 60
+        assert top_right_y == 60
+
+    def test_bottom_y_at_frame_edge(self, detector):
+        """Bottom vertices must sit at h - 1 = 99."""
+        pts = detector._build_trapezoid_pts(100, 200)
+        bot_left_y = pts[0][3][1]
+        bot_right_y = pts[0][2][1]
+        assert bot_left_y == 99
+        assert bot_right_y == 99
+
+    def test_roi_is_centred(self, detector):
+        """Top and bottom vertices must be horizontally centred (cx = w//2 = 100)."""
+        pts = detector._build_trapezoid_pts(100, 200)
+        cx = 200 // 2
+        top_cx = (pts[0][0][0] + pts[0][1][0]) // 2
+        bot_cx = (pts[0][3][0] + pts[0][2][0]) // 2
+        assert top_cx == cx
+        assert bot_cx == cx
+
+    def test_apply_roi_preserves_shape(self, detector):
+        """_apply_roi must return an array with the same shape as the input."""
         gray = np.zeros((100, 200), dtype=np.uint8)
-        roi = det._apply_roi(gray)
-        assert roi.shape[0] == 50
+        result = detector._apply_roi(gray)
+        assert result.shape == gray.shape
+
+    def test_apply_roi_zeroes_outside_trapezoid(self, detector):
+        """Pixels well above the ROI boundary should be zeroed."""
+        # A fully-white frame – the top rows must be zeroed by the mask
+        gray = np.full((100, 200), 255, dtype=np.uint8)
+        result = detector._apply_roi(gray)
+        # Row 0 is above the trapezoid, so it must be zero
+        assert result[0, 100] == 0
+
+    def test_apply_roi_keeps_inside_pixels(self, detector):
+        """Pixels inside the trapezoid should retain their original value."""
+        gray = np.full((100, 200), 128, dtype=np.uint8)
+        result = detector._apply_roi(gray)
+        # The bottom centre pixel is always inside the bottom of the trapezoid
+        assert result[98, 100] == 128
 
 
 class TestPreprocessing:
     def test_preprocess_output_shape(self, detector):
-        roi = np.random.randint(0, 256, (40, 200), dtype=np.uint8)
+        roi = np.random.randint(0, 256, (100, 200), dtype=np.uint8)
         result = detector._preprocess(roi)
         assert result.shape == roi.shape
 
     def test_preprocess_returns_uint8(self, detector):
-        roi = np.random.randint(0, 256, (40, 200), dtype=np.uint8)
+        roi = np.random.randint(0, 256, (100, 200), dtype=np.uint8)
         result = detector._preprocess(roi)
         assert result.dtype == np.uint8
 
 
-class TestHeadingError:
+class TestAngleDiff:
+    def test_zero_diff(self):
+        assert _angle_diff(45.0, 45.0) == pytest.approx(0.0)
+
+    def test_simple_diff(self):
+        assert _angle_diff(10.0, 13.0) == pytest.approx(3.0)
+
+    def test_wrap_around_180(self):
+        assert _angle_diff(1.0, 179.0) == pytest.approx(2.0)
+
+    def test_symmetry(self):
+        assert _angle_diff(30.0, 50.0) == pytest.approx(_angle_diff(50.0, 30.0))
+
+
+class TestGetReferenceAngle:
     def test_returns_none_on_blank_frame(self, detector):
         """A completely uniform frame should yield no edges or lines."""
         frame = np.zeros((200, 200, 3), dtype=np.uint8)
-        result = detector.compute_heading_error(frame)
+        result = detector.get_reference_angle(frame)
         assert result is None
 
     def test_returns_float_on_valid_frame(self, detector):
         """A frame with a clear horizontal line should return a float."""
         frame = np.zeros((200, 200, 3), dtype=np.uint8)
-        # Draw a bold white horizontal line in the bottom 40 % (rows 120–200)
         frame[140:145, :] = 255
-        result = detector.compute_heading_error(frame)
-        # If lines are detected, result must be a non-negative float
+        result = detector.get_reference_angle(frame)
         if result is not None:
             assert isinstance(result, float)
-            assert result >= 0.0
-
-    def test_error_is_absolute_value(self, detector):
-        """Heading error must always be non-negative."""
-        # Simulate a nearly-vertical line (theta ~= 80°): e = |80 - 90| = 10
-        frame = np.zeros((200, 200, 3), dtype=np.uint8)
-        # Draw a near-vertical line from bottom-left to slightly right
-        import cv2
-        cv2.line(frame, (100, 120), (110, 200), (255, 255, 255), 3)
-        result = detector.compute_heading_error(frame)
-        if result is not None:
-            assert result >= 0.0
-
-    def test_lines_to_angle_horizontal(self):
-        """A perfectly horizontal line segment should yield ~0° or ~180°."""
-        lines = np.array([[[0, 50, 200, 50]]])  # y1 == y2 → horizontal
-        angle = HeadingDetector._lines_to_angle(lines)
-        # atan2(0, 200) = 0° mod 180 = 0°
-        assert angle == pytest.approx(0.0, abs=1e-6)
-
-    def test_lines_to_angle_multiple_segments(self):
-        """Mean of two identical angles should equal that angle."""
-        lines = np.array([
-            [[0, 0, 100, 0]],   # 0°
-            [[0, 0, 100, 0]],   # 0°
-        ])
-        angle = HeadingDetector._lines_to_angle(lines)
-        assert angle == pytest.approx(0.0, abs=1e-6)
+            assert 0.0 <= result < 180.0
 
     def test_grayscale_frame_accepted(self, detector):
         """Detector should accept 2-D (grayscale) input without crashing."""
         frame = np.zeros((200, 200), dtype=np.uint8)
-        result = detector.compute_heading_error(frame)
-        assert result is None  # blank → no lines
+        result = detector.get_reference_angle(frame)
+        assert result is None
+
+    def test_last_angle_updated_on_valid_detection(self, detector):
+        """After a valid detection, _last_angle should be updated."""
+        frame = np.zeros((200, 200, 3), dtype=np.uint8)
+        frame[140:145, :] = 255
+        result = detector.get_reference_angle(frame)
+        if result is not None:
+            assert detector._last_angle == pytest.approx(result)

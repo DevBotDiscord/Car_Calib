@@ -2,7 +2,8 @@
 
 Behaviour:
 - **LOCKED state**: Compute ``e = θ - 90°``, apply PID, clamp steering
-  offset to ±30°, and output ``servo_center_angle + steering_offset``.
+  offset to ±``state.max_steering_offset``°, and output
+  ``servo_center_angle + steering_offset``.
 - **Hold logic**: If vision returns ``None``, bypass PID and return
   ``last_valid_servo_angle`` (GAPPING state).
 - **Integral reset**: On transition from GAPPING back to LOCKED, the
@@ -18,9 +19,6 @@ from typing import Optional
 from models.robot_state import FSMState, RobotState
 
 logger = logging.getLogger(__name__)
-
-# Servo steering clamp (degrees from center)
-_STEERING_CLAMP: float = 30.0
 
 
 class ServoPID:
@@ -54,6 +52,7 @@ class ServoPID:
         self._last_time = now
 
         pid = self._state.pid
+        max_offset = self._state.max_steering_offset
 
         p_term = pid.kp * error
 
@@ -61,7 +60,7 @@ class ServoPID:
         # Anti-windup: clamp the integral accumulator so the i_term
         # contribution cannot exceed the steering clamp range.
         if pid.ki != 0.0:
-            max_integral = _STEERING_CLAMP / abs(pid.ki)
+            max_integral = max_offset / abs(pid.ki)
             self._state.pid_integral = max(
                 -max_integral, min(max_integral, self._state.pid_integral)
             )
@@ -121,8 +120,9 @@ class ServoPID:
         error = theta - 90.0
         p_term, i_term, d_term, raw_offset = self._compute_pid(error)
 
-        # Clamp steering offset to ±30°
-        steering_offset = max(-_STEERING_CLAMP, min(_STEERING_CLAMP, raw_offset))
+        # Clamp steering offset to ±max_steering_offset
+        max_offset = state.max_steering_offset
+        steering_offset = max(-max_offset, min(max_offset, raw_offset))
         servo_angle = state.servo_center_angle + steering_offset
         state.last_valid_servo_angle = servo_angle
 

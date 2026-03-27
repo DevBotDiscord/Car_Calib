@@ -1,16 +1,26 @@
-"""Unit tests for vision/line_processor.py."""
+"""Unit tests for the LineDetector (consolidated from vision/detector.py)."""
 
 import math
 
 import numpy as np
 import pytest
 
-from vision.line_processor import LineProcessor, _angle_diff
+from models.robot_state import RobotState
+from vision.detector import LineDetector, _angle_diff
 
 
 @pytest.fixture()
-def processor():
-    return LineProcessor(roi_keep_fraction=0.4)
+def state():
+    s = RobotState()
+    s.roi_height_pct = 0.4
+    s.roi_top_width_pct = 0.6
+    s.roi_bottom_width_pct = 1.0
+    return s
+
+
+@pytest.fixture()
+def processor(state):
+    return LineDetector(state)
 
 
 class TestAngleDiff:
@@ -29,32 +39,36 @@ class TestAngleDiff:
 
 
 class TestROIMasking:
-    def test_roi_keeps_bottom_fraction(self, processor):
-        """Bottom 40 % of a 100-row frame should be rows 60–99."""
-        frame = np.zeros((100, 200, 3), dtype=np.uint8)
-        frame[:60, :] = 255
-        frame[60:, :] = 0
-        gray = frame[:, :, 0]
+    def test_roi_preserves_frame_shape(self, processor):
+        """_apply_roi must return the same shape as the input frame."""
+        gray = np.zeros((100, 200), dtype=np.uint8)
         roi = processor._apply_roi(gray)
-        assert roi.shape[0] == 40
-        assert roi.max() == 0
+        assert roi.shape == (100, 200)
 
-    def test_roi_start_row(self, processor):
-        gray = np.arange(100, dtype=np.uint8).reshape(100, 1)
+    def test_roi_zeroes_above_trapezoid(self, processor):
+        """Pixels in the top 60 % should be zeroed (outside trapezoid)."""
+        gray = np.full((100, 200), 255, dtype=np.uint8)
         roi = processor._apply_roi(gray)
-        assert roi[0, 0] == 60
+        # Row 0 is above the trapezoid
+        assert roi[0, 100] == 0
+
+    def test_roi_keeps_bottom_centre_pixels(self, processor):
+        """Bottom-centre pixels should be preserved (inside trapezoid)."""
+        gray = np.full((100, 200), 128, dtype=np.uint8)
+        roi = processor._apply_roi(gray)
+        assert roi[98, 100] == 128
 
 
 class TestSegmentProps:
     def test_horizontal_segment(self):
-        angle, length, mid_x, mid_y = LineProcessor._segment_props(0, 50, 100, 50)
+        angle, length, mid_x, mid_y = LineDetector._segment_props(0, 50, 100, 50)
         assert angle == pytest.approx(0.0)
         assert length == pytest.approx(100.0)
         assert mid_x == pytest.approx(50.0)
         assert mid_y == pytest.approx(50.0)
 
     def test_length_calculation(self):
-        _, length, _, _ = LineProcessor._segment_props(0, 0, 3, 4)
+        _, length, _, _ = LineDetector._segment_props(0, 0, 3, 4)
         assert length == pytest.approx(5.0)
 
 
@@ -96,7 +110,7 @@ class TestWeightedAngle:
             (0, 0, 10, 0, 10.0, 10.0, 5.0, 0.0),   # angle=10, length=10
             (0, 0, 10, 0, 20.0, 10.0, 5.0, 0.0),   # angle=20, length=10
         ]
-        result = LineProcessor._weighted_angle(group)
+        result = LineDetector._weighted_angle(group)
         assert result == pytest.approx(15.0)
 
     def test_longer_segment_dominates(self):
@@ -104,14 +118,14 @@ class TestWeightedAngle:
             (0, 0, 10, 0, 10.0, 10.0, 5.0, 0.0),   # angle=10, length=10
             (0, 0, 10, 0, 40.0, 100.0, 5.0, 0.0),  # angle=40, length=100
         ]
-        result = LineProcessor._weighted_angle(group)
+        result = LineDetector._weighted_angle(group)
         # Weighted: (10*10 + 40*100) / 110 ≈ 37.27
         assert result == pytest.approx((10 * 10 + 40 * 100) / 110, rel=1e-4)
 
     def test_zero_total_length(self):
         """Zero-length segments fall back to the first segment's angle."""
         group = [(0, 0, 0, 0, 45.0, 0.0, 0.0, 0.0)]
-        result = LineProcessor._weighted_angle(group)
+        result = LineDetector._weighted_angle(group)
         assert result == pytest.approx(45.0)
 
 

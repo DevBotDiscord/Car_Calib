@@ -2,9 +2,13 @@
 
 Manages:
 - PID constants (Kp, Ki, Kd)
-- ``servo_center_angle`` (neutral position, default 90°) and
-  ``last_valid_servo_angle`` (fallback during GAPPING)
-- FSM states: SEARCHING, LOCKED, GAPPING
+- Servo config: ``servo_center_angle`` (neutral position, default 90°) and
+  ``max_steering_offset`` (maximum steering deviation, default 30°)
+- ``last_valid_servo_angle`` (fallback during GAPPING) and
+  ``last_valid_command`` (motor-command fallback for heading controller)
+- ROI parameters (relative): ``roi_height_pct``, ``roi_top_width_pct``,
+  ``roi_bottom_width_pct``
+- ``debug_mode`` flag and FSM states: SEARCHING, LOCKED, GAPPING
 """
 
 import logging
@@ -49,8 +53,21 @@ class RobotState:
     Attributes:
         pid: PID gain constants.
         servo_center_angle: Neutral servo angle in degrees (default 90°).
+        max_steering_offset: Maximum steering deviation from centre in
+            degrees (default 30°).
         last_valid_servo_angle: Most recent servo angle issued while LOCKED.
             Used as a fallback during GAPPING.
+        last_valid_command: Most recent motor-command output.  Used as a
+            fallback by the heading controller during GAPPING.
+        roi_height_pct: Fraction of frame height covered by the ROI
+            trapezoid (bottom portion, default 0.4).
+        roi_top_width_pct: Width of the trapezoid top edge as a fraction
+            of frame width (default 0.6).
+        roi_bottom_width_pct: Width of the trapezoid bottom edge as a
+            fraction of frame width (default 1.0).
+        debug_mode: When ``True``, save ``debug_mask.jpg`` once on
+            first :meth:`~vision.detector.LineDetector.get_reference_angle`
+            call to verify the trapezoid ROI.
         fsm_state: Current FSM state.
         pid_integral: Accumulated integral term for the PID controller.
         pid_last_error: Previous error for the derivative calculation.
@@ -58,7 +75,13 @@ class RobotState:
 
     pid: PIDConstants = field(default_factory=PIDConstants)
     servo_center_angle: float = 90.0
+    max_steering_offset: float = 30.0
     last_valid_servo_angle: float = 90.0
+    last_valid_command: float = 0.0
+    roi_height_pct: float = 0.4
+    roi_top_width_pct: float = 0.6
+    roi_bottom_width_pct: float = 1.0
+    debug_mode: bool = False
     fsm_state: FSMState = FSMState.SEARCHING
     pid_integral: float = 0.0
     pid_last_error: float = 0.0

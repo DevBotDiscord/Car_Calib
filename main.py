@@ -4,7 +4,7 @@ Orchestrates the 30 Hz control loop:
 
 1. Capture a frame from the camera.
 2. Detect the reference tile-gap angle via
-   :class:`~vision.line_processor.LineProcessor`.
+   :class:`~vision.detector.LineDetector`.
 3. Compute the servo angle via :class:`~control.servo_pid.ServoPID`.
 4. Send the angle to the servo via :class:`~drivers.servo_driver.ServoDriver`.
 
@@ -12,9 +12,14 @@ Error handling:
 - Camera initialisation failure triggers an immediate emergency stop and exit.
 - Any critical failure in the main loop centres the servo and exits cleanly.
 - Per-frame hardware errors are logged but do not terminate the loop.
+
+State changes and PID values are logged to a CSV file (``run_log.csv``) in
+addition to the standard text log.
 """
 
+import csv
 import logging
+import os
 import sys
 import time
 
@@ -23,7 +28,7 @@ import cv2
 from control.servo_pid import ServoPID
 from drivers.servo_driver import ServoDriver
 from models.robot_state import RobotState
-from vision.line_processor import LineProcessor
+from vision.detector import LineDetector
 
 # --------------------------------------------------------------------------- #
 # Logging configuration
@@ -41,6 +46,9 @@ logger = logging.getLogger(__name__)
 _TARGET_HZ: float = 30.0
 _LOOP_PERIOD: float = 1.0 / _TARGET_HZ
 _CAMERA_INDEX: int = 0  # Default camera device index
+_CSV_LOG_FILE: str = "run_log.csv"
+_CSV_FIELDNAMES = ["timestamp", "fsm_state", "theta", "servo_angle",
+                   "pid_integral", "pid_last_error"]
 
 
 def _init_camera(index: int) -> cv2.VideoCapture:
@@ -62,15 +70,37 @@ def _init_camera(index: int) -> cv2.VideoCapture:
     return cap
 
 
+def _init_csv_logger(path: str) -> tuple[csv.DictWriter, object]:
+    """Open (or create) *path* and return a ``(writer, file)`` pair.
+
+    Writes the CSV header row if the file does not yet exist.
+
+    Args:
+        path: Filesystem path for the CSV log file.
+
+    Returns:
+        Tuple of ``(DictWriter, file_object)`` so the caller can close the
+        file on shutdown.
+    """
+    file_exists = os.path.isfile(path)
+    csv_file = open(path, "a", newline="")  # noqa: SIM115
+    writer = csv.DictWriter(csv_file, fieldnames=_CSV_FIELDNAMES)
+    if not file_exists:
+        writer.writeheader()
+        csv_file.flush()
+    return writer, csv_file
+
+
 def main() -> None:
     """Run the 30 Hz heading-hold control loop."""
     # ---------------------------------------------------------------------- #
     # Initialise shared state and subsystems
     # ---------------------------------------------------------------------- #
     state = RobotState()
-    processor = LineProcessor()
+    detector = LineDetector(state)
     controller = ServoPID(state)
     servo = ServoDriver()
+    csv_writer, csv_file = _init_csv_logger(_CSV_LOG_FILE)
 
     # ---------------------------------------------------------------------- #
     # Camera initialisation – critical; abort on failure
@@ -98,7 +128,7 @@ def main() -> None:
                 continue
 
             # --- 2. Vision: detect reference tile-gap angle --------------- #
-            theta = processor.get_reference_angle(frame)
+            theta = detector.get_reference_angle(frame)
             logger.info(
                 "timestamp=%.3f  theta=%s  state=%s",
                 loop_start,
@@ -128,7 +158,17 @@ def main() -> None:
                 servo.center()
                 break
 
-            # --- 5. Pace the loop ----------------------------------------- #
+            # --- 5. CSV log ----------------------------------------------- #
+            csv_writer.writerow({
+                "timestamp": f"{loop_start:.6f}",
+                "fsm_state": state.fsm_state.name,
+                "theta": f"{theta:.4f}" if theta is not None else "",
+                "servo_angle": f"{servo_angle:.4f}",
+                "pid_integral": f"{state.pid_integral:.6f}",
+                "pid_last_error": f"{state.pid_last_error:.6f}",
+            })
+
+            # --- 6. Pace the loop ----------------------------------------- #
             _sleep_remainder(loop_start)
 
     except KeyboardInterrupt:
@@ -143,6 +183,7 @@ def main() -> None:
     finally:
         servo.center()
         cap.release()
+        csv_file.close()
         logger.info("Resources released. Goodbye.")
 
 

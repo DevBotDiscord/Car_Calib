@@ -2,10 +2,12 @@
 
 The `control` package provides the PID controllers that convert heading information from the vision pipeline into hardware commands.
 
-| Class | File | Output | Used with |
-|-------|------|--------|-----------|
-| `HeadingController` | `control/heading_controller.py` | Motor command (float) | `models.state.RobotState` |
-| `ServoPID` | `control/servo_pid.py` | Servo angle (degrees) | `models.robot_state.RobotState` |
+Both controllers share the single `models.robot_state.RobotState` instance:
+
+| Class | File | Output | FSM states used |
+|-------|------|--------|-----------------|
+| `HeadingController` | `control/heading_controller.py` | Motor command (float) | `SEARCHING`, `LOCKED`, `GAPPING` |
+| `ServoPID` | `control/servo_pid.py` | Servo angle (degrees) | `SEARCHING`, `LOCKED`, `GAPPING` |
 
 ---
 
@@ -18,15 +20,15 @@ It includes:
 
 - **Hysteresis filter** — prevents jitter near zero error.
 - **Sparse-signal support** — re-applies the last valid command when vision is lost.
-- **Integral wind-up guard** — resets the integral on FSM re-entry.
+- **Integral wind-up guard** — resets the integral on FSM re-entry from `GAPPING`.
 
-### FSM States (from `models.state`)
+### FSM States (from `models.robot_state`)
 
 | State | Description |
 |-------|-------------|
-| `IDLE` | Robot stationary; no corrections issued. |
-| `CALIBRATING` | Vision active; PID running. |
-| `DEAD_RECKONING` | Vision lost; last valid command held. |
+| `SEARCHING` | Initial state; no valid detection yet. |
+| `LOCKED` | Vision active; PID running. |
+| `GAPPING` | Vision lost; last valid command held. |
 
 ### Constructor
 
@@ -36,7 +38,7 @@ HeadingController(state: RobotState)
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `state` | `models.state.RobotState` | Shared mutable state (PID constants, FSM, integral accumulators). |
+| `state` | `models.robot_state.RobotState` | Shared mutable state (PID constants, FSM, integral accumulators). |
 
 ### Public Method
 
@@ -47,14 +49,14 @@ Compute and return the motor command for the current control cycle.
 ```python
 controller = HeadingController(state)
 command = controller.update(7.3)   # heading error in degrees
-command = controller.update(None)  # vision lost → dead reckoning
+command = controller.update(None)  # vision lost → GAPPING, hold last command
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `heading_error` | `Optional[float]` | Heading error from the vision module in degrees, or `None` if no lines were detected. |
 
-**Returns:** `float` — motor command derived from PID output (or last valid command during dead reckoning).
+**Returns:** `float` — motor command derived from PID output (or `state.last_valid_command` during `GAPPING`).
 
 ### Hysteresis Logic
 
@@ -71,13 +73,13 @@ When `|e|` is between 3° and 5°, the previous correction state is maintained.
 
 When `heading_error` is `None`:
 
-1. The FSM transitions to `DEAD_RECKONING`.
+1. The FSM transitions to `GAPPING`.
 2. `state.last_valid_command` is returned unchanged.
 
 When a valid signal is restored:
 
 1. The integral term is reset to zero (prevents windup accumulated during the blind period).
-2. The FSM transitions to `CALIBRATING`.
+2. The FSM transitions to `LOCKED`.
 
 ### PID Computation
 
@@ -110,7 +112,7 @@ It includes:
 |-------|-------------|
 | `SEARCHING` | No valid tile-gap detected. |
 | `LOCKED` | Vision active; PID computing servo commands. |
-| `GAPPING` | Vision lost; servo angle held at last valid value. |
+| `GAPPING` | Vision lost; servo angle held at `state.last_valid_servo_angle`. |
 
 ### Constructor
 
@@ -120,7 +122,7 @@ ServoPID(state: RobotState)
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `state` | `models.robot_state.RobotState` | Shared mutable state (PID constants, FSM, servo angles). |
+| `state` | `models.robot_state.RobotState` | Shared mutable state (PID constants, FSM, servo angles, steering clamp). |
 
 ### Public Method
 
@@ -143,19 +145,25 @@ servo_angle = pid.update(None)   # vision lost → hold last angle
 ### Servo Angle Calculation
 
 ```
-error          = θ − 90°
-steering_offset = clamp(PID(error), −30°, +30°)
-servo_angle    = state.servo_center_angle + steering_offset
+error           = θ − 90°
+max_offset      = state.max_steering_offset          # default 30°
+steering_offset = clamp(PID(error), −max_offset, +max_offset)
+servo_angle     = state.servo_center_angle + steering_offset
 ```
 
-The steering offset is clamped to ±`_STEERING_CLAMP` (default **30°**) to protect the servo and tires.
+The steering offset is clamped to `±state.max_steering_offset` (default **30°**).  
+The clamp is configured in `RobotState`, not as a module constant, so it can be changed at runtime:
+
+```python
+state.max_steering_offset = 45.0   # widen steering range
+```
 
 ### Anti-Windup
 
 When `ki ≠ 0`, the integral accumulator is clamped so the integral contribution (`ki × integral`) never exceeds the steering clamp range:
 
 ```
-max_integral = _STEERING_CLAMP / |ki|
+max_integral = state.max_steering_offset / |ki|
 pid_integral = clamp(pid_integral, −max_integral, +max_integral)
 ```
 
@@ -170,9 +178,3 @@ When a valid signal is restored from `GAPPING`:
 
 1. The integral term is reset (`state.reset_pid_integral()`).
 2. The FSM transitions to `LOCKED`.
-
-### Tunable Constants
-
-| Constant | Default | Description |
-|----------|---------|-------------|
-| `_STEERING_CLAMP` | `30.0°` | Maximum steering offset from the servo centre angle. |
