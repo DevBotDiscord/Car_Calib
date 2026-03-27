@@ -56,6 +56,17 @@ _MIDPOINT_THRESHOLD: float = 30.0  # pixels – maximum midpoint distance to mer
 # Sanity check: discard frames where the angle shifts more than this amount
 _SANITY_MAX_DELTA: float = 40.0  # degrees
 
+# Keep ROI boundary black so the mask edge is never detected as a line.
+_ROI_BORDER_BLACK_PX: int = 2
+
+# Keep a safety margin from ROI borders in edge space to avoid Canny response
+# caused by the inside/outside intensity jump at the ROI boundary.
+_ROI_EDGE_MARGIN_PX: int = 4
+
+# Clear a small bottom band in the edge map; Canny can place boundary response
+# a couple of rows above the true image edge after blur.
+_ROI_BOTTOM_CLEAR_ROWS: int = 3
+
 # Debug output filename
 _DEBUG_MASK_FILE = "debug_mask.jpg"
 
@@ -129,6 +140,45 @@ class LineDetector:
             dtype=np.int32,
         )
 
+    @staticmethod
+    def _strip_roi_border_hits(mask: np.ndarray, roi_start_row: int) -> None:
+        """Remove residual bright ROI-border pixels from a binary ROI mask.
+
+        Steps:
+        1. For each column, clear the first non-zero pixel encountered from
+           ``roi_start_row`` downward.
+        2. For each ROI row, clear the first and last non-zero pixels to remove
+           side-border remnants.
+        3. Clear the final image row to force-remove the ROI bottom border.
+
+        Args:
+            mask: Binary uint8 mask modified in place.
+            roi_start_row: First row included in ROI processing.
+        """
+        h, w = mask.shape[:2]
+        start_row = max(0, min(int(roi_start_row), h - 1))
+
+        # Vertical pass: remove top-most white hit in each column.
+        roi_view = mask[start_row:h, :]
+        for x in range(w):
+            ys = np.flatnonzero(roi_view[:, x] != 0)
+            if ys.size > 0:
+                mask[start_row + int(ys[0]), x] = 0
+
+        # Horizontal pass: remove left-most and right-most white hits per row.
+        for y in range(start_row, h):
+            xs = np.flatnonzero(mask[y, :] != 0)
+            if xs.size == 0:
+                continue
+            left_x = int(xs[0])
+            right_x = int(xs[-1])
+            mask[y, left_x] = 0
+            if right_x != left_x:
+                mask[y, right_x] = 0
+
+        # Ensure the ROI bottom edge is fully removed.
+        mask[h - 5, :] = 0
+
     def _apply_roi(self, frame: np.ndarray) -> np.ndarray:
         """Apply a trapezoidal mask to *frame*.
 
@@ -146,6 +196,15 @@ class LineDetector:
         mask = np.zeros((h, w), dtype=np.uint8)
         pts = self._build_trapezoid_pts(h, w)
         cv2.fillPoly(mask, [pts[0]], 255)
+        cv2.polylines(
+            mask,
+            [pts[0]],
+            isClosed=True,
+            color=0,
+            thickness=_ROI_BORDER_BLACK_PX,
+        )
+        roi_start_row = int(np.min(pts[0][:, 1]))
+        self._strip_roi_border_hits(mask, roi_start_row)
 
         if self._state.debug_mode and not self._debug_saved:
             cv2.imwrite(_DEBUG_MASK_FILE, mask)
@@ -175,7 +234,23 @@ class LineDetector:
         Returns:
             Binary edge map.
         """
-        return cv2.Canny(preprocessed, _CANNY_LOW, _CANNY_HIGH)
+        edges = cv2.Canny(preprocessed, _CANNY_LOW, _CANNY_HIGH)
+
+        # Remove ROI boundary responses by keeping only an inner (eroded) ROI.
+        h, w = edges.shape[:2]
+        pts = self._build_trapezoid_pts(h, w)
+        inner_roi_mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(inner_roi_mask, [pts[0]], 255)
+        if _ROI_EDGE_MARGIN_PX > 0:
+            k = (2 * _ROI_EDGE_MARGIN_PX) + 1
+            kernel = np.ones((k, k), dtype=np.uint8)
+            inner_roi_mask = cv2.erode(inner_roi_mask, kernel, iterations=1)
+
+        filtered = cv2.bitwise_and(edges, edges, mask=inner_roi_mask)
+        if _ROI_BOTTOM_CLEAR_ROWS > 0:
+            rows = min(_ROI_BOTTOM_CLEAR_ROWS, filtered.shape[0])
+            filtered[-rows:, :] = 0
+        return filtered
 
     def _detect_lines(self, edges: np.ndarray) -> Optional[np.ndarray]:
         """Run Probabilistic Hough Transform (PPHT) to find line segments.
