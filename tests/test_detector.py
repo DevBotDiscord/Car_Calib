@@ -73,8 +73,8 @@ class TestTrapezoidMask:
         """Pixels inside the trapezoid should retain their original value."""
         gray = np.full((100, 200), 128, dtype=np.uint8)
         result = detector._apply_roi(gray)
-        # The bottom centre pixel is always inside the bottom of the trapezoid
-        assert result[98, 100] == 128
+        # Use a point well inside the ROI (away from top/side/bottom borders).
+        assert result[90, 100] == 128
 
 
 class TestPreprocessing:
@@ -132,3 +132,50 @@ class TestGetReferenceAngle:
         result = detector.get_reference_angle(frame)
         if result is not None:
             assert detector._last_angle == pytest.approx(result)
+
+
+class TestReferenceSelection:
+    def test_select_reference_prefers_most_horizontal_group(self, detector):
+        """Selection should prefer angle nearest 0°/180° over vertical groups."""
+        near_vertical_group = [
+            (0, 0, 0, 10, 90.0, 10.0, 5.0, 80.0),
+        ]
+        near_horizontal_group = [
+            (0, 0, 10, 1, 5.0, 10.0, 5.0, 40.0),
+        ]
+
+        theta = detector._select_reference([near_vertical_group, near_horizontal_group])
+        assert theta == pytest.approx(5.0)
+
+    def test_horizontal_cap_rejects_vertical_angle(self, detector):
+        """A near-vertical candidate must fail horizontal acceptance."""
+        assert detector._is_horizontal_candidate(90.0) is False
+
+    def test_horizontal_to_vertical_angle_transform(self, detector):
+        """Selected horizontal angle must map to vertical-equivalent heading."""
+        assert detector._horizontal_to_vertical_angle(0.0) == pytest.approx(90.0)
+        assert detector._horizontal_to_vertical_angle(180.0) == pytest.approx(90.0)
+        assert detector._horizontal_to_vertical_angle(20.0) == pytest.approx(110.0)
+        assert detector._horizontal_to_vertical_angle(160.0) == pytest.approx(70.0)
+
+
+class TestHorizontalCapIntegration:
+    def test_get_reference_angle_rejects_non_horizontal_candidate(
+        self,
+        detector,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """End-to-end path should return None when selected angle is non-horizontal."""
+        vertical_group = [
+            (0, 0, 0, 20, 90.0, 20.0, 10.0, 80.0),
+        ]
+
+        monkeypatch.setattr(
+            detector,
+            "_detect_lines",
+            lambda _edges: np.array([[[0, 0, 1, 1]]], dtype=np.int32),
+        )
+        monkeypatch.setattr(detector, "_group_lines", lambda _lines: [vertical_group])
+
+        frame = np.zeros((200, 200, 3), dtype=np.uint8)
+        assert detector.get_reference_angle(frame) is None

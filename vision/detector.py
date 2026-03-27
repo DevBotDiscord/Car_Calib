@@ -56,6 +56,10 @@ _MIDPOINT_THRESHOLD: float = 30.0  # pixels – maximum midpoint distance to mer
 # Sanity check: discard frames where the angle shifts more than this amount
 _SANITY_MAX_DELTA: float = 40.0  # degrees
 
+# Hard cap for horizontal-line acceptance. If the selected line group angle is
+# farther than this from 0°/180°, it is rejected.
+_HORIZONTAL_MAX_ERROR_DEG: float = 20.0
+
 # Keep ROI boundary black so the mask edge is never detected as a line.
 _ROI_BORDER_BLACK_PX: int = 2
 
@@ -377,6 +381,22 @@ class LineDetector:
         angle = self._weighted_angle(group)
         return _angle_diff(angle, 0.0)
 
+    @staticmethod
+    def _is_horizontal_candidate(angle: float) -> bool:
+        """Return True when *angle* is within the horizontal acceptance cap."""
+        return _angle_diff(angle, 0.0) <= _HORIZONTAL_MAX_ERROR_DEG
+
+    @staticmethod
+    def _horizontal_to_vertical_angle(horizontal_angle: float) -> float:
+        """Map a horizontal-line angle to its vertical-direction equivalent.
+
+        Examples:
+        - 0° / 180° -> 90°
+        - 20° -> 110°
+        - 160° -> 70°
+        """
+        return (horizontal_angle + 90.0) % 180.0
+
     def _select_reference_group_index(
         self,
         groups: list[list[tuple[int, int, int, int, float, float, float, float]]],
@@ -522,7 +542,17 @@ class LineDetector:
             logger.debug("No line groups formed.")
             return None
 
-        theta = self._select_reference(groups)
+        theta_horizontal = self._select_reference(groups)
+
+        if not self._is_horizontal_candidate(theta_horizontal):
+            logger.debug(
+                "Rejected non-horizontal candidate θ=%.2f° (max error=%.1f°).",
+                theta_horizontal,
+                _HORIZONTAL_MAX_ERROR_DEG,
+            )
+            return None
+
+        theta = self._horizontal_to_vertical_angle(theta_horizontal)
 
         if not self._sanity_check(theta):
             return None
@@ -561,6 +591,8 @@ class LineDetector:
         groups: list[list[tuple[int, int, int, int, float, float, float, float]]] = []
         reference_idx: Optional[int] = None
         theta_candidate: Optional[float] = None
+        theta_horizontal: Optional[float] = None
+        horizontal_ok = False
         sanity_ok = False
         theta_out: Optional[float] = None
 
@@ -568,9 +600,12 @@ class LineDetector:
             groups = self._group_lines(lines)
             if groups:
                 reference_idx = self._select_reference_group_index(groups)
-                theta_candidate = self._weighted_angle(groups[reference_idx])
-                sanity_ok = self._sanity_check(theta_candidate)
-                if sanity_ok:
+                theta_horizontal = self._weighted_angle(groups[reference_idx])
+                horizontal_ok = self._is_horizontal_candidate(theta_horizontal)
+                if horizontal_ok:
+                    theta_candidate = self._horizontal_to_vertical_angle(theta_horizontal)
+                    sanity_ok = self._sanity_check(theta_candidate)
+                if horizontal_ok and sanity_ok:
                     self._last_angle = theta_candidate
                     theta_out = theta_candidate
 
@@ -592,9 +627,12 @@ class LineDetector:
             "groups_count": len(groups),
             "reference_group_index": reference_idx,
             "selected_group_bbox": selected_group_bbox,
+            "theta_horizontal": theta_horizontal,
             "theta_candidate": theta_candidate,
+            "horizontal_ok": horizontal_ok,
             "sanity_ok": sanity_ok,
             "theta_output": theta_out,
+            "horizontal_max_error": _HORIZONTAL_MAX_ERROR_DEG,
             "sanity_max_delta": _SANITY_MAX_DELTA,
             "angle_threshold": _ANGLE_THRESHOLD,
             "midpoint_threshold": _MIDPOINT_THRESHOLD,
