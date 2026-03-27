@@ -1,14 +1,16 @@
-"""Entry point for the autonomous robot heading-stability system.
+"""Entry point for the autonomous robot heading-hold system.
 
 Orchestrates the 30 Hz control loop:
 
 1. Capture a frame from the camera.
-2. Compute heading error via :class:`~vision.detector.HeadingDetector`.
-3. Issue a motor command via :class:`~control.heading_controller.HeadingController`.
-4. Translate the command to PWM signals via :class:`~drivers.motors.MotorDriver`.
+2. Detect the reference tile-gap angle via
+   :class:`~vision.line_processor.LineProcessor`.
+3. Compute the servo angle via :class:`~control.servo_pid.ServoPID`.
+4. Send the angle to the servo via :class:`~drivers.servo_driver.ServoDriver`.
 
 Error handling:
 - Camera initialisation failure triggers an immediate emergency stop and exit.
+- Any critical failure in the main loop centres the servo and exits cleanly.
 - Per-frame hardware errors are logged but do not terminate the loop.
 """
 
@@ -18,10 +20,10 @@ import time
 
 import cv2
 
-from control.heading_controller import HeadingController
-from drivers.motors import MotorDriver
-from models.state import FSMState, RobotState
-from vision.detector import HeadingDetector
+from control.servo_pid import ServoPID
+from drivers.servo_driver import ServoDriver
+from models.robot_state import RobotState
+from vision.line_processor import LineProcessor
 
 # --------------------------------------------------------------------------- #
 # Logging configuration
@@ -61,14 +63,14 @@ def _init_camera(index: int) -> cv2.VideoCapture:
 
 
 def main() -> None:
-    """Run the 30 Hz heading-stability control loop."""
+    """Run the 30 Hz heading-hold control loop."""
     # ---------------------------------------------------------------------- #
     # Initialise shared state and subsystems
     # ---------------------------------------------------------------------- #
     state = RobotState()
-    detector = HeadingDetector()
-    controller = HeadingController(state)
-    motors = MotorDriver()
+    processor = LineProcessor()
+    controller = ServoPID(state)
+    servo = ServoDriver()
 
     # ---------------------------------------------------------------------- #
     # Camera initialisation – critical; abort on failure
@@ -77,15 +79,13 @@ def main() -> None:
         cap = _init_camera(_CAMERA_INDEX)
     except RuntimeError as exc:
         logger.critical("Camera initialisation failed: %s", exc)
-        motors.stop()
+        servo.center()
         sys.exit(1)
-
-    state.transition_to(FSMState.CALIBRATING)
 
     # ---------------------------------------------------------------------- #
     # Main control loop at 30 Hz
     # ---------------------------------------------------------------------- #
-    logger.info("Starting control loop at %.0f Hz.", _TARGET_HZ)
+    logger.info("Starting heading-hold control loop at %.0f Hz.", _TARGET_HZ)
     try:
         while True:
             loop_start = time.monotonic()
@@ -97,35 +97,35 @@ def main() -> None:
                 _sleep_remainder(loop_start)
                 continue
 
-            # --- 2. Vision: compute heading error -------------------------- #
-            heading_error = detector.compute_heading_error(frame)
+            # --- 2. Vision: detect reference tile-gap angle --------------- #
+            theta = processor.get_reference_angle(frame)
             logger.info(
-                "timestamp=%.3f  heading_error=%s  state=%s",
+                "timestamp=%.3f  theta=%s  state=%s",
                 loop_start,
-                f"{heading_error:.2f}°" if heading_error is not None else "None",
+                f"{theta:.2f}°" if theta is not None else "None",
                 state.fsm_state.name,
             )
 
-            # --- 3. Control: compute PID output ---------------------------- #
+            # --- 3. Control: compute servo angle -------------------------- #
             try:
-                pid_output = controller.update(heading_error)
+                servo_angle = controller.update(theta)
             except Exception as ctrl_exc:  # noqa: BLE001
-                logger.error("Controller error: %s – applying emergency stop.", ctrl_exc)
-                motors.stop()
+                logger.error(
+                    "Controller error: %s – centering servo and stopping.",
+                    ctrl_exc,
+                )
+                servo.center()
                 break
 
-            logger.info(
-                "pid_output=%.4f  last_valid_command=%.4f",
-                pid_output,
-                state.last_valid_command,
-            )
-
-            # --- 4. Motors: translate to PWM ------------------------------- #
+            # --- 4. Servo: send angle command ----------------------------- #
             try:
-                motors.set_pwm(pid_output)
+                servo.send_angle(servo_angle)
             except OSError as hw_exc:
-                logger.error("Motor hardware error: %s – applying emergency stop.", hw_exc)
-                motors.stop()
+                logger.error(
+                    "Servo hardware error: %s – centering servo and stopping.",
+                    hw_exc,
+                )
+                servo.center()
                 break
 
             # --- 5. Pace the loop ----------------------------------------- #
@@ -133,8 +133,15 @@ def main() -> None:
 
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received – shutting down.")
+    except Exception as fatal_exc:  # noqa: BLE001
+        logger.critical("Fatal error: %s – centering servo and stopping.", fatal_exc)
+        try:
+            servo.center()
+        except Exception as center_exc:  # noqa: BLE001
+            logger.error("Failed to center servo during shutdown: %s", center_exc)
+        raise
     finally:
-        motors.stop()
+        servo.center()
         cap.release()
         logger.info("Resources released. Goodbye.")
 
