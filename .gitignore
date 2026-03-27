@@ -208,3 +208,7 @@ __marimo__/
 
 # Jupyter Notebooks
 notebooks/
+
+# Test video sample
+videos/
+logs/
