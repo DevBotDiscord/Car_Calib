@@ -18,7 +18,7 @@ the reference tile-gap line, or ``None`` if no valid line is found.
 
 import logging
 import math
-from typing import Optional
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -50,11 +50,11 @@ _HOUGH_MIN_LINE_LEN = 30      # minimum segment length in pixels
 _HOUGH_MAX_LINE_GAP = 10      # maximum gap between collinear segments
 
 # Grouping thresholds
-_ANGLE_THRESHOLD: float = 3.0    # degrees – maximum Δθ to merge two segments
-_MIDPOINT_THRESHOLD: float = 50.0  # pixels – maximum midpoint distance to merge
+_ANGLE_THRESHOLD: float = 5.0    # degrees – maximum Δθ to merge two segments
+_MIDPOINT_THRESHOLD: float = 30.0  # pixels – maximum midpoint distance to merge
 
 # Sanity check: discard frames where the angle shifts more than this amount
-_SANITY_MAX_DELTA: float = 20.0  # degrees
+_SANITY_MAX_DELTA: float = 40.0  # degrees
 
 # Debug output filename
 _DEBUG_MASK_FILE = "debug_mask.jpg"
@@ -145,7 +145,7 @@ class LineDetector:
         h, w = frame.shape[:2]
         mask = np.zeros((h, w), dtype=np.uint8)
         pts = self._build_trapezoid_pts(h, w)
-        cv2.fillPoly(mask, pts, 255)
+        cv2.fillPoly(mask, [pts[0]], 255)
 
         if self._state.debug_mode and not self._debug_saved:
             cv2.imwrite(_DEBUG_MASK_FILE, mask)
@@ -313,6 +313,46 @@ class LineDetector:
         best_group = max(groups, key=self._group_max_y)
         return self._weighted_angle(best_group)
 
+    @staticmethod
+    def _draw_raw_lines(
+        canvas: np.ndarray,
+        lines: Optional[np.ndarray],
+    ) -> np.ndarray:
+        """Draw raw Hough segments on *canvas* for debug visualisation."""
+        vis = canvas.copy()
+        if lines is None:
+            return vis
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            cv2.line(vis, (x1, y1), (x2, y2), (0, 0, 255), 2)
+        return vis
+
+    @staticmethod
+    def _draw_grouped_lines(
+        canvas: np.ndarray,
+        groups: list[list[tuple[int, int, int, int, float, float, float, float]]],
+        reference_idx: Optional[int],
+    ) -> np.ndarray:
+        """Draw grouped segments with a distinct color per group."""
+        vis = canvas.copy()
+        palette = [
+            (255, 120, 0),
+            (0, 220, 220),
+            (220, 0, 220),
+            (0, 200, 80),
+            (255, 200, 0),
+            (180, 120, 255),
+            (255, 255, 255),
+        ]
+
+        for idx, group in enumerate(groups):
+            color = palette[idx % len(palette)]
+            thickness = 4 if reference_idx == idx else 2
+            for seg in group:
+                x1, y1, x2, y2 = seg[0], seg[1], seg[2], seg[3]
+                cv2.line(vis, (x1, y1), (x2, y2), color, thickness)
+        return vis
+
     def _sanity_check(self, angle: float) -> bool:
         """Return ``True`` if *angle* passes the inter-frame sanity check.
 
@@ -389,3 +429,66 @@ class LineDetector:
             len(groups),
         )
         return theta
+
+    def get_reference_angle_debug(
+        self,
+        frame: np.ndarray,
+    ) -> tuple[Optional[float], dict[str, Any]]:
+        """Run full pipeline and return angle plus detailed debug artefacts.
+
+        Returns a tuple ``(theta, debug_data)`` where ``theta`` follows the
+        same semantics as :meth:`get_reference_angle`, and ``debug_data``
+        contains intermediate images and stage metadata.
+        """
+        if frame.ndim == 3:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            base = frame.copy()
+        else:
+            gray = frame
+            base = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+        roi = self._apply_roi(gray)
+        preprocessed = self._preprocess(roi)
+        edges = self._detect_edges(preprocessed)
+        lines = self._detect_lines(edges)
+
+        groups: list[list[tuple[int, int, int, int, float, float, float, float]]] = []
+        reference_idx: Optional[int] = None
+        theta_candidate: Optional[float] = None
+        sanity_ok = False
+        theta_out: Optional[float] = None
+
+        if lines is not None:
+            groups = self._group_lines(lines)
+            if groups:
+                reference_idx = max(range(len(groups)), key=lambda idx: self._group_max_y(groups[idx]))
+                theta_candidate = self._weighted_angle(groups[reference_idx])
+                sanity_ok = self._sanity_check(theta_candidate)
+                if sanity_ok:
+                    self._last_angle = theta_candidate
+                    theta_out = theta_candidate
+
+        hough_vis = self._draw_raw_lines(base, lines)
+        grouped_vis = self._draw_grouped_lines(base, groups, reference_idx)
+
+        debug_data: dict[str, Any] = {
+            "gray": gray,
+            "roi": roi,
+            "preprocessed": preprocessed,
+            "edges": edges,
+            "hough_vis": hough_vis,
+            "grouped_vis": grouped_vis,
+            "lines_count": 0 if lines is None else int(len(lines)),
+            "groups_count": len(groups),
+            "reference_group_index": reference_idx,
+            "theta_candidate": theta_candidate,
+            "sanity_ok": sanity_ok,
+            "theta_output": theta_out,
+            "sanity_max_delta": _SANITY_MAX_DELTA,
+            "angle_threshold": _ANGLE_THRESHOLD,
+            "midpoint_threshold": _MIDPOINT_THRESHOLD,
+            "hough_threshold": _HOUGH_THRESHOLD,
+            "hough_min_line_len": _HOUGH_MIN_LINE_LEN,
+            "hough_max_line_gap": _HOUGH_MAX_LINE_GAP,
+        }
+        return theta_out, debug_data
