@@ -15,6 +15,18 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
+from settings import (
+    MAX_STEERING_OFFSET,
+    PID_KD,
+    PID_KI,
+    PID_KP,
+    ROBOT_DEBUG_MODE,
+    ROI_BOTTOM_WIDTH_PCT,
+    ROI_HEIGHT_PCT,
+    ROI_TOP_WIDTH_PCT,
+    SERVO_CENTER_ANGLE,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,9 +53,9 @@ class PIDConstants:
         kd: Derivative gain.
     """
 
-    kp: float = 1.0
-    ki: float = 0.05
-    kd: float = 0.1
+    kp: float = PID_KP
+    ki: float = PID_KI
+    kd: float = PID_KD
 
 
 @dataclass
@@ -74,14 +86,14 @@ class RobotState:
     """
 
     pid: PIDConstants = field(default_factory=PIDConstants)
-    servo_center_angle: float = 90.0
-    max_steering_offset: float = 30.0
-    last_valid_servo_angle: float = 90.0
+    servo_center_angle: float = SERVO_CENTER_ANGLE
+    max_steering_offset: float = MAX_STEERING_OFFSET
+    last_valid_servo_angle: float = SERVO_CENTER_ANGLE
     last_valid_command: float = 0.0
-    roi_height_pct: float = 0.6
-    roi_top_width_pct: float = 0.75
-    roi_bottom_width_pct: float = 1.0
-    debug_mode: bool = False
+    roi_height_pct: float = ROI_HEIGHT_PCT
+    roi_top_width_pct: float = ROI_TOP_WIDTH_PCT
+    roi_bottom_width_pct: float = ROI_BOTTOM_WIDTH_PCT
+    debug_mode: bool = ROBOT_DEBUG_MODE
     fsm_state: FSMState = FSMState.SEARCHING
     pid_integral: float = 0.0
     pid_last_error: float = 0.0

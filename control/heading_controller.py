@@ -14,12 +14,13 @@ import time
 from typing import Optional
 
 from models.robot_state import FSMState, RobotState
+from settings import CTRL_HYSTERESIS_HIGH, CTRL_HYSTERESIS_LOW
 
 logger = logging.getLogger(__name__)
 
 # Hysteresis thresholds (degrees)
-_HYSTERESIS_HIGH = 5.0   # start correcting above this
-_HYSTERESIS_LOW = 3.0    # stop correcting below this
+_HYSTERESIS_HIGH = CTRL_HYSTERESIS_HIGH
+_HYSTERESIS_LOW = CTRL_HYSTERESIS_LOW
 
 
 class HeadingController:

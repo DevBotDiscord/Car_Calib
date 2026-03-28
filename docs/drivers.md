@@ -42,6 +42,8 @@ MotorDriver(
 | `pwm_min` | `int` | `0` | Minimum allowable PWM output. |
 | `pwm_max` | `int` | `255` | Maximum allowable PWM output. |
 
+Defaults are env-configurable via `DRIVER_MOTOR_PWM_CENTRE`, `DRIVER_MOTOR_PWM_MIN`, and `DRIVER_MOTOR_PWM_MAX`.
+
 ### Public Methods
 
 #### `set_pwm(pid_output: float) → tuple[int, int]`
@@ -118,6 +120,12 @@ ServoDriver(
 | `center_angle` | `float` | `90.0°` | Neutral servo angle used by `center()`. |
 | `pulse_min_us` | `int` | `1000` µs | Pulse width corresponding to 0°. |
 | `pulse_max_us` | `int` | `2000` µs | Pulse width corresponding to 180°. |
+
+Defaults are env-configurable via:
+- `DRIVER_SERVO_CHANNEL`
+- `SERVO_CENTER_ANGLE`
+- `DRIVER_SERVO_PULSE_MIN_US`
+- `DRIVER_SERVO_PULSE_MAX_US`
 
 ### Public Methods
 

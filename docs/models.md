@@ -57,8 +57,8 @@ state = RobotState()
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `roi_height_pct` | `float` | `0.4` | Height of the trapezoidal ROI as a fraction of frame height (bottom portion). |
-| `roi_top_width_pct` | `float` | `0.6` | Width of the top edge of the trapezoid as a fraction of frame width. |
+| `roi_height_pct` | `float` | `0.6` | Height of the trapezoidal ROI as a fraction of frame height (bottom portion). |
+| `roi_top_width_pct` | `float` | `0.75` | Width of the top edge of the trapezoid as a fraction of frame width. |
 | `roi_bottom_width_pct` | `float` | `1.0` | Width of the bottom edge of the trapezoid as a fraction of frame width. |
 | `debug_mode` | `bool` | `False` | When `True`, `LineDetector` saves `debug_mask.jpg` once on first call to verify the trapezoid ROI. |
 
@@ -120,6 +120,9 @@ state.max_steering_offset = 45.0
 # Enable debug mask output
 state.debug_mode = True
 ```
+
+Default values for `RobotState` are loaded from `.env` through `settings.py`.
+Use `.env.example` for the full parameter list.
 
 ---
 

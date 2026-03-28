@@ -16,15 +16,24 @@ Usage example (PCA9685 with adafruit-circuitpython-pca9685)::
 
 import logging
 
+from settings import (
+    DRIVER_SERVO_ANGLE_MAX,
+    DRIVER_SERVO_ANGLE_MIN,
+    DRIVER_SERVO_CHANNEL,
+    DRIVER_SERVO_PULSE_MAX_US,
+    DRIVER_SERVO_PULSE_MIN_US,
+    SERVO_CENTER_ANGLE,
+)
+
 logger = logging.getLogger(__name__)
 
 # Default servo PWM pulse widths in microseconds (standard hobby servo)
-_PULSE_MIN_US: int = 1000   # 0°
-_PULSE_MAX_US: int = 2000   # 180°
+_PULSE_MIN_US: int = DRIVER_SERVO_PULSE_MIN_US
+_PULSE_MAX_US: int = DRIVER_SERVO_PULSE_MAX_US
 
 # Servo travel limits (degrees)
-_ANGLE_MIN: float = 0.0
-_ANGLE_MAX: float = 180.0
+_ANGLE_MIN: float = DRIVER_SERVO_ANGLE_MIN
+_ANGLE_MAX: float = DRIVER_SERVO_ANGLE_MAX
 
 
 class ServoDriver:
@@ -46,8 +55,8 @@ class ServoDriver:
 
     def __init__(
         self,
-        channel: int = 0,
-        center_angle: float = 90.0,
+        channel: int = DRIVER_SERVO_CHANNEL,
+        center_angle: float = SERVO_CENTER_ANGLE,
         pulse_min_us: int = _PULSE_MIN_US,
         pulse_max_us: int = _PULSE_MAX_US,
     ) -> None:

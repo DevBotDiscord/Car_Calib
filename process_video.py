@@ -11,7 +11,7 @@ The pipeline for each frame:
 Usage:
     python process_video.py <path_to_video> [--output <csv_path>]
     [--video-output <video_path>] [--no-servo] [--terminal-log]
-    [--show-guidance-overlay] [--show-detector-debug]
+    [--show-guidance-overlay] [--show-detector-debug] [--flip-frame]
 """
 
 import argparse
@@ -25,6 +25,17 @@ from typing import Any, TextIO
 import cv2
 import numpy as np
 
+from settings import (
+    PROCESS_VIDEO_CSV_OUTPUT,
+    PROCESS_VIDEO_FLIP_FRAME,
+    PROCESS_VIDEO_OUTPUT,
+    PROCESS_VIDEO_SEND_TO_SERVO,
+    PROCESS_VIDEO_SHOW_DETECTOR_DEBUG,
+    PROCESS_VIDEO_SHOW_GUIDANCE_OVERLAY,
+    PROCESS_VIDEO_START_CALIB_THRESHOLD_DEG,
+    PROCESS_VIDEO_STOP_CALIB_THRESHOLD_DEG,
+    PROCESS_VIDEO_TERMINAL_LOG,
+)
 from control.servo_pid import ServoPID
 from drivers.servo_driver import ServoDriver
 from models.robot_state import RobotState
@@ -45,8 +56,15 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 _CSV_FIELDNAMES = ["frame_num", "timestamp", "fsm_state", "theta", "servo_angle",
                    "pid_integral", "pid_last_error"]
-_DEFAULT_START_CALIB_THRESHOLD_DEG = 5.0
-_DEFAULT_STOP_CALIB_THRESHOLD_DEG = 3.0
+_DEFAULT_START_CALIB_THRESHOLD_DEG = PROCESS_VIDEO_START_CALIB_THRESHOLD_DEG
+_DEFAULT_STOP_CALIB_THRESHOLD_DEG = PROCESS_VIDEO_STOP_CALIB_THRESHOLD_DEG
+
+
+def _maybe_flip_frame(frame: np.ndarray, flip_frame: bool) -> np.ndarray:
+    """Return flipped frame when *flip_frame* is enabled (180° flip)."""
+    if not flip_frame:
+        return frame
+    return cv2.flip(frame, -1)
 
 
 def _configure_terminal_logging(enabled: bool) -> None:
@@ -115,7 +133,7 @@ def _draw_tile_label(tile: np.ndarray, label: str) -> None:
         cv2.FONT_HERSHEY_SIMPLEX,
         0.5,
         (230, 230, 230),
-        1,
+        2,
     )
 
 
@@ -203,7 +221,6 @@ def _draw_overlay(
     show_guidance_overlay: bool,
     start_calib_threshold_deg: float,
     stop_calib_threshold_deg: float,
-    selected_group_bbox: tuple[int, int, int, int] | None = None,
 ) -> np.ndarray:
 
     """Render pipeline values onto a frame before writing to output video."""
@@ -248,7 +265,7 @@ def _draw_overlay(
             cv2.FONT_HERSHEY_SIMPLEX,
             0.56,
             (120, 230, 255),
-            1,
+            2,
         )
         cv2.putText(
             frame,
@@ -257,7 +274,7 @@ def _draw_overlay(
             cv2.FONT_HERSHEY_SIMPLEX,
             0.56,
             (120, 255, 150),
-            1,
+            2,
         )
 
         # Draw a theta gauge [0, 180] with accepted and stop-calibrating zones.
@@ -290,25 +307,12 @@ def _draw_overlay(
             theta_x = theta_to_x(theta)
             cv2.line(frame, (theta_x, gauge_y0 - 5), (theta_x, gauge_y1 + 5), (0, 0, 255), 2)
 
-        cv2.putText(frame, "0", (gauge_x0 - 2, gauge_y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1)
-        cv2.putText(frame, "90", (center_x - 12, gauge_y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 220, 220), 1)
-        cv2.putText(frame, "180", (gauge_x1 - 22, gauge_y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1)
+        cv2.putText(frame, "0", (gauge_x0 - 2, gauge_y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 2)
+        cv2.putText(frame, "90", (center_x - 12, gauge_y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 220, 220), 2)
+        cv2.putText(frame, "180", (gauge_x1 - 22, gauge_y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 2)
 
         legend = "Blue=accepted region | Green=stop-calibrating region | Red=current theta"
-        cv2.putText(frame, legend, (16, 238), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (220, 220, 220), 1)
-
-        if selected_group_bbox is not None:
-            x, y, w, h = selected_group_bbox
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 255), 2)
-            cv2.putText(
-                frame,
-                "Selected horizontal line group",
-                (x, max(20, y - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.50,
-                (0, 255, 255),
-                1,
-            )
+        cv2.putText(frame, legend, (16, 238), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (220, 220, 220), 2)
 
     return frame
 
@@ -353,14 +357,15 @@ def _init_csv_logger(path: str) -> tuple[csv.DictWriter, TextIO]:
 
 def process_video(
     video_path: str,
-    csv_output: str = "video_log.csv",
-    video_output: str = "processed_video.mp4",
-    send_to_servo: bool = True,
-    terminal_log: bool = False,
-    show_guidance_overlay: bool = False,
-    show_detector_debug: bool = False,
+    csv_output: str = PROCESS_VIDEO_CSV_OUTPUT,
+    video_output: str = PROCESS_VIDEO_OUTPUT,
+    send_to_servo: bool = PROCESS_VIDEO_SEND_TO_SERVO,
+    terminal_log: bool = PROCESS_VIDEO_TERMINAL_LOG,
+    show_guidance_overlay: bool = PROCESS_VIDEO_SHOW_GUIDANCE_OVERLAY,
+    show_detector_debug: bool = PROCESS_VIDEO_SHOW_DETECTOR_DEBUG,
     start_calib_threshold_deg: float = _DEFAULT_START_CALIB_THRESHOLD_DEG,
     stop_calib_threshold_deg: float = _DEFAULT_STOP_CALIB_THRESHOLD_DEG,
+    flip_frame: bool = PROCESS_VIDEO_FLIP_FRAME,
 ) -> None:
     """Process a video file through the heading-hold control pipeline.
 
@@ -375,6 +380,7 @@ def process_video(
         show_detector_debug: If True, render detailed detector stage panels.
         start_calib_threshold_deg: Outer threshold (accepted region) around 90°.
         stop_calib_threshold_deg: Inner threshold (stop-calibrating region).
+        flip_frame: If True, rotate each frame by 180° before processing.
     """
     if start_calib_threshold_deg <= 0 or stop_calib_threshold_deg <= 0:
         raise ValueError("Calibration thresholds must be positive.")
@@ -432,10 +438,11 @@ def process_video(
                 logger.info("End of video reached.")
                 break
             frame_num += 1
+            frame = _maybe_flip_frame(frame, flip_frame)
 
             # --- 2. Vision: detect reference tile-gap angle --------------- #
             detector_debug: dict[str, Any] | None = None
-            if show_detector_debug or show_guidance_overlay:
+            if show_detector_debug:
                 theta, detector_debug = detector.get_reference_angle_debug(frame)
             else:
                 theta = detector.get_reference_angle(frame)
@@ -490,11 +497,6 @@ def process_video(
                 show_guidance_overlay=show_guidance_overlay,
                 start_calib_threshold_deg=start_calib_threshold_deg,
                 stop_calib_threshold_deg=stop_calib_threshold_deg,
-                selected_group_bbox=(
-                    None
-                    if detector_debug is None
-                    else detector_debug.get("selected_group_bbox")
-                ),
             )
             output_frame = annotated
             if show_detector_debug and detector_debug is not None:
@@ -543,39 +545,86 @@ def main() -> None:
     )
     parser.add_argument(
         "--output", "-o",
-        default="video_log.csv",
+        default=PROCESS_VIDEO_CSV_OUTPUT,
         help="Path for the output CSV log file (default: video_log.csv).",
     )
     parser.add_argument(
         "--video-output", "-v",
-        default="processed_video.mp4",
+        default=PROCESS_VIDEO_OUTPUT,
         help="Path for output annotated video (default: processed_video.mp4).",
+    )
+    parser.set_defaults(
+        send_to_servo=PROCESS_VIDEO_SEND_TO_SERVO,
+        terminal_log=PROCESS_VIDEO_TERMINAL_LOG,
+        show_guidance_overlay=PROCESS_VIDEO_SHOW_GUIDANCE_OVERLAY,
+        show_detector_debug=PROCESS_VIDEO_SHOW_DETECTOR_DEBUG,
+        flip_frame=PROCESS_VIDEO_FLIP_FRAME,
     )
     parser.add_argument(
         "--no-servo",
-        action="store_true",
+        action="store_false",
+        dest="send_to_servo",
         help="Do not send commands to the servo; only log computed values.",
+    )
+    parser.add_argument(
+        "--send-servo",
+        action="store_true",
+        dest="send_to_servo",
+        help="Send computed angles to servo hardware.",
     )
     parser.add_argument(
         "--terminal-log",
         action="store_true",
+        dest="terminal_log",
         help="Show INFO logs in terminal while processing.",
+    )
+    parser.add_argument(
+        "--no-terminal-log",
+        action="store_false",
+        dest="terminal_log",
+        help="Hide INFO logs in terminal while processing.",
     )
     parser.add_argument(
         "--show-guidance-overlay",
         action="store_true",
+        dest="show_guidance_overlay",
         help=(
             "Show car direction, start/stop calibrating thresholds, and "
             "accepted/stop regions on output video."
         ),
     )
     parser.add_argument(
+        "--no-guidance-overlay",
+        action="store_false",
+        dest="show_guidance_overlay",
+        help="Disable guidance overlays in output video.",
+    )
+    parser.add_argument(
         "--show-detector-debug",
         action="store_true",
+        dest="show_detector_debug",
         help=(
             "Render detailed detector stages: gray, ROI, preprocessing, "
             "edges, Hough lines, grouped lines, and stage metadata."
         ),
+    )
+    parser.add_argument(
+        "--no-detector-debug",
+        action="store_false",
+        dest="show_detector_debug",
+        help="Disable detailed detector debug panel output.",
+    )
+    parser.add_argument(
+        "--flip-frame",
+        action="store_true",
+        dest="flip_frame",
+        help="Flip each frame by 180 degrees before processing.",
+    )
+    parser.add_argument(
+        "--no-flip-frame",
+        action="store_false",
+        dest="flip_frame",
+        help="Disable frame flipping.",
     )
     parser.add_argument(
         "--start-calib-threshold",
@@ -606,12 +655,13 @@ def main() -> None:
         video_path=args.video_path,
         csv_output=args.output,
         video_output=args.video_output,
-        send_to_servo=not args.no_servo,
+        send_to_servo=args.send_to_servo,
         terminal_log=args.terminal_log,
         show_guidance_overlay=args.show_guidance_overlay,
         show_detector_debug=args.show_detector_debug,
         start_calib_threshold_deg=args.start_calib_threshold,
         stop_calib_threshold_deg=args.stop_calib_threshold,
+        flip_frame=args.flip_frame,
     )
 
 

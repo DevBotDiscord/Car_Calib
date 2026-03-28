@@ -8,7 +8,7 @@ Pipeline per frame:
 4. Line detection  – Probabilistic Progressive Hough Transform (PPHT).
 5. Angle calculation – ``θ = atan2(y2-y1, x2-x1) × 180/π``; a line
    parallel to the robot's forward path gives ``θ ≈ 90°`` (error ``e = 0``).
-6. Line grouping   – cluster segments with |Δθ| < 3°.
+6. Line grouping   – cluster segments with configurable |Δθ| threshold.
 7. Reference select – pick the most horizontal group (angle nearest 0°/180°).
 8. Sanity check    – discard angles that shift by more than 20° in one frame.
 
@@ -24,6 +24,28 @@ import cv2
 import numpy as np
 
 from models.robot_state import RobotState
+from settings import (
+    VISION_ANGLE_THRESHOLD_DEG,
+    VISION_BLUR_KERNEL_H,
+    VISION_BLUR_KERNEL_W,
+    VISION_CANNY_HIGH,
+    VISION_CANNY_LOW,
+    VISION_CLAHE_CLIP_LIMIT,
+    VISION_CLAHE_TILE_GRID_H,
+    VISION_CLAHE_TILE_GRID_W,
+    VISION_DEBUG_MASK_FILE,
+    VISION_HORIZONTAL_MAX_ERROR_DEG,
+    VISION_HOUGH_MAX_LINE_GAP,
+    VISION_HOUGH_MIN_LINE_LEN,
+    VISION_HOUGH_RHO,
+    VISION_HOUGH_THETA_DEG,
+    VISION_HOUGH_THRESHOLD,
+    VISION_MIDPOINT_THRESHOLD_PX,
+    VISION_ROI_BORDER_BLACK_PX,
+    VISION_ROI_BOTTOM_CLEAR_ROWS,
+    VISION_ROI_EDGE_MARGIN_PX,
+    VISION_SANITY_MAX_DELTA_DEG,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,47 +54,47 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------#
 
 # CLAHE parameters
-_CLAHE_CLIP_LIMIT = 2.0
-_CLAHE_TILE_GRID = (8, 8)
+_CLAHE_CLIP_LIMIT = VISION_CLAHE_CLIP_LIMIT
+_CLAHE_TILE_GRID = (VISION_CLAHE_TILE_GRID_W, VISION_CLAHE_TILE_GRID_H)
 
 # Gaussian blur kernel size (must be odd)
-_BLUR_KERNEL = (5, 5)
+_BLUR_KERNEL = (VISION_BLUR_KERNEL_W, VISION_BLUR_KERNEL_H)
 
 # Canny thresholds
-_CANNY_LOW = 50
-_CANNY_HIGH = 150
+_CANNY_LOW = VISION_CANNY_LOW
+_CANNY_HIGH = VISION_CANNY_HIGH
 
 # PPHT parameters
-_HOUGH_RHO = 1                # distance resolution in pixels
-_HOUGH_THETA = math.pi / 180  # angle resolution in radians
-_HOUGH_THRESHOLD = 50         # minimum votes
-_HOUGH_MIN_LINE_LEN = 30      # minimum segment length in pixels
-_HOUGH_MAX_LINE_GAP = 10      # maximum gap between collinear segments
+_HOUGH_RHO = VISION_HOUGH_RHO
+_HOUGH_THETA = math.radians(VISION_HOUGH_THETA_DEG)
+_HOUGH_THRESHOLD = VISION_HOUGH_THRESHOLD
+_HOUGH_MIN_LINE_LEN = VISION_HOUGH_MIN_LINE_LEN
+_HOUGH_MAX_LINE_GAP = VISION_HOUGH_MAX_LINE_GAP
 
 # Grouping thresholds
-_ANGLE_THRESHOLD: float = 5.0    # degrees – maximum Δθ to merge two segments
-_MIDPOINT_THRESHOLD: float = 30.0  # pixels – maximum midpoint distance to merge
+_ANGLE_THRESHOLD: float = VISION_ANGLE_THRESHOLD_DEG
+_MIDPOINT_THRESHOLD: float = VISION_MIDPOINT_THRESHOLD_PX
 
 # Sanity check: discard frames where the angle shifts more than this amount
-_SANITY_MAX_DELTA: float = 40.0  # degrees
+_SANITY_MAX_DELTA: float = VISION_SANITY_MAX_DELTA_DEG
 
 # Hard cap for horizontal-line acceptance. If the selected line group angle is
 # farther than this from 0°/180°, it is rejected.
-_HORIZONTAL_MAX_ERROR_DEG: float = 20.0
+_HORIZONTAL_MAX_ERROR_DEG: float = VISION_HORIZONTAL_MAX_ERROR_DEG
 
 # Keep ROI boundary black so the mask edge is never detected as a line.
-_ROI_BORDER_BLACK_PX: int = 2
+_ROI_BORDER_BLACK_PX: int = VISION_ROI_BORDER_BLACK_PX
 
 # Keep a safety margin from ROI borders in edge space to avoid Canny response
 # caused by the inside/outside intensity jump at the ROI boundary.
-_ROI_EDGE_MARGIN_PX: int = 4
+_ROI_EDGE_MARGIN_PX: int = VISION_ROI_EDGE_MARGIN_PX
 
 # Clear a small bottom band in the edge map; Canny can place boundary response
 # a couple of rows above the true image edge after blur.
-_ROI_BOTTOM_CLEAR_ROWS: int = 10
+_ROI_BOTTOM_CLEAR_ROWS: int = VISION_ROI_BOTTOM_CLEAR_ROWS
 
 # Debug output filename
-_DEBUG_MASK_FILE = "debug_mask.jpg"
+_DEBUG_MASK_FILE = VISION_DEBUG_MASK_FILE
 
 
 def _angle_diff(a: float, b: float) -> float:
@@ -301,7 +323,7 @@ class LineDetector:
     def _group_lines(
         self, lines: np.ndarray
     ) -> list[list[tuple[int, int, int, int, float, float, float, float]]]:
-        """Group segments with similar slopes (|Δθ| < 3°) and close midpoints.
+        """Group segments with similar slopes (|Δθ| below threshold).
 
         Each segment is represented as
         ``(x1, y1, x2, y2, angle_deg, length, mid_x, mid_y)``.

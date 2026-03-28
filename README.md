@@ -136,6 +136,7 @@ All FSM states live in `models.robot_state`:
 - Python 3.8+
 - OpenCV ≥ 4.5 (`opencv-python-headless`)
 - NumPy ≥ 1.21
+- python-dotenv ≥ 1.0
 
 See [`requirements.txt`](requirements.txt) for the full list.
 
@@ -174,12 +175,24 @@ The process will:
 4. Append the same telemetry to `run_log.csv` in the working directory.
 5. Centre the servo and release the camera on exit (`Ctrl+C`) or on a fatal error.
 
+### Offline video processing
+
+```bash
+python process_video.py videos/6.mp4 --show-guidance-overlay --show-detector-debug
+```
+
+Enable 180° frame flip when needed:
+
+```bash
+python process_video.py videos/6.mp4 --flip-frame
+```
+
 ### Changing the camera index
 
-Edit `_CAMERA_INDEX` at the top of `main.py`:
+Set it in `.env`:
 
-```python
-_CAMERA_INDEX: int = 1   # use camera device /dev/video1
+```bash
+MAIN_CAMERA_INDEX=1
 ```
 
 ### CSV telemetry log
@@ -199,40 +212,47 @@ Every control cycle appends one row to `run_log.csv`:
 
 ## Configuration
 
-All tunable parameters are fields on `RobotState` or module-level constants in each source file.
+All tunable parameters are now loaded from environment variables through `settings.py`.
 
-### `RobotState` fields (`models/robot_state.py`)
+1. Copy [.env.example](.env.example) to `.env`.
+2. Edit values in `.env`.
+3. Restart the process.
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `pid.kp` | `1.0` | Proportional gain |
-| `pid.ki` | `0.05` | Integral gain |
-| `pid.kd` | `0.1` | Derivative gain |
-| `servo_center_angle` | `90.0°` | Neutral servo angle |
-| `max_steering_offset` | `30.0°` | Maximum steering deviation from centre |
-| `roi_height_pct` | `0.4` | Fraction of frame height used for the trapezoidal ROI |
-| `roi_top_width_pct` | `0.6` | Top-edge width of the trapezoid as a fraction of frame width |
-| `roi_bottom_width_pct` | `1.0` | Bottom-edge width of the trapezoid as a fraction of frame width |
-| `debug_mode` | `False` | Save `debug_mask.jpg` once on first detection call |
+`.env` is intentionally git-ignored. Commit changes to `.env.example` when adding or renaming parameters.
 
-### Vision pipeline constants (`vision/detector.py`)
+### Common Runtime Settings
 
-| Constant | Default | Description |
+| Variable | Default | Description |
 |----------|---------|-------------|
-| `_CLAHE_CLIP_LIMIT` | `2.0` | CLAHE contrast limit |
-| `_CANNY_LOW` | `50` | Canny lower threshold |
-| `_CANNY_HIGH` | `150` | Canny upper threshold |
-| `_HOUGH_THRESHOLD` | `50` | Minimum Hough votes |
-| `_HOUGH_MIN_LINE_LEN` | `30` px | Minimum accepted line length |
-| `_ANGLE_THRESHOLD` | `3.0°` | Max angle difference to merge segments |
-| `_SANITY_MAX_DELTA` | `20.0°` | Max inter-frame angle jump before rejection |
+| `MAIN_TARGET_HZ` | `30.0` | Main loop frequency in Hz. |
+| `MAIN_CAMERA_INDEX` | `0` | Camera index for `main.py`. |
+| `MAIN_FLIP_FRAME` | `false` | Flip camera frame by 180° in `main.py`. |
+| `MAIN_CSV_LOG_FILE` | `run_log.csv` | CSV path for live mode logging. |
 
-### Servo hardware constants (`drivers/servo_driver.py`)
+### process_video Settings
 
-| Constant | Default | Description |
+| Variable | Default | Description |
 |----------|---------|-------------|
-| `_PULSE_MIN_US` | `1000` µs | Pulse width at 0° |
-| `_PULSE_MAX_US` | `2000` µs | Pulse width at 180° |
+| `PROCESS_VIDEO_CSV_OUTPUT` | `video_log.csv` | Default CSV output path. |
+| `PROCESS_VIDEO_OUTPUT` | `processed_video.mp4` | Default annotated video path. |
+| `PROCESS_VIDEO_SHOW_GUIDANCE_OVERLAY` | `false` | Enable guidance overlay by default. |
+| `PROCESS_VIDEO_SHOW_DETECTOR_DEBUG` | `false` | Enable detector debug panel by default. |
+| `PROCESS_VIDEO_FLIP_FRAME` | `false` | Flip input frame by 180° before processing. |
+| `PROCESS_VIDEO_START_CALIB_THRESHOLD_DEG` | `5.0` | Outer accepted range around 90°. |
+| `PROCESS_VIDEO_STOP_CALIB_THRESHOLD_DEG` | `3.0` | Inner stop-calibrating range around 90°. |
+
+### Vision and Control Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PID_KP`, `PID_KI`, `PID_KD` | `1.0`, `0.05`, `0.1` | PID gains. |
+| `SERVO_CENTER_ANGLE` | `90.0` | Servo neutral position. |
+| `MAX_STEERING_OFFSET` | `30.0` | Maximum steering correction. |
+| `ROI_HEIGHT_PCT`, `ROI_TOP_WIDTH_PCT`, `ROI_BOTTOM_WIDTH_PCT` | `0.6`, `0.75`, `1.0` | ROI shape parameters. |
+| `VISION_HORIZONTAL_MAX_ERROR_DEG` | `20.0` | Reject selected groups that are not horizontal enough. |
+| `VISION_SANITY_MAX_DELTA_DEG` | `40.0` | Max inter-frame angle jump before rejection. |
+
+See [.env.example](.env.example) for the complete parameter list.
 
 ---
 

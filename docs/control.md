@@ -64,8 +64,10 @@ The controller uses two thresholds to avoid oscillation near zero:
 
 | Threshold | Value | Meaning |
 |-----------|-------|---------|
-| `_HYSTERESIS_HIGH` | `5.0°` | Correction **activates** when `|e| > 5°`. |
-| `_HYSTERESIS_LOW` | `3.0°` | Correction **deactivates** when `|e| < 3°`. |
+| `_HYSTERESIS_HIGH` | `5.0°` | Correction **activates** when `|e| > high`. |
+| `_HYSTERESIS_LOW` | `3.0°` | Correction **deactivates** when `|e| < low`. |
+
+These defaults are env-configurable via `CTRL_HYSTERESIS_HIGH` and `CTRL_HYSTERESIS_LOW`.
 
 When `|e|` is between 3° and 5°, the previous correction state is maintained.
 
@@ -92,6 +94,8 @@ output = P + I + D
 ```
 
 PID gains are read from `state.pid` (`PIDConstants`) and can be changed at runtime by modifying the dataclass fields.
+
+PID defaults are env-configurable via `PID_KP`, `PID_KI`, and `PID_KD` in `.env`.
 
 ---
 

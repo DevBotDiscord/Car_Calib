@@ -3,6 +3,17 @@
 import pytest
 
 from models.robot_state import FSMState, PIDConstants, RobotState
+from settings import (
+    MAX_STEERING_OFFSET,
+    PID_KD,
+    PID_KI,
+    PID_KP,
+    ROBOT_DEBUG_MODE,
+    ROI_BOTTOM_WIDTH_PCT,
+    ROI_HEIGHT_PCT,
+    ROI_TOP_WIDTH_PCT,
+    SERVO_CENTER_ANGLE,
+)
 
 
 class TestFSMState:
@@ -19,9 +30,9 @@ class TestFSMState:
 class TestPIDConstants:
     def test_defaults(self):
         pid = PIDConstants()
-        assert pid.kp == pytest.approx(1.0)
-        assert pid.ki == pytest.approx(0.05)
-        assert pid.kd == pytest.approx(0.1)
+        assert pid.kp == pytest.approx(PID_KP)
+        assert pid.ki == pytest.approx(PID_KI)
+        assert pid.kd == pytest.approx(PID_KD)
 
     def test_custom_values(self):
         pid = PIDConstants(kp=2.0, ki=0.2, kd=0.5)
@@ -33,14 +44,14 @@ class TestPIDConstants:
 class TestRobotState:
     def test_defaults(self):
         state = RobotState()
-        assert state.servo_center_angle == pytest.approx(90.0)
-        assert state.max_steering_offset == pytest.approx(30.0)
-        assert state.last_valid_servo_angle == pytest.approx(90.0)
+        assert state.servo_center_angle == pytest.approx(SERVO_CENTER_ANGLE)
+        assert state.max_steering_offset == pytest.approx(MAX_STEERING_OFFSET)
+        assert state.last_valid_servo_angle == pytest.approx(SERVO_CENTER_ANGLE)
         assert state.last_valid_command == pytest.approx(0.0)
-        assert state.roi_height_pct == pytest.approx(0.4)
-        assert state.roi_top_width_pct == pytest.approx(0.6)
-        assert state.roi_bottom_width_pct == pytest.approx(1.0)
-        assert state.debug_mode is False
+        assert state.roi_height_pct == pytest.approx(ROI_HEIGHT_PCT)
+        assert state.roi_top_width_pct == pytest.approx(ROI_TOP_WIDTH_PCT)
+        assert state.roi_bottom_width_pct == pytest.approx(ROI_BOTTOM_WIDTH_PCT)
+        assert state.debug_mode is ROBOT_DEBUG_MODE
         assert state.fsm_state == FSMState.SEARCHING
         assert state.pid_integral == pytest.approx(0.0)
         assert state.pid_last_error == pytest.approx(0.0)
@@ -79,7 +90,7 @@ class TestRobotState:
         assert state.roi_bottom_width_pct == pytest.approx(0.8)
 
     def test_debug_mode_default_false(self):
-        assert RobotState().debug_mode is False
+        assert RobotState().debug_mode is ROBOT_DEBUG_MODE
 
     def test_debug_mode_can_be_enabled(self):
         state = RobotState(debug_mode=True)

@@ -7,14 +7,20 @@ the NVIDIA Jetson Nano.
 
 import logging
 
+from settings import (
+    DRIVER_MOTOR_PWM_CENTRE,
+    DRIVER_MOTOR_PWM_MAX,
+    DRIVER_MOTOR_PWM_MIN,
+)
+
 logger = logging.getLogger(__name__)
 
 # PWM range limits
-_PWM_MIN: int = 0
-_PWM_MAX: int = 255
+_PWM_MIN: int = DRIVER_MOTOR_PWM_MIN
+_PWM_MAX: int = DRIVER_MOTOR_PWM_MAX
 
 # Baseline forward speed (centre of PWM range)
-_PWM_CENTRE: int = 128
+_PWM_CENTRE: int = DRIVER_MOTOR_PWM_CENTRE
 
 
 class MotorDriver:

@@ -22,9 +22,16 @@ import logging
 import os
 import sys
 import time
+from typing import TextIO
 
 import cv2
 
+from settings import (
+    MAIN_CAMERA_INDEX,
+    MAIN_CSV_LOG_FILE,
+    MAIN_FLIP_FRAME,
+    MAIN_TARGET_HZ,
+)
 from control.servo_pid import ServoPID
 from drivers.servo_driver import ServoDriver
 from models.robot_state import RobotState
@@ -43,10 +50,11 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 # Constants
 # --------------------------------------------------------------------------- #
-_TARGET_HZ: float = 30.0
+_TARGET_HZ: float = MAIN_TARGET_HZ
 _LOOP_PERIOD: float = 1.0 / _TARGET_HZ
-_CAMERA_INDEX: int = 0  # Default camera device index
-_CSV_LOG_FILE: str = "run_log.csv"
+_CAMERA_INDEX: int = MAIN_CAMERA_INDEX
+_CSV_LOG_FILE: str = MAIN_CSV_LOG_FILE
+_FLIP_FRAME: bool = MAIN_FLIP_FRAME
 _CSV_FIELDNAMES = ["timestamp", "fsm_state", "theta", "servo_angle",
                    "pid_integral", "pid_last_error"]
 
@@ -70,7 +78,7 @@ def _init_camera(index: int) -> cv2.VideoCapture:
     return cap
 
 
-def _init_csv_logger(path: str) -> tuple[csv.DictWriter, object]:
+def _init_csv_logger(path: str) -> tuple[csv.DictWriter, TextIO]:
     """Open (or create) *path* and return a ``(writer, file)`` pair.
 
     Writes the CSV header row if the file does not yet exist.
@@ -126,6 +134,8 @@ def main() -> None:
                 logger.warning("Frame capture failed; skipping cycle.")
                 _sleep_remainder(loop_start)
                 continue
+            if _FLIP_FRAME:
+                frame = cv2.flip(frame, -1)
 
             # --- 2. Vision: detect reference tile-gap angle --------------- #
             theta = detector.get_reference_angle(frame)

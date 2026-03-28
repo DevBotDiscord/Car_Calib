@@ -1,0 +1,127 @@
+"""Environment-backed application settings.
+
+All tunable parameters should be defined here and consumed by runtime modules.
+Values are loaded from environment variables (including .env via python-dotenv)
+with sane defaults for local development.
+"""
+
+from __future__ import annotations
+
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def _get_str(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value
+
+
+def _get_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return int(value)
+
+
+def _get_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return float(value)
+
+
+def _get_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    raise ValueError(
+        f"Invalid boolean for {name}: {value!r}. "
+        "Use one of: true/false, 1/0, yes/no, on/off."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Main loop settings
+# --------------------------------------------------------------------------- #
+MAIN_TARGET_HZ = _get_float("MAIN_TARGET_HZ", 30.0)
+MAIN_CAMERA_INDEX = _get_int("MAIN_CAMERA_INDEX", 0)
+MAIN_CSV_LOG_FILE = _get_str("MAIN_CSV_LOG_FILE", "run_log.csv")
+MAIN_FLIP_FRAME = _get_bool("MAIN_FLIP_FRAME", False)
+
+# --------------------------------------------------------------------------- #
+# Process video settings
+# --------------------------------------------------------------------------- #
+PROCESS_VIDEO_CSV_OUTPUT = _get_str("PROCESS_VIDEO_CSV_OUTPUT", "video_log.csv")
+PROCESS_VIDEO_OUTPUT = _get_str("PROCESS_VIDEO_OUTPUT", "processed_video.mp4")
+PROCESS_VIDEO_SEND_TO_SERVO = _get_bool("PROCESS_VIDEO_SEND_TO_SERVO", True)
+PROCESS_VIDEO_TERMINAL_LOG = _get_bool("PROCESS_VIDEO_TERMINAL_LOG", False)
+PROCESS_VIDEO_SHOW_GUIDANCE_OVERLAY = _get_bool("PROCESS_VIDEO_SHOW_GUIDANCE_OVERLAY", False)
+PROCESS_VIDEO_SHOW_DETECTOR_DEBUG = _get_bool("PROCESS_VIDEO_SHOW_DETECTOR_DEBUG", False)
+PROCESS_VIDEO_START_CALIB_THRESHOLD_DEG = _get_float("PROCESS_VIDEO_START_CALIB_THRESHOLD_DEG", 5.0)
+PROCESS_VIDEO_STOP_CALIB_THRESHOLD_DEG = _get_float("PROCESS_VIDEO_STOP_CALIB_THRESHOLD_DEG", 3.0)
+PROCESS_VIDEO_FLIP_FRAME = _get_bool("PROCESS_VIDEO_FLIP_FRAME", False)
+
+# --------------------------------------------------------------------------- #
+# Robot state / PID defaults
+# --------------------------------------------------------------------------- #
+PID_KP = _get_float("PID_KP", 1.0)
+PID_KI = _get_float("PID_KI", 0.05)
+PID_KD = _get_float("PID_KD", 0.1)
+SERVO_CENTER_ANGLE = _get_float("SERVO_CENTER_ANGLE", 90.0)
+MAX_STEERING_OFFSET = _get_float("MAX_STEERING_OFFSET", 30.0)
+ROI_HEIGHT_PCT = _get_float("ROI_HEIGHT_PCT", 0.6)
+ROI_TOP_WIDTH_PCT = _get_float("ROI_TOP_WIDTH_PCT", 0.75)
+ROI_BOTTOM_WIDTH_PCT = _get_float("ROI_BOTTOM_WIDTH_PCT", 1.0)
+ROBOT_DEBUG_MODE = _get_bool("ROBOT_DEBUG_MODE", False)
+
+# --------------------------------------------------------------------------- #
+# Vision detector settings
+# --------------------------------------------------------------------------- #
+VISION_CLAHE_CLIP_LIMIT = _get_float("VISION_CLAHE_CLIP_LIMIT", 2.0)
+VISION_CLAHE_TILE_GRID_W = _get_int("VISION_CLAHE_TILE_GRID_W", 8)
+VISION_CLAHE_TILE_GRID_H = _get_int("VISION_CLAHE_TILE_GRID_H", 8)
+VISION_BLUR_KERNEL_W = _get_int("VISION_BLUR_KERNEL_W", 5)
+VISION_BLUR_KERNEL_H = _get_int("VISION_BLUR_KERNEL_H", 5)
+VISION_CANNY_LOW = _get_int("VISION_CANNY_LOW", 50)
+VISION_CANNY_HIGH = _get_int("VISION_CANNY_HIGH", 150)
+VISION_HOUGH_RHO = _get_float("VISION_HOUGH_RHO", 1.0)
+VISION_HOUGH_THETA_DEG = _get_float("VISION_HOUGH_THETA_DEG", 1.0)
+VISION_HOUGH_THRESHOLD = _get_int("VISION_HOUGH_THRESHOLD", 50)
+VISION_HOUGH_MIN_LINE_LEN = _get_int("VISION_HOUGH_MIN_LINE_LEN", 30)
+VISION_HOUGH_MAX_LINE_GAP = _get_int("VISION_HOUGH_MAX_LINE_GAP", 10)
+VISION_ANGLE_THRESHOLD_DEG = _get_float("VISION_ANGLE_THRESHOLD_DEG", 5.0)
+VISION_MIDPOINT_THRESHOLD_PX = _get_float("VISION_MIDPOINT_THRESHOLD_PX", 30.0)
+VISION_SANITY_MAX_DELTA_DEG = _get_float("VISION_SANITY_MAX_DELTA_DEG", 40.0)
+VISION_HORIZONTAL_MAX_ERROR_DEG = _get_float("VISION_HORIZONTAL_MAX_ERROR_DEG", 20.0)
+VISION_ROI_BORDER_BLACK_PX = _get_int("VISION_ROI_BORDER_BLACK_PX", 2)
+VISION_ROI_EDGE_MARGIN_PX = _get_int("VISION_ROI_EDGE_MARGIN_PX", 4)
+VISION_ROI_BOTTOM_CLEAR_ROWS = _get_int("VISION_ROI_BOTTOM_CLEAR_ROWS", 10)
+VISION_DEBUG_MASK_FILE = _get_str("VISION_DEBUG_MASK_FILE", "debug_mask.jpg")
+
+# --------------------------------------------------------------------------- #
+# Heading controller settings
+# --------------------------------------------------------------------------- #
+CTRL_HYSTERESIS_HIGH = _get_float("CTRL_HYSTERESIS_HIGH", 5.0)
+CTRL_HYSTERESIS_LOW = _get_float("CTRL_HYSTERESIS_LOW", 3.0)
+
+# --------------------------------------------------------------------------- #
+# Driver defaults
+# --------------------------------------------------------------------------- #
+DRIVER_SERVO_CHANNEL = _get_int("DRIVER_SERVO_CHANNEL", 0)
+DRIVER_SERVO_PULSE_MIN_US = _get_int("DRIVER_SERVO_PULSE_MIN_US", 1000)
+DRIVER_SERVO_PULSE_MAX_US = _get_int("DRIVER_SERVO_PULSE_MAX_US", 2000)
+DRIVER_SERVO_ANGLE_MIN = _get_float("DRIVER_SERVO_ANGLE_MIN", 0.0)
+DRIVER_SERVO_ANGLE_MAX = _get_float("DRIVER_SERVO_ANGLE_MAX", 180.0)
+DRIVER_MOTOR_PWM_MIN = _get_int("DRIVER_MOTOR_PWM_MIN", 0)
+DRIVER_MOTOR_PWM_MAX = _get_int("DRIVER_MOTOR_PWM_MAX", 255)
+DRIVER_MOTOR_PWM_CENTRE = _get_int("DRIVER_MOTOR_PWM_CENTRE", 128)
