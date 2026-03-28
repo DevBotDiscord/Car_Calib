@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
-from settings import (
+from config.settings import (
     MAX_STEERING_OFFSET,
     PID_KD,
     PID_KI,
@@ -81,6 +81,8 @@ class RobotState:
             first :meth:`~vision.detector.LineDetector.get_reference_angle`
             call to verify the trapezoid ROI.
         fsm_state: Current FSM state.
+        calibration_active: Whether PID is actively calibrating back to
+            center heading (90°).
         pid_integral: Accumulated integral term for the PID controller.
         pid_last_error: Previous error for the derivative calculation.
     """
@@ -95,6 +97,7 @@ class RobotState:
     roi_bottom_width_pct: float = ROI_BOTTOM_WIDTH_PCT
     debug_mode: bool = ROBOT_DEBUG_MODE
     fsm_state: FSMState = FSMState.SEARCHING
+    calibration_active: bool = False
     pid_integral: float = 0.0
     pid_last_error: float = 0.0
 

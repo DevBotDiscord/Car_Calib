@@ -121,7 +121,7 @@ state.max_steering_offset = 45.0
 state.debug_mode = True
 ```
 
-Default values for `RobotState` are loaded from `.env` through `settings.py`.
+Default values for `RobotState` are loaded from `.env` through `config/settings.py`.
 Use `.env.example` for the full parameter list.
 
 ---

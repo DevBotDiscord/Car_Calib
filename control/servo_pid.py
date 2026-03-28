@@ -17,6 +17,7 @@ import time
 from typing import Optional
 
 from models.robot_state import FSMState, RobotState
+from config.settings import PID_CALIBRATION_CLEAR_TOLERANCE_DEG
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,25 @@ class ServoPID:
         state.transition_to(FSMState.LOCKED)
 
         error = theta - 90.0
+
+        # Calibration stage: active while there is a meaningful heading error.
+        if not state.calibration_active and abs(error) > PID_CALIBRATION_CLEAR_TOLERANCE_DEG:
+            state.calibration_active = True
+            logger.info(
+                "Calibration stage activated (theta=%.2f°, error=%.2f°)",
+                theta,
+                error,
+            )
+        elif state.calibration_active and abs(error) <= PID_CALIBRATION_CLEAR_TOLERANCE_DEG:
+            state.calibration_active = False
+            state.reset_pid_integral()
+            state.pid_last_error = 0.0
+            logger.info(
+                "Calibration stage cleared (theta=%.2f° near 90° within ±%.2f°)",
+                theta,
+                PID_CALIBRATION_CLEAR_TOLERANCE_DEG,
+            )
+
         p_term, i_term, d_term, raw_offset = self._compute_pid(error)
 
         # Clamp steering offset to ±max_steering_offset

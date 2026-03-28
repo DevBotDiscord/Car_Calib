@@ -16,7 +16,7 @@ Usage example (PCA9685 with adafruit-circuitpython-pca9685)::
 
 import logging
 
-from settings import (
+from config.settings import (
     DRIVER_SERVO_ANGLE_MAX,
     DRIVER_SERVO_ANGLE_MIN,
     DRIVER_SERVO_CHANNEL,

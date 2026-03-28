@@ -123,3 +123,23 @@ class TestFSMTransitions:
     def test_last_valid_servo_angle_updated_on_valid_signal(self, controller, state):
         result = controller.update(90.0)
         assert state.last_valid_servo_angle == pytest.approx(result)
+
+
+class TestCalibrationStage:
+    def test_calibration_stage_activates_when_error_large(self, controller, state):
+        """Calibration stage should become active when theta is away from 90°."""
+        assert state.calibration_active is False
+        controller.update(100.0)
+        assert state.calibration_active is True
+
+    def test_calibration_stage_clears_near_90_and_resets_pid_memory(self, controller, state):
+        """Returning near 90° should clear calibration stage and PID memory."""
+        controller.update(100.0)
+        state.pid_integral = 5.0
+        state.pid_last_error = 3.0
+
+        controller.update(90.0)
+
+        assert state.calibration_active is False
+        assert state.pid_integral == pytest.approx(0.0)
+        assert state.pid_last_error == pytest.approx(0.0)

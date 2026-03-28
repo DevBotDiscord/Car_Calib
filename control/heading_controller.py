@@ -14,7 +14,7 @@ import time
 from typing import Optional
 
 from models.robot_state import FSMState, RobotState
-from settings import CTRL_HYSTERESIS_HIGH, CTRL_HYSTERESIS_LOW
+from config.settings import CTRL_HYSTERESIS_HIGH, CTRL_HYSTERESIS_LOW
 
 logger = logging.getLogger(__name__)
 

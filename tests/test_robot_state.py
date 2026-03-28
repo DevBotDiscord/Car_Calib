@@ -3,7 +3,7 @@
 import pytest
 
 from models.robot_state import FSMState, PIDConstants, RobotState
-from settings import (
+from config.settings import (
     MAX_STEERING_OFFSET,
     PID_KD,
     PID_KI,

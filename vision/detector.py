@@ -24,7 +24,7 @@ import cv2
 import numpy as np
 
 from models.robot_state import RobotState
-from settings import (
+from config.settings import (
     VISION_ANGLE_THRESHOLD_DEG,
     VISION_BLUR_KERNEL_H,
     VISION_BLUR_KERNEL_W,
@@ -129,6 +129,7 @@ class LineDetector:
             tileGridSize=_CLAHE_TILE_GRID,
         )
         self._last_angle: Optional[float] = None
+        self._last_selected_group_bbox: Optional[tuple[int, int, int, int]] = None
         self._debug_saved: bool = False
 
     # ---------------------------------------------------------------------- #
@@ -564,7 +565,19 @@ class LineDetector:
             logger.debug("No line groups formed.")
             return None
 
-        theta_horizontal = self._select_reference(groups)
+        horizontal_groups = [
+            group
+            for group in groups
+            if self._is_horizontal_candidate(self._weighted_angle(group))
+        ]
+        if not horizontal_groups:
+            logger.debug(
+                "No horizontal candidate groups found (max error=%.1f°).",
+                _HORIZONTAL_MAX_ERROR_DEG,
+            )
+            return None
+
+        theta_horizontal = self._select_reference(horizontal_groups)
 
         if not self._is_horizontal_candidate(theta_horizontal):
             logger.debug(
@@ -621,22 +634,49 @@ class LineDetector:
         if lines is not None:
             groups = self._group_lines(lines)
             if groups:
-                reference_idx = self._select_reference_group_index(groups)
-                theta_horizontal = self._weighted_angle(groups[reference_idx])
-                horizontal_ok = self._is_horizontal_candidate(theta_horizontal)
+                horizontal_candidate_indices = [
+                    idx
+                    for idx, group in enumerate(groups)
+                    if self._is_horizontal_candidate(self._weighted_angle(group))
+                ]
+                horizontal_ok = len(horizontal_candidate_indices) > 0
                 if horizontal_ok:
+                    reference_idx = min(
+                        horizontal_candidate_indices,
+                        key=lambda idx: (
+                            self._group_horizontal_error(groups[idx]),
+                            -self._group_max_y(groups[idx]),
+                        ),
+                    )
+                    theta_horizontal = self._weighted_angle(groups[reference_idx])
                     theta_candidate = self._horizontal_to_vertical_angle(theta_horizontal)
                     sanity_ok = self._sanity_check(theta_candidate)
-                if horizontal_ok and sanity_ok:
-                    self._last_angle = theta_candidate
-                    theta_out = theta_candidate
+                    if sanity_ok:
+                        self._last_angle = theta_candidate
+                        theta_out = theta_candidate
 
         selected_group_bbox: Optional[tuple[int, int, int, int]] = None
         if reference_idx is not None:
             selected_group_bbox = self._group_bounding_rect(groups[reference_idx])
+            self._last_selected_group_bbox = selected_group_bbox
+        elif self._last_selected_group_bbox is not None:
+            # Reuse last known selected group box for continuity in debug view.
+            selected_group_bbox = self._last_selected_group_bbox
 
         hough_vis = self._draw_raw_lines(base, lines)
         grouped_vis = self._draw_grouped_lines(base, groups, reference_idx)
+        if selected_group_bbox is not None:
+            x, y, w, h = selected_group_bbox
+            cv2.rectangle(grouped_vis, (x, y), (x + w, y + h), (0, 255, 255), 2)
+            cv2.putText(
+                grouped_vis,
+                "Selected horizontal group",
+                (x, max(18, y - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 255),
+                2,
+            )
 
         debug_data: dict[str, Any] = {
             "gray": gray,

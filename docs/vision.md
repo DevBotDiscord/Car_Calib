@@ -180,7 +180,7 @@ A line parallel to the robot's forward path (vertical in the image) gives θ ≈
 
 ### Environment Configuration
 
-All detector constants are loaded from environment variables in `settings.py` (via `.env`).
+All detector constants are loaded from environment variables in `config/settings.py` (via `.env`).
 Use `.env.example` for the full list of detector variables.
 
 ### Sanity Check

@@ -38,7 +38,17 @@ The robot uses a downward-facing camera to detect floor tile-gap lines and appli
 ```
 UOG_AIS_AUTOBOT_CALIBRATION/
 ├── main.py                   # Entry point – 30 Hz control loop + CSV logging
+├── process_video.py          # Offline video pipeline with overlays/debug panels
 ├── requirements.txt          # Python dependencies
+├── config/                   # Centralized environment-backed settings
+│   ├── __init__.py
+│   └── settings.py
+├── runtime/                  # Shared runtime helper utilities
+│   ├── __init__.py
+│   └── video_runtime_helpers.py
+├── scripts/                  # Utility scripts (visualization/post-processing)
+│   ├── visualize_pid_simulation.py
+│   └── visualize_pid_simulation_standalone.py
 │
 ├── control/                  # PID heading controllers
 │   ├── __init__.py
@@ -71,7 +81,8 @@ UOG_AIS_AUTOBOT_CALIBRATION/
     ├── vision.md
     ├── control.md
     ├── drivers.md
-    └── models.md
+  ├── models.md
+  └── PID_SIMULATION_VISUALIZATION_GUIDE.md
 ```
 
 ---
@@ -212,7 +223,7 @@ Every control cycle appends one row to `run_log.csv`:
 
 ## Configuration
 
-All tunable parameters are now loaded from environment variables through `settings.py`.
+All tunable parameters are now loaded from environment variables through `config/settings.py`.
 
 1. Copy [.env.example](.env.example) to `.env`.
 2. Edit values in `.env`.

@@ -7,7 +7,7 @@ the NVIDIA Jetson Nano.
 
 import logging
 
-from settings import (
+from config.settings import (
     DRIVER_MOTOR_PWM_CENTRE,
     DRIVER_MOTOR_PWM_MAX,
     DRIVER_MOTOR_PWM_MIN,
