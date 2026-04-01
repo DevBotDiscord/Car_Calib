@@ -223,31 +223,38 @@ def draw_overlay(
     show_guidance_overlay: bool,
     start_calib_threshold_deg: float,
     stop_calib_threshold_deg: float,
+    overlay_scale: float = 1.0,
 ) -> np.ndarray:
     """Render pipeline values onto a frame before writing to output video."""
-    cv2.rectangle(frame, (8, 8), (660, 270), (0, 0, 0), -1)
+    s = max(0.5, min(1.5, overlay_scale))
+    x0 = int(8 * s)
+    y0 = int(8 * s)
+    x1 = int(660 * s)
+    y1 = int(270 * s)
+    cv2.rectangle(frame, (x0, y0), (x1, y1), (0, 0, 0), -1)
     cv2.addWeighted(frame, 0.65, frame, 0.35, 0, frame)
 
-    cv2.putText(frame, f"Frame: {frame_num}", (16, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    base_x = int(16 * s)
+    cv2.putText(frame, f"Frame: {frame_num}", (base_x, int(35 * s)), cv2.FONT_HERSHEY_SIMPLEX, 0.7 * s, (255, 255, 255), 2)
     cv2.putText(
         frame,
         f"Theta: {theta:.2f} deg" if theta is not None else "Theta: None",
-        (16, 62),
+        (base_x, int(62 * s)),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
+        0.7 * s,
         (0, 255, 255),
         2,
     )
-    cv2.putText(frame, f"Servo: {servo_angle:.2f} deg", (16, 89), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (80, 255, 80), 2)
-    cv2.putText(frame, f"State: {fsm_state}", (16, 116), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 120), 2)
+    cv2.putText(frame, f"Servo: {servo_angle:.2f} deg", (base_x, int(89 * s)), cv2.FONT_HERSHEY_SIMPLEX, 0.7 * s, (80, 255, 80), 2)
+    cv2.putText(frame, f"State: {fsm_state}", (base_x, int(116 * s)), cv2.FONT_HERSHEY_SIMPLEX, 0.7 * s, (255, 200, 120), 2)
 
     if theta is None and theta_for_overlay is not None:
         cv2.putText(
             frame,
             f"Theta source: STALE ({theta_for_overlay:.2f} deg)",
-            (16, 140),
+            (base_x, int(140 * s)),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.62,
+            0.62 * s,
             (80, 80, 255),
             2,
         )
@@ -261,39 +268,39 @@ def draw_overlay(
         else:
             direction = "LEFT"
 
-        direction_y = 168 if (theta is None and theta_for_overlay is not None) else 145
+        direction_y = int((168 if (theta is None and theta_for_overlay is not None) else 145) * s)
         cv2.putText(
             frame,
             f"Direction: {direction} ({servo_offset:+.2f} deg)",
-            (16, direction_y),
+            (base_x, direction_y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
+            0.65 * s,
             (180, 220, 255),
             2,
         )
         cv2.putText(
             frame,
             f"Start calibrating threshold: +/-{start_calib_threshold_deg:.1f} deg",
-            (16, direction_y + 25),
+            (base_x, direction_y + int(25 * s)),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.56,
+            0.56 * s,
             (120, 230, 255),
             2,
         )
         cv2.putText(
             frame,
             f"Stop calibrating threshold: +/-{stop_calib_threshold_deg:.1f} deg",
-            (16, direction_y + 47),
+            (base_x, direction_y + int(47 * s)),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.56,
+            0.56 * s,
             (120, 255, 150),
             2,
         )
 
-        gauge_x0 = 16
-        gauge_x1 = 640
-        gauge_y0 = direction_y + 60
-        gauge_y1 = gauge_y0 + 23
+        gauge_x0 = base_x
+        gauge_x1 = int(640 * s)
+        gauge_y0 = direction_y + int(60 * s)
+        gauge_y1 = gauge_y0 + int(23 * s)
         gauge_w = gauge_x1 - gauge_x0
 
         def theta_to_x(theta_deg: float) -> int:
@@ -316,12 +323,12 @@ def draw_overlay(
             theta_x = theta_to_x(theta_for_overlay)
             cv2.line(frame, (theta_x, gauge_y0 - 5), (theta_x, gauge_y1 + 5), (0, 0, 255), 2)
 
-        cv2.putText(frame, "0", (gauge_x0 - 2, gauge_y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 2)
-        cv2.putText(frame, "90", (center_x - 12, gauge_y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 220, 220), 2)
-        cv2.putText(frame, "180", (gauge_x1 - 22, gauge_y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 2)
+        cv2.putText(frame, "0", (gauge_x0 - int(2 * s), gauge_y0 - int(6 * s)), cv2.FONT_HERSHEY_SIMPLEX, 0.42 * s, (200, 200, 200), 2)
+        cv2.putText(frame, "90", (center_x - int(12 * s), gauge_y0 - int(6 * s)), cv2.FONT_HERSHEY_SIMPLEX, 0.42 * s, (220, 220, 220), 2)
+        cv2.putText(frame, "180", (gauge_x1 - int(22 * s), gauge_y0 - int(6 * s)), cv2.FONT_HERSHEY_SIMPLEX, 0.42 * s, (200, 200, 200), 2)
 
         legend = "Blue=accepted region | Green=stop-calibrating region | Red=current theta"
-        cv2.putText(frame, legend, (16, gauge_y1 + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (220, 220, 220), 2)
+        cv2.putText(frame, legend, (base_x, gauge_y1 + int(10 * s)), cv2.FONT_HERSHEY_SIMPLEX, 0.50 * s, (220, 220, 220), 2)
 
     return frame
 
@@ -462,6 +469,8 @@ def build_main_arg_parser(
     stream_port_default: int,
     stream_public_default: bool,
     stream_token_default: str,
+    frame_scale_default: float,
+    overlay_scale_default: float,
     camera_retry_limit_default: int,
     video_retry_limit_default: int,
     hardware_retry_limit_default: int,
@@ -495,6 +504,18 @@ def build_main_arg_parser(
         "--stream-token",
         default=stream_token_default,
         help="Optional token required by stream endpoints.",
+    )
+    parser.add_argument(
+        "--frame-scale",
+        type=float,
+        default=frame_scale_default,
+        help="Scale factor for output frames (preview/video/stream).",
+    )
+    parser.add_argument(
+        "--overlay-scale",
+        type=float,
+        default=overlay_scale_default,
+        help="Scale factor for overlay box/text size.",
     )
     parser.add_argument(
         "--camera-retry-limit",

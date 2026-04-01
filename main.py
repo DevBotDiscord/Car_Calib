@@ -32,6 +32,8 @@ from config.settings import (
     CTRL_HYSTERESIS_HIGH,
     CTRL_HYSTERESIS_LOW,
     MAIN_DEBUG_MODE,
+    MAIN_DEBUG_FRAME_SCALE,
+    MAIN_DEBUG_OVERLAY_SCALE,
     MAIN_DEBUG_VIDEO_OUTPUT,
     MAIN_FLIP_FRAME,
     MAIN_HARDWARE_RETRY_LIMIT,
@@ -149,6 +151,8 @@ def main() -> None:
         stream_port_default=MAIN_HTTPS_STREAM_PORT,
         stream_public_default=MAIN_HTTPS_STREAM_PUBLIC,
         stream_token_default=MAIN_HTTPS_TOKEN,
+        frame_scale_default=MAIN_DEBUG_FRAME_SCALE,
+        overlay_scale_default=MAIN_DEBUG_OVERLAY_SCALE,
         camera_retry_limit_default=MAIN_CAMERA_RETRY_LIMIT,
         video_retry_limit_default=MAIN_VIDEO_RETRY_LIMIT,
         hardware_retry_limit_default=MAIN_HARDWARE_RETRY_LIMIT,
@@ -340,6 +344,7 @@ def main() -> None:
                     show_guidance_overlay=args.show_guidance_overlay,
                     start_calib_threshold_deg=CTRL_HYSTERESIS_HIGH,
                     stop_calib_threshold_deg=CTRL_HYSTERESIS_LOW,
+                    overlay_scale=args.overlay_scale,
                 )
                 if args.show_detector_debug and detector_debug is not None:
                     frame_height, frame_width = annotated.shape[:2]
@@ -354,6 +359,15 @@ def main() -> None:
                     output_frame = cv2.vconcat([annotated, detector_panel])
                 else:
                     output_frame = annotated
+
+            if args.frame_scale > 1.0:
+                output_frame = cv2.resize(
+                    output_frame,
+                    dsize=None,
+                    fx=args.frame_scale,
+                    fy=args.frame_scale,
+                    interpolation=cv2.INTER_CUBIC,
+                )
 
             if args.write_debug_video:
                 if video_writer is None:
