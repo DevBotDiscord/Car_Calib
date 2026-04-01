@@ -91,7 +91,9 @@ class TestIntegralReset:
         controller.update(None)  # → GAPPING
         assert state.fsm_state == FSMState.GAPPING
         state.pid_integral = 99.9
-        controller.update(90.0)  # valid signal → back to LOCKED
+        controller.update(90.0)  # relock 1/3
+        controller.update(90.0)  # relock 2/3
+        controller.update(90.0)  # relock 3/3 -> LOCKED
         assert state.pid_integral == pytest.approx(0.0, abs=1.0)
 
     def test_no_integral_reset_in_consecutive_locked_frames(self, controller, state):
@@ -117,8 +119,23 @@ class TestFSMTransitions:
     def test_gapping_plus_valid_goes_locked(self, controller, state):
         state.transition_to(FSMState.LOCKED)
         controller.update(None)  # → GAPPING
-        controller.update(90.0)  # valid → LOCKED
+        controller.update(90.0)  # relock 1/3
+        controller.update(90.0)  # relock 2/3
+        controller.update(90.0)  # relock 3/3 -> LOCKED
         assert state.fsm_state == FSMState.LOCKED
+
+    def test_gapping_relock_debounce_holds_before_required_frames(self, controller, state):
+        """During relock debounce, FSM should remain GAPPING and hold last servo."""
+        state.transition_to(FSMState.LOCKED)
+        state.last_valid_servo_angle = 103.0
+        controller.update(None)  # -> GAPPING
+
+        hold_1 = controller.update(90.0)
+        hold_2 = controller.update(90.0)
+
+        assert hold_1 == pytest.approx(103.0)
+        assert hold_2 == pytest.approx(103.0)
+        assert state.fsm_state == FSMState.GAPPING
 
     def test_last_valid_servo_angle_updated_on_valid_signal(self, controller, state):
         result = controller.update(90.0)
@@ -141,5 +158,42 @@ class TestCalibrationStage:
         controller.update(90.0)
 
         assert state.calibration_active is False
+        assert state.pid_integral == pytest.approx(0.0)
+        assert state.pid_last_error == pytest.approx(0.0)
+
+    def test_small_error_below_start_threshold_keeps_servo_centered(self, state):
+        """Sub-threshold theta fluctuation must not start calibration."""
+        controller = ServoPID(state, start_calib_threshold_deg=5.0, stop_calib_threshold_deg=3.0)
+
+        result = controller.update(90.5)  # error=0.5° < start threshold
+
+        assert state.calibration_active is False
+        assert result == pytest.approx(state.servo_center_angle)
+        assert state.pid_integral == pytest.approx(0.0)
+        assert state.pid_last_error == pytest.approx(0.0)
+
+    def test_threshold_hysteresis_controls_start_and_stop(self, state):
+        """Calibration starts at high threshold and stops at low threshold."""
+        controller = ServoPID(state, start_calib_threshold_deg=5.0, stop_calib_threshold_deg=3.0)
+
+        # Below start threshold: should not calibrate.
+        result1 = controller.update(94.0)  # error=4.0°
+        assert state.calibration_active is False
+        assert result1 == pytest.approx(state.servo_center_angle)
+
+        # Cross start threshold: calibration should activate and move servo.
+        result2 = controller.update(96.0)  # error=6.0°
+        assert state.calibration_active is True
+        assert result2 > state.servo_center_angle
+
+        # Between stop and start: keep calibrating (hysteresis hold).
+        result3 = controller.update(94.0)  # error=4.0°
+        assert state.calibration_active is True
+        assert result3 != pytest.approx(state.servo_center_angle)
+
+        # Go below stop threshold: calibration should stop and recenter.
+        result4 = controller.update(92.5)  # error=2.5°
+        assert state.calibration_active is False
+        assert result4 == pytest.approx(state.servo_center_angle)
         assert state.pid_integral == pytest.approx(0.0)
         assert state.pid_last_error == pytest.approx(0.0)

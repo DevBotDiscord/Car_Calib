@@ -162,6 +162,8 @@ def build_detector_debug_panel(
         f"theta_candidate={detector_debug['theta_candidate']}",
         f"horizontal_ok={detector_debug['horizontal_ok']} sanity_ok={detector_debug['sanity_ok']}",
         f"theta_out={detector_debug['theta_output']}",
+        f"stale_output={detector_debug.get('stale_output', False)}",
+        f"min_group_len_px={detector_debug.get('min_group_total_length_px')}",
     ]
     for line in meta_lines:
         cv2.putText(panel, line, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (245, 245, 245), 1)
@@ -183,7 +185,7 @@ def draw_overlay(
     stop_calib_threshold_deg: float,
 ) -> np.ndarray:
     """Render pipeline values onto a frame before writing to output video."""
-    cv2.rectangle(frame, (8, 8), (660, 240), (0, 0, 0), -1)
+    cv2.rectangle(frame, (8, 8), (660, 270), (0, 0, 0), -1)
     cv2.addWeighted(frame, 0.65, frame, 0.35, 0, frame)
 
     cv2.putText(frame, f"Frame: {frame_num}", (16, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
@@ -199,6 +201,17 @@ def draw_overlay(
     cv2.putText(frame, f"Servo: {servo_angle:.2f} deg", (16, 89), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (80, 255, 80), 2)
     cv2.putText(frame, f"State: {fsm_state}", (16, 116), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 120), 2)
 
+    if theta is None and theta_for_overlay is not None:
+        cv2.putText(
+            frame,
+            f"Theta source: STALE ({theta_for_overlay:.2f} deg)",
+            (16, 140),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.62,
+            (80, 80, 255),
+            2,
+        )
+
     if show_guidance_overlay:
         servo_offset = servo_angle - servo_center_angle
         if abs(servo_offset) < 1.0:
@@ -208,10 +221,11 @@ def draw_overlay(
         else:
             direction = "LEFT"
 
+        direction_y = 168 if (theta is None and theta_for_overlay is not None) else 145
         cv2.putText(
             frame,
             f"Direction: {direction} ({servo_offset:+.2f} deg)",
-            (16, 145),
+            (16, direction_y),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.65,
             (180, 220, 255),
@@ -220,7 +234,7 @@ def draw_overlay(
         cv2.putText(
             frame,
             f"Start calibrating threshold: +/-{start_calib_threshold_deg:.1f} deg",
-            (16, 170),
+            (16, direction_y + 25),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.56,
             (120, 230, 255),
@@ -229,7 +243,7 @@ def draw_overlay(
         cv2.putText(
             frame,
             f"Stop calibrating threshold: +/-{stop_calib_threshold_deg:.1f} deg",
-            (16, 192),
+            (16, direction_y + 47),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.56,
             (120, 255, 150),
@@ -238,8 +252,8 @@ def draw_overlay(
 
         gauge_x0 = 16
         gauge_x1 = 640
-        gauge_y0 = 205
-        gauge_y1 = 228
+        gauge_y0 = direction_y + 60
+        gauge_y1 = gauge_y0 + 23
         gauge_w = gauge_x1 - gauge_x0
 
         def theta_to_x(theta_deg: float) -> int:
@@ -267,7 +281,7 @@ def draw_overlay(
         cv2.putText(frame, "180", (gauge_x1 - 22, gauge_y0 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 2)
 
         legend = "Blue=accepted region | Green=stop-calibrating region | Red=current theta"
-        cv2.putText(frame, legend, (16, 238), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (220, 220, 220), 2)
+        cv2.putText(frame, legend, (16, gauge_y1 + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (220, 220, 220), 2)
 
     return frame
 
@@ -282,10 +296,7 @@ def build_process_video_arg_parser(
     flip_frame_default: bool,
     start_calib_threshold_default: float,
     stop_calib_threshold_default: float,
-    show_pid_sim_default: bool,
-    sim_speed_deg_s_default: float,
-    main_frame_scale_default: float,
-    sim_panel_height_default: int,
+    frame_sleep_ms_default: float,
 ) -> argparse.ArgumentParser:
     """Build CLI argument parser for process_video entry point."""
     parser = argparse.ArgumentParser(
@@ -311,7 +322,6 @@ def build_process_video_arg_parser(
         show_guidance_overlay=show_guidance_overlay_default,
         show_detector_debug=show_detector_debug_default,
         flip_frame=flip_frame_default,
-        show_pid_sim=show_pid_sim_default,
     )
 
     parser.add_argument(
@@ -376,34 +386,10 @@ def build_process_video_arg_parser(
     )
 
     parser.add_argument(
-        "--show-pid-sim",
-        action="store_true",
-        dest="show_pid_sim",
-        help="Show bottom PID kinematic simulation panel.",
-    )
-    parser.add_argument(
-        "--no-pid-sim",
-        action="store_false",
-        dest="show_pid_sim",
-        help="Disable PID kinematic simulation panel.",
-    )
-    parser.add_argument(
-        "--sim-speed-deg-per-sec",
+        "--sleep-ms",
         type=float,
-        default=sim_speed_deg_s_default,
-        help="Abstract simulation speed in degrees per second (default: 120).",
-    )
-    parser.add_argument(
-        "--main-frame-scale",
-        type=float,
-        default=main_frame_scale_default,
-        help="Scale factor for top video frame when PID sim is shown (0..1).",
-    )
-    parser.add_argument(
-        "--sim-panel-height",
-        type=int,
-        default=sim_panel_height_default,
-        help="Height in pixels of PID simulation panel.",
+        default=frame_sleep_ms_default,
+        help="Extra delay in milliseconds added after each frame (default: 0).",
     )
 
     parser.add_argument(

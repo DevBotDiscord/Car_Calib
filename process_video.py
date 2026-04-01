@@ -11,17 +11,14 @@ import cv2
 from config.settings import (
     PROCESS_VIDEO_CSV_OUTPUT,
     PROCESS_VIDEO_FLIP_FRAME,
-    PROCESS_VIDEO_MAIN_FRAME_SCALE,
     PROCESS_VIDEO_OUTPUT,
     PROCESS_VIDEO_SEND_TO_SERVO,
     PROCESS_VIDEO_SHOW_DETECTOR_DEBUG,
     PROCESS_VIDEO_SHOW_GUIDANCE_OVERLAY,
-    PROCESS_VIDEO_SHOW_PID_SIM,
-    PROCESS_VIDEO_SIM_PANEL_HEIGHT,
-    PROCESS_VIDEO_SIM_SPEED_DEG_PER_SEC,
     PROCESS_VIDEO_START_CALIB_THRESHOLD_DEG,
     PROCESS_VIDEO_STOP_CALIB_THRESHOLD_DEG,
     PROCESS_VIDEO_TERMINAL_LOG,
+    PROCESS_VIDEO_FRAME_SLEEP_MS,
 )
 from control.servo_pid import ServoPID
 from drivers.servo_driver import ServoDriver
@@ -38,7 +35,6 @@ from runtime.video_runtime_helpers import (
     print_progress,
 )
 from vision.detector import LineDetector
-from visualization.pid_simulation import PIDSimulationVisualizer
 
 # --------------------------------------------------------------------------- #
 # Logging configuration
@@ -68,35 +64,29 @@ def process_video(
     start_calib_threshold_deg: float = PROCESS_VIDEO_START_CALIB_THRESHOLD_DEG,
     stop_calib_threshold_deg: float = PROCESS_VIDEO_STOP_CALIB_THRESHOLD_DEG,
     flip_frame: bool = PROCESS_VIDEO_FLIP_FRAME,
-    show_pid_sim: bool = PROCESS_VIDEO_SHOW_PID_SIM,
-    sim_speed_deg_per_sec: float = PROCESS_VIDEO_SIM_SPEED_DEG_PER_SEC,
-    main_frame_scale: float = PROCESS_VIDEO_MAIN_FRAME_SCALE,
-    sim_panel_height: int = PROCESS_VIDEO_SIM_PANEL_HEIGHT,
+    frame_sleep_ms: float = PROCESS_VIDEO_FRAME_SLEEP_MS,
 ) -> None:
     """Process a video file through the heading-hold control pipeline."""
     if start_calib_threshold_deg <= 0 or stop_calib_threshold_deg <= 0:
         raise ValueError("Calibration thresholds must be positive.")
     if stop_calib_threshold_deg > start_calib_threshold_deg:
         raise ValueError("stop_calib_threshold_deg must be <= start_calib_threshold_deg.")
-    if sim_speed_deg_per_sec <= 0:
-        raise ValueError("sim_speed_deg_per_sec must be positive.")
-    if not (0.2 <= main_frame_scale <= 1.0):
-        raise ValueError("main_frame_scale must be within [0.2, 1.0].")
-    if sim_panel_height < 120:
-        raise ValueError("sim_panel_height must be >= 120.")
+    if frame_sleep_ms < 0:
+        raise ValueError("frame_sleep_ms must be >= 0.")
+
+    frame_sleep_seconds = frame_sleep_ms / 1000.0
 
     configure_terminal_logging(terminal_log)
 
     state = RobotState()
     detector = LineDetector(state)
-    controller = ServoPID(state)
+    controller = ServoPID(
+        state,
+        start_calib_threshold_deg=start_calib_threshold_deg,
+        stop_calib_threshold_deg=stop_calib_threshold_deg,
+    )
     servo = ServoDriver() if send_to_servo else None
     csv_writer, csv_file = init_csv_logger(csv_output, _CSV_FIELDNAMES)
-    pid_sim = PIDSimulationVisualizer(
-        speed_deg_per_sec=sim_speed_deg_per_sec,
-        servo_center_angle=state.servo_center_angle,
-        max_steering_offset=state.max_steering_offset,
-    )
 
     try:
         cap, fps, total_frames, frame_width, frame_height = init_video(video_path, logger)
@@ -107,18 +97,8 @@ def process_video(
             if debug_panel_height % 2 != 0:
                 debug_panel_height += 1
 
-        sim_height = sim_panel_height if show_pid_sim else 0
-        if sim_height % 2 != 0:
-            sim_height += 1
-
         top_height = frame_height
-        if show_pid_sim:
-            top_height = int(frame_height * main_frame_scale)
-            top_height = max(180, top_height)
-            if top_height % 2 != 0:
-                top_height += 1
-
-        out_height = top_height + debug_panel_height + sim_height
+        out_height = top_height + debug_panel_height
         video_writer = init_video_writer(video_output, fps, frame_width, out_height)
     except RuntimeError as exc:
         logger.critical("Video initialisation failed: %s", exc)
@@ -127,14 +107,13 @@ def process_video(
         sys.exit(1)
 
     logger.info(
-        "Starting video processing pipeline (csv=%s, video=%s, detector_debug=%s, pid_sim=%s).",
+        "Starting video processing pipeline (csv=%s, video=%s, detector_debug=%s, frame_sleep_ms=%.1f).",
         csv_output,
         video_output,
         show_detector_debug,
-        show_pid_sim,
+        frame_sleep_ms,
     )
     frame_num = 0
-    dt_sim = 1.0 / max(fps, 1e-6)
     last_known_theta: float | None = None
 
     try:
@@ -218,23 +197,12 @@ def process_video(
                 )
                 frame_stack.append(detector_panel)
 
-            if show_pid_sim:
-                sim_state = pid_sim.update(theta_detected=theta, servo_angle=servo_angle, dt=dt_sim)
-                sim_panel = pid_sim.render(
-                    width=frame_width,
-                    height=sim_height,
-                    frame_num=frame_num,
-                    theta_detected=theta,
-                    servo_angle=servo_angle,
-                    fsm_state=state.fsm_state.name,
-                    state=sim_state,
-                )
-                frame_stack.append(sim_panel)
-
             output_frame = cv2.vconcat(frame_stack)
             video_writer.write(output_frame)
 
             print_progress(frame_num, total_frames)
+            if frame_sleep_seconds > 0:
+                time.sleep(frame_sleep_seconds)
 
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received - shutting down.")
@@ -269,10 +237,7 @@ def main() -> None:
         flip_frame_default=PROCESS_VIDEO_FLIP_FRAME,
         start_calib_threshold_default=PROCESS_VIDEO_START_CALIB_THRESHOLD_DEG,
         stop_calib_threshold_default=PROCESS_VIDEO_STOP_CALIB_THRESHOLD_DEG,
-        show_pid_sim_default=PROCESS_VIDEO_SHOW_PID_SIM,
-        sim_speed_deg_s_default=PROCESS_VIDEO_SIM_SPEED_DEG_PER_SEC,
-        main_frame_scale_default=PROCESS_VIDEO_MAIN_FRAME_SCALE,
-        sim_panel_height_default=PROCESS_VIDEO_SIM_PANEL_HEIGHT,
+        frame_sleep_ms_default=PROCESS_VIDEO_FRAME_SLEEP_MS,
     )
 
     args = parser.parse_args()
@@ -292,10 +257,7 @@ def main() -> None:
         start_calib_threshold_deg=args.start_calib_threshold,
         stop_calib_threshold_deg=args.stop_calib_threshold,
         flip_frame=args.flip_frame,
-        show_pid_sim=args.show_pid_sim,
-        sim_speed_deg_per_sec=args.sim_speed_deg_per_sec,
-        main_frame_scale=args.main_frame_scale,
-        sim_panel_height=args.sim_panel_height,
+        frame_sleep_ms=args.sleep_ms,
     )
 
 

@@ -1,15 +1,17 @@
 """Control module: servo PID controller for the heading-hold system.
 
 Behaviour:
-- **LOCKED state**: Compute ``e = θ - 90°``, apply PID, clamp steering
-  offset to ±``state.max_steering_offset``°, and output
-  ``servo_center_angle + steering_offset``.
+- **Hysteresis gating**: calibration starts only when ``|e|`` exceeds a
+    start threshold and stops when ``|e|`` goes below a stop threshold.
+- **LOCKED + active calibration**: Compute ``e = θ - 90°``, apply PID,
+    clamp steering offset to ±``state.max_steering_offset``°, and output
+    ``servo_center_angle + steering_offset``.
+- **LOCKED + inactive calibration**: Hold servo at ``servo_center_angle``
+    and avoid PID accumulation.
 - **Hold logic**: If vision returns ``None``, bypass PID and return
-  ``last_valid_servo_angle`` (GAPPING state).
-- **Integral reset**: On transition from GAPPING back to LOCKED, the
-  integral term is zeroed to prevent windup from the blind period.
-- **Logging**: Records timestamp, state, detected angle, servo output,
-  and individual PID terms (P, I, D) at INFO level.
+    ``last_valid_servo_angle`` (GAPPING state).
+- **Integral reset**: On transition from GAPPING back to LOCKED and on
+    calibration deactivation, the integral term is zeroed.
 """
 
 import logging
@@ -17,7 +19,11 @@ import time
 from typing import Optional
 
 from models.robot_state import FSMState, RobotState
-from config.settings import PID_CALIBRATION_CLEAR_TOLERANCE_DEG
+from config.settings import (
+    CTRL_HYSTERESIS_HIGH,
+    CTRL_HYSTERESIS_LOW,
+    CTRL_RELOCK_VALID_FRAMES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +35,24 @@ class ServoPID:
         state: Shared :class:`~models.robot_state.RobotState` instance.
     """
 
-    def __init__(self, state: RobotState) -> None:
+    def __init__(
+        self,
+        state: RobotState,
+        start_calib_threshold_deg: float = CTRL_HYSTERESIS_HIGH,
+        stop_calib_threshold_deg: float = CTRL_HYSTERESIS_LOW,
+    ) -> None:
+        if start_calib_threshold_deg <= 0 or stop_calib_threshold_deg <= 0:
+            raise ValueError("Calibration thresholds must be positive.")
+        if stop_calib_threshold_deg > start_calib_threshold_deg:
+            raise ValueError(
+                "stop_calib_threshold_deg must be <= start_calib_threshold_deg."
+            )
+
         self._state = state
+        self._start_calib_threshold_deg = start_calib_threshold_deg
+        self._stop_calib_threshold_deg = stop_calib_threshold_deg
+        self._relock_valid_frames_required = max(1, int(CTRL_RELOCK_VALID_FRAMES))
+        self._relock_valid_count = 0
         self._last_time: float = time.monotonic()
 
     # ---------------------------------------------------------------------- #
@@ -99,6 +121,7 @@ class ServoPID:
             # ---------------------------------------------------------------- #
             # Hold logic – vision lost
             # ---------------------------------------------------------------- #
+            self._relock_valid_count = 0
             if state.fsm_state == FSMState.LOCKED:
                 state.transition_to(FSMState.GAPPING)
 
@@ -113,30 +136,67 @@ class ServoPID:
         # Valid signal
         # -------------------------------------------------------------------- #
         if state.fsm_state == FSMState.GAPPING:
+            self._relock_valid_count += 1
+            if self._relock_valid_count < self._relock_valid_frames_required:
+                logger.info(
+                    "state=%s  theta=%.2f°  relock=%d/%d  servo=%.2f°  (debouncing)",
+                    state.fsm_state.name,
+                    theta,
+                    self._relock_valid_count,
+                    self._relock_valid_frames_required,
+                    state.last_valid_servo_angle,
+                )
+                return state.last_valid_servo_angle
+
+            self._relock_valid_count = 0
             # Re-entry after blind gap – reset integral to prevent windup
             state.reset_pid_integral()
+            state.pid_last_error = 0.0
+            state.calibration_active = False
+        else:
+            self._relock_valid_count = 0
 
         state.transition_to(FSMState.LOCKED)
 
         error = theta - 90.0
+        abs_error = abs(error)
 
-        # Calibration stage: active while there is a meaningful heading error.
-        if not state.calibration_active and abs(error) > PID_CALIBRATION_CLEAR_TOLERANCE_DEG:
+        # Hysteresis gating for calibration stage.
+        if (not state.calibration_active) and (abs_error >= self._start_calib_threshold_deg):
             state.calibration_active = True
             logger.info(
-                "Calibration stage activated (theta=%.2f°, error=%.2f°)",
+                "Calibration stage activated (theta=%.2f°, error=%.2f°, start=±%.2f°)",
                 theta,
                 error,
+                self._start_calib_threshold_deg,
             )
-        elif state.calibration_active and abs(error) <= PID_CALIBRATION_CLEAR_TOLERANCE_DEG:
+
+        if state.calibration_active and abs_error <= self._stop_calib_threshold_deg:
             state.calibration_active = False
             state.reset_pid_integral()
             state.pid_last_error = 0.0
             logger.info(
-                "Calibration stage cleared (theta=%.2f° near 90° within ±%.2f°)",
+                "Calibration stage cleared (theta=%.2f°, error=%.2f°, stop=±%.2f°)",
                 theta,
-                PID_CALIBRATION_CLEAR_TOLERANCE_DEG,
+                error,
+                self._stop_calib_threshold_deg,
             )
+
+        # If calibration is inactive, keep servo centered and avoid PID updates.
+        if not state.calibration_active:
+            servo_angle = state.servo_center_angle
+            state.last_valid_servo_angle = servo_angle
+            logger.info(
+                "state=%s  theta=%.2f°  error=%.2f°  calibration=inactive "
+                "(start=±%.2f°, stop=±%.2f°)  servo=%.2f°",
+                state.fsm_state.name,
+                theta,
+                error,
+                self._start_calib_threshold_deg,
+                self._stop_calib_threshold_deg,
+                servo_angle,
+            )
+            return servo_angle
 
         p_term, i_term, d_term, raw_offset = self._compute_pid(error)
 

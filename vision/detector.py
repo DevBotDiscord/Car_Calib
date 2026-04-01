@@ -40,11 +40,14 @@ from config.settings import (
     VISION_HOUGH_RHO,
     VISION_HOUGH_THETA_DEG,
     VISION_HOUGH_THRESHOLD,
+    VISION_CLUSTER_ANGLE_BIAS_DEG,
+    VISION_CLUSTER_RHO_BIAS_PX,
     VISION_MIDPOINT_THRESHOLD_PX,
     VISION_ROI_BORDER_BLACK_PX,
     VISION_ROI_BOTTOM_CLEAR_ROWS,
     VISION_ROI_EDGE_MARGIN_PX,
     VISION_SANITY_MAX_DELTA_DEG,
+    VISION_MIN_GROUP_TOTAL_LENGTH_PX,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,6 +77,11 @@ _HOUGH_MAX_LINE_GAP = VISION_HOUGH_MAX_LINE_GAP
 # Grouping thresholds
 _ANGLE_THRESHOLD: float = VISION_ANGLE_THRESHOLD_DEG
 _MIDPOINT_THRESHOLD: float = VISION_MIDPOINT_THRESHOLD_PX
+_CLUSTER_ANGLE_BIAS_DEG: float = VISION_CLUSTER_ANGLE_BIAS_DEG
+_CLUSTER_RHO_BIAS_PX: float = VISION_CLUSTER_RHO_BIAS_PX
+
+# Minimum combined segment length for a group to be considered valid.
+_MIN_GROUP_TOTAL_LENGTH_PX: float = VISION_MIN_GROUP_TOTAL_LENGTH_PX
 
 # Sanity check: discard frames where the angle shifts more than this amount
 _SANITY_MAX_DELTA: float = VISION_SANITY_MAX_DELTA_DEG
@@ -129,7 +137,6 @@ class LineDetector:
             tileGridSize=_CLAHE_TILE_GRID,
         )
         self._last_angle: Optional[float] = None
-        self._last_selected_group_bbox: Optional[tuple[int, int, int, int]] = None
         self._debug_saved: bool = False
 
     # ---------------------------------------------------------------------- #
@@ -324,7 +331,7 @@ class LineDetector:
     def _group_lines(
         self, lines: np.ndarray
     ) -> list[list[tuple[int, int, int, int, float, float, float, float]]]:
-        """Group segments with similar slopes (|Δθ| below threshold).
+        """Group segments by rho/theta proximity (normal form), PPHT-friendly.
 
         Each segment is represented as
         ``(x1, y1, x2, y2, angle_deg, length, mid_x, mid_y)``.
@@ -341,6 +348,18 @@ class LineDetector:
             angle, length, mid_x, mid_y = self._segment_props(x1, y1, x2, y2)
             segments.append((x1, y1, x2, y2, angle, length, mid_x, mid_y))
 
+        # Build Hough-like (rho, theta) descriptors from each segment so we can
+        # cluster similarly to the classic Hough-lines approach.
+        polar: list[tuple[float, float]] = []
+        for seg in segments:
+            angle = seg[4]
+            mid_x = seg[6]
+            mid_y = seg[7]
+            theta_normal = (angle + 90.0) % 180.0
+            theta_rad = math.radians(theta_normal)
+            rho = (mid_x * math.cos(theta_rad)) + (mid_y * math.sin(theta_rad))
+            polar.append((rho, theta_normal))
+
         assigned = [False] * len(segments)
         groups: list[list] = []
 
@@ -352,8 +371,12 @@ class LineDetector:
             for j in range(i + 1, len(segments)):
                 if assigned[j]:
                     continue
-                seg_j = segments[j]
-                if _angle_diff(seg_i[4], seg_j[4]) < _ANGLE_THRESHOLD: #Group by angle similarity
+                rho_i, theta_i = polar[i]
+                rho_j, theta_j = polar[j]
+                theta_diff = _angle_diff(theta_i, theta_j)
+                rho_diff = abs(rho_i - rho_j)
+                if theta_diff < _CLUSTER_ANGLE_BIAS_DEG and rho_diff < _CLUSTER_RHO_BIAS_PX:
+                    seg_j = segments[j]
                     group.append(seg_j)
                     assigned[j] = True
             groups.append(group)
@@ -383,6 +406,31 @@ class LineDetector:
         return sum(seg[4] * seg[5] for seg in group) / total_length
 
     @staticmethod
+    def _group_fit_angle(
+        group: list[tuple[int, int, int, int, float, float, float, float]],
+    ) -> float:
+        """Estimate group angle via line fitting to reduce segment-level jitter."""
+        if len(group) == 1:
+            return group[0][4]
+
+        pts: list[tuple[float, float]] = []
+        for seg in group:
+            pts.append((float(seg[0]), float(seg[1])))
+            pts.append((float(seg[2]), float(seg[3])))
+
+        if len(pts) < 2:
+            return group[0][4]
+
+        arr = np.array(pts, dtype=np.float32).reshape((-1, 1, 2))
+        line = cv2.fitLine(arr, cv2.DIST_L2, 0, 0.01, 0.01)
+        vx_f = float(line[0][0])
+        vy_f = float(line[1][0])
+        if abs(vx_f) < 1e-9 and abs(vy_f) < 1e-9:
+            return LineDetector._weighted_angle(group)
+
+        return math.degrees(math.atan2(vy_f, vx_f)) % 180.0
+
+    @staticmethod
     def _group_max_y(
         group: list[tuple[int, int, int, int, float, float, float, float]],
     ) -> float:
@@ -396,12 +444,19 @@ class LineDetector:
         """
         return max(seg[7] for seg in group)
 
+    @staticmethod
+    def _group_total_length(
+        group: list[tuple[int, int, int, int, float, float, float, float]],
+    ) -> float:
+        """Return total segment length in pixels for *group*."""
+        return sum(seg[5] for seg in group)
+
     def _group_horizontal_error(
         self,
         group: list[tuple[int, int, int, int, float, float, float, float]],
     ) -> float:
         """Return distance (degrees) from perfect horizontal (0°/180°)."""
-        angle = self._weighted_angle(group)
+        angle = self._group_fit_angle(group)
         return _angle_diff(angle, 0.0)
 
     @staticmethod
@@ -446,7 +501,7 @@ class LineDetector:
             Length-weighted average angle of the winning group in degrees.
         """
         best_group = groups[self._select_reference_group_index(groups)]
-        return self._weighted_angle(best_group)
+        return self._group_fit_angle(best_group)
 
     @staticmethod
     def _group_bounding_rect(
@@ -568,7 +623,8 @@ class LineDetector:
         horizontal_groups = [
             group
             for group in groups
-            if self._is_horizontal_candidate(self._weighted_angle(group))
+            if self._is_horizontal_candidate(self._group_fit_angle(group))
+            and self._group_total_length(group) >= _MIN_GROUP_TOTAL_LENGTH_PX
         ]
         if not horizontal_groups:
             logger.debug(
@@ -629,6 +685,7 @@ class LineDetector:
         theta_horizontal: Optional[float] = None
         horizontal_ok = False
         sanity_ok = False
+        stale_output = False
         theta_out: Optional[float] = None
 
         if lines is not None:
@@ -637,7 +694,8 @@ class LineDetector:
                 horizontal_candidate_indices = [
                     idx
                     for idx, group in enumerate(groups)
-                    if self._is_horizontal_candidate(self._weighted_angle(group))
+                    if self._is_horizontal_candidate(self._group_fit_angle(group))
+                    and self._group_total_length(group) >= _MIN_GROUP_TOTAL_LENGTH_PX
                 ]
                 horizontal_ok = len(horizontal_candidate_indices) > 0
                 if horizontal_ok:
@@ -648,33 +706,47 @@ class LineDetector:
                             -self._group_max_y(groups[idx]),
                         ),
                     )
-                    theta_horizontal = self._weighted_angle(groups[reference_idx])
+                    theta_horizontal = self._group_fit_angle(groups[reference_idx])
                     theta_candidate = self._horizontal_to_vertical_angle(theta_horizontal)
                     sanity_ok = self._sanity_check(theta_candidate)
                     if sanity_ok:
                         self._last_angle = theta_candidate
                         theta_out = theta_candidate
+                    else:
+                        stale_output = self._last_angle is not None
+                else:
+                    stale_output = self._last_angle is not None
+            else:
+                stale_output = self._last_angle is not None
+        elif self._last_angle is not None:
+            stale_output = True
 
         selected_group_bbox: Optional[tuple[int, int, int, int]] = None
         if reference_idx is not None:
             selected_group_bbox = self._group_bounding_rect(groups[reference_idx])
-            self._last_selected_group_bbox = selected_group_bbox
-        elif self._last_selected_group_bbox is not None:
-            # Reuse last known selected group box for continuity in debug view.
-            selected_group_bbox = self._last_selected_group_bbox
 
         hough_vis = self._draw_raw_lines(base, lines)
         grouped_vis = self._draw_grouped_lines(base, groups, reference_idx)
         if selected_group_bbox is not None:
             x, y, w, h = selected_group_bbox
-            cv2.rectangle(grouped_vis, (x, y), (x + w, y + h), (0, 255, 255), 2)
+            cv2.rectangle(grouped_vis, (x, y), (x + w, y + h), (255, 80, 80), 2)
             cv2.putText(
                 grouped_vis,
                 "Selected horizontal group",
                 (x, max(18, y - 6)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
-                (0, 255, 255),
+                (255, 80, 80),
+                2,
+            )
+        elif stale_output:
+            cv2.putText(
+                grouped_vis,
+                "STALE: no current selected group",
+                (10, 24),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (80, 80, 255),
                 2,
             )
 
@@ -694,10 +766,14 @@ class LineDetector:
             "horizontal_ok": horizontal_ok,
             "sanity_ok": sanity_ok,
             "theta_output": theta_out,
+            "stale_output": stale_output,
             "horizontal_max_error": _HORIZONTAL_MAX_ERROR_DEG,
             "sanity_max_delta": _SANITY_MAX_DELTA,
             "angle_threshold": _ANGLE_THRESHOLD,
+            "cluster_angle_bias_deg": _CLUSTER_ANGLE_BIAS_DEG,
+            "cluster_rho_bias_px": _CLUSTER_RHO_BIAS_PX,
             "midpoint_threshold": _MIDPOINT_THRESHOLD,
+            "min_group_total_length_px": _MIN_GROUP_TOTAL_LENGTH_PX,
             "hough_threshold": _HOUGH_THRESHOLD,
             "hough_min_line_len": _HOUGH_MIN_LINE_LEN,
             "hough_max_line_gap": _HOUGH_MAX_LINE_GAP,

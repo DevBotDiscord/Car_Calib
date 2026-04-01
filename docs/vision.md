@@ -26,7 +26,8 @@ Frame
   ▼ (2) Pre-process     – CLAHE equalisation + 5×5 Gaussian blur
   ▼ (3) Edge detection  – Canny
   ▼ (4) Line detection  – Probabilistic Hough Transform (PPHT)
-  ▼ (5) Grouping        – merge segments with |Δθ| below configured threshold
+  ▼ (5) Grouping        – cluster segments in normal space (rho/theta)
+  ▼ (6) Group filter    – keep only horizontal candidates with enough total length
   ▼ (6) Reference       – pick the most horizontal group (angle nearest 0°/180°)
   ▼ (7) Transform       – convert horizontal angle to vertical-equivalent angle
   ▼ (8) Sanity check    – reject if Δθ from previous frame > configured limit
@@ -141,15 +142,27 @@ detector.get_reference_angle(frame)  # writes debug_mask.jpg
 
 ### Grouping Logic
 
-After PPHT, segments are merged into groups using a greedy algorithm:
+After PPHT, segments are merged into groups in normal-space coordinates.
 
-1. For each unassigned segment **i**, create a new group.
-2. Add any other unassigned segment **j** that satisfies:
-  - `|Δθ(i, j)| < ANGLE_THRESHOLD` (similar slope)
+For each segment, the detector computes:
+
+- `theta_normal = (theta_segment + 90) mod 180`
+- `rho = x_mid * cos(theta_normal) + y_mid * sin(theta_normal)`
+
+Then a greedy clustering step groups segments when both conditions pass:
+
+- `|Δtheta_normal| < VISION_CLUSTER_ANGLE_BIAS_DEG`
+- `|Δrho| < VISION_CLUSTER_RHO_BIAS_PX`
+
+This mirrors classic Hough clustering behavior while still using PPHT segments.
+
+Each horizontal candidate group must also satisfy:
+
+- total segment length >= `VISION_MIN_GROUP_TOTAL_LENGTH_PX`
 
 ### Reference Selection
 
-The group whose **length-weighted angle is nearest horizontal** (closest to `0°` or `180°`) is chosen as the reference.  
+The group whose **fitted angle is nearest horizontal** (closest to `0°` or `180°`) is chosen as the reference.  
 If two groups are equally horizontal, the tie is broken by choosing the one with the higher y-midpoint (closer to the robot).  
 The selected horizontal angle is then converted to a vertical-equivalent output angle:
 
@@ -162,11 +175,7 @@ Examples:
 - `20° -> 110°`
 - `160° -> 70°`
 
-The horizontal group angle itself is still computed as the **length-weighted average** of all segments in the winning group:
-
-```
-θ_avg = Σ(θ_i · length_i) / Σ(length_i)
-```
+For multi-segment groups, angle is estimated from a fitted line through segment endpoints (`cv2.fitLine`) to reduce jitter. For single-segment groups, the original segment angle is used.
 
 ### Angle Convention
 
@@ -201,13 +210,15 @@ This prevents sudden large steering corrections caused by transient noise.
 | `_CANNY_HIGH` | `150` | Canny upper hysteresis threshold. |
 | `_ROI_BORDER_BLACK_PX` | `2` px | Polyline thickness for initial ROI border blacking. |
 | `_ROI_EDGE_MARGIN_PX` | `4` px | Inward erosion radius to suppress boundary-induced Canny responses. |
-| `_ROI_BOTTOM_CLEAR_ROWS` | `3` rows | Number of bottom rows cleared in edge map to remove boundary blur artifacts. |
+| `_ROI_BOTTOM_CLEAR_ROWS` | `10` rows | Number of bottom rows cleared in edge map to remove boundary blur artifacts. |
 | `_HOUGH_RHO` | `1` px | Distance resolution for Hough transform. |
 | `_HOUGH_THETA` | `π/180` rad | Angle resolution for Hough transform. |
 | `_HOUGH_THRESHOLD` | `50` | Minimum votes to consider a Hough line. |
 | `_HOUGH_MIN_LINE_LEN` | `30` px | Minimum accepted segment length. |
 | `_HOUGH_MAX_LINE_GAP` | `10` px | Maximum collinear gap to bridge two segments. |
-| `_ANGLE_THRESHOLD` | `5.0°` | Max angle difference to merge segments into a group. |
+| `_CLUSTER_ANGLE_BIAS_DEG` | `4.0°` | Max normal-space angle gap used in segment clustering. |
+| `_CLUSTER_RHO_BIAS_PX` | `25.0` px | Max normal-space rho gap used in segment clustering. |
 | `_MIDPOINT_THRESHOLD` | `30.0` px | Midpoint threshold constant (retained for debug metadata). |
+| `_MIN_GROUP_TOTAL_LENGTH_PX` | `120.0` px | Minimum total segment length for a candidate horizontal group. |
 | `_HORIZONTAL_MAX_ERROR_DEG` | `20.0°` | Maximum horizontal-angle error before candidate rejection. |
 | `_SANITY_MAX_DELTA` | `40.0°` | Max inter-frame angle jump before rejection. |

@@ -47,7 +47,6 @@ UOG_AIS_AUTOBOT_CALIBRATION/
 │   ├── __init__.py
 │   └── video_runtime_helpers.py
 ├── scripts/                  # Utility scripts (visualization/post-processing)
-│   ├── visualize_pid_simulation.py
 │   └── visualize_pid_simulation_standalone.py
 │
 ├── control/                  # PID heading controllers
@@ -81,8 +80,8 @@ UOG_AIS_AUTOBOT_CALIBRATION/
     ├── vision.md
     ├── control.md
     ├── drivers.md
-  ├── models.md
-  └── PID_SIMULATION_VISUALIZATION_GUIDE.md
+    ├── models.md
+    └── LOG_VISUALIZATION_GUIDE.md
 ```
 
 ---
@@ -198,6 +197,12 @@ Enable 180° frame flip when needed:
 python process_video.py videos/6.mp4 --flip-frame
 ```
 
+Add a small frame delay when reviewing output slowly:
+
+```bash
+python process_video.py videos/6.mp4 --sleep-ms 10
+```
+
 ### Changing the camera index
 
 Set it in `.env`:
@@ -249,6 +254,7 @@ All tunable parameters are now loaded from environment variables through `config
 | `PROCESS_VIDEO_SHOW_GUIDANCE_OVERLAY` | `false` | Enable guidance overlay by default. |
 | `PROCESS_VIDEO_SHOW_DETECTOR_DEBUG` | `false` | Enable detector debug panel by default. |
 | `PROCESS_VIDEO_FLIP_FRAME` | `false` | Flip input frame by 180° before processing. |
+| `PROCESS_VIDEO_FRAME_SLEEP_MS` | `0.0` | Extra delay after each processed frame (ms). |
 | `PROCESS_VIDEO_START_CALIB_THRESHOLD_DEG` | `5.0` | Outer accepted range around 90°. |
 | `PROCESS_VIDEO_STOP_CALIB_THRESHOLD_DEG` | `3.0` | Inner stop-calibrating range around 90°. |
 
@@ -260,8 +266,12 @@ All tunable parameters are now loaded from environment variables through `config
 | `SERVO_CENTER_ANGLE` | `90.0` | Servo neutral position. |
 | `MAX_STEERING_OFFSET` | `30.0` | Maximum steering correction. |
 | `ROI_HEIGHT_PCT`, `ROI_TOP_WIDTH_PCT`, `ROI_BOTTOM_WIDTH_PCT` | `0.6`, `0.75`, `1.0` | ROI shape parameters. |
+| `VISION_CLUSTER_ANGLE_BIAS_DEG` | `4.0` | Max normal-space angle gap for segment clustering. |
+| `VISION_CLUSTER_RHO_BIAS_PX` | `25.0` | Max normal-space rho gap (px) for segment clustering. |
+| `VISION_MIN_GROUP_TOTAL_LENGTH_PX` | `120.0` | Min total segment length to keep a horizontal candidate group. |
 | `VISION_HORIZONTAL_MAX_ERROR_DEG` | `20.0` | Reject selected groups that are not horizontal enough. |
 | `VISION_SANITY_MAX_DELTA_DEG` | `40.0` | Max inter-frame angle jump before rejection. |
+| `CTRL_RELOCK_VALID_FRAMES` | `3` | Valid-frame debounce count before re-entering `LOCKED` from `GAPPING`. |
 
 See [.env.example](.env.example) for the complete parameter list.
 
@@ -277,6 +287,7 @@ Detailed documentation for each module is in the [`docs/`](docs/) directory:
 | Control | `control/` | [docs/control.md](docs/control.md) |
 | Drivers | `drivers/` | [docs/drivers.md](docs/drivers.md) |
 | Models | `models/` | [docs/models.md](docs/models.md) |
+| Logs and plots | `scripts/` | [docs/LOG_VISUALIZATION_GUIDE.md](docs/LOG_VISUALIZATION_GUIDE.md) |
 
 ---
 

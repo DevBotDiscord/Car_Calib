@@ -106,6 +106,10 @@ PID defaults are env-configurable via `PID_KP`, `PID_KI`, and `PID_KD` in `.env`
 `ServoPID` converts the raw tile-gap angle θ from the vision pipeline into a **servo angle command**.  
 It includes:
 
+- **Start/stop calibration hysteresis** — servo changes begin only when error
+	crosses the start threshold and stop once error returns within the stop threshold.
+- **Re-lock debounce** — when vision returns from `GAPPING`, the controller waits for
+	`CTRL_RELOCK_VALID_FRAMES` consecutive valid detections before switching back to `LOCKED`.
 - **Anti-windup** — clamps the integral accumulator to prevent the integral term from exceeding the steering clamp range.
 - **Hold logic** — during vision loss (`GAPPING` state), the last valid servo angle is returned.
 - **Integral reset** — on re-entry from `GAPPING`, the integral is zeroed.
@@ -135,7 +139,7 @@ ServoPID(state: RobotState)
 Compute and return the servo angle command for the current control cycle.
 
 ```python
-pid = ServoPID(state)
+pid = ServoPID(state, start_calib_threshold_deg=5.0, stop_calib_threshold_deg=3.0)
 servo_angle = pid.update(87.5)   # θ from vision
 servo_angle = pid.update(None)   # vision lost → hold last angle
 ```
@@ -145,6 +149,12 @@ servo_angle = pid.update(None)   # vision lost → hold last angle
 | `theta` | `Optional[float]` | Tile-gap angle from the vision module (degrees, relative to x-axis), or `None` if no line was detected. |
 
 **Returns:** `float` — servo angle command in degrees.
+
+When calibration is **inactive** (error below start threshold and not previously active),
+`ServoPID` returns `servo_center_angle` and does not accumulate PID integral.
+
+When calibration is **active**, PID output is applied until error drops below the
+stop threshold.
 
 ### Servo Angle Calculation
 
@@ -180,5 +190,6 @@ When `theta` is `None`:
 
 When a valid signal is restored from `GAPPING`:
 
-1. The integral term is reset (`state.reset_pid_integral()`).
-2. The FSM transitions to `LOCKED`.
+1. Valid detections are counted until `CTRL_RELOCK_VALID_FRAMES` is reached.
+2. During this debounce period, the controller keeps returning `last_valid_servo_angle` and stays in `GAPPING`.
+3. Once the required valid count is reached, integral/error state is reset and FSM transitions to `LOCKED`.
