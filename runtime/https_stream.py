@@ -114,16 +114,15 @@ class HttpsMjpegServer:
 
         app = FastAPI(title="Robot Debug Stream", docs_url=None, redoc_url=None)
 
-        def _check_token(request: Any) -> None:
+        def _check_token(candidate: str) -> None:
             if not self._token:
                 return
-            candidate = request.query_params.get("token", "")
             if candidate != self._token:
                 raise HTTPException(status_code=401, detail="Unauthorized")
 
         @app.get(self._status_path)
-        def status(request: Any) -> Any:
-            _check_token(request)
+        def status(token: str = "") -> Any:
+            _check_token(token)
             _, ts, telemetry = self._frame_store.snapshot()
             return JSONResponse(
                 {
@@ -135,16 +134,16 @@ class HttpsMjpegServer:
             )
 
         @app.get(self._snapshot_path)
-        def snapshot(request: Any) -> Any:
-            _check_token(request)
+        def snapshot(token: str = "") -> Any:
+            _check_token(token)
             jpeg, _, _ = self._frame_store.snapshot()
             if jpeg is None:
                 return Response(status_code=503, content=b"No frame available")
             return Response(content=jpeg, media_type="image/jpeg")
 
         @app.get(self._stream_path)
-        def stream(request: Any) -> Any:
-            _check_token(request)
+        def stream(token: str = "") -> Any:
+            _check_token(token)
 
             def generate() -> Any:
                 boundary = b"--frame\r\n"
