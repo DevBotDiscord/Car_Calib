@@ -45,6 +45,7 @@ UOG_AIS_AUTOBOT_CALIBRATION/
 │   └── settings.py
 ├── runtime/                  # Shared runtime helper utilities
 │   ├── __init__.py
+│   ├── https_stream.py       # HTTPS MJPEG stream + self-signed cert helpers
 │   └── video_runtime_helpers.py
 ├── scripts/                  # Utility scripts (visualization/post-processing)
 │   └── visualize_pid_simulation_standalone.py
@@ -178,6 +179,28 @@ pip install -r requirements.txt
 python main.py
 ```
 
+Realtime debug mode with overlays, detector panel, CSV enrichment, and optional video write:
+
+```bash
+python main.py --debug --show-guidance-overlay --show-detector-debug --write-debug-video
+```
+
+Enable HTTPS MJPEG stream for another device on LAN:
+
+```bash
+python main.py --debug --stream --public --host 0.0.0.0 --port 8443 --show-preview
+```
+
+If token is configured, append `?token=...` when opening stream endpoints.
+
+Stream endpoints:
+
+- `https://<device-a-ip>:8443/stream.mjpg`
+- `https://<device-a-ip>:8443/snapshot.jpg`
+- `https://<device-a-ip>:8443/status`
+
+TLS certificate and key are auto-generated (self-signed) when missing. For LAN testing, a browser trust warning is expected on first access.
+
 The process will:
 1. Open the camera at index `0`.
 2. Start the 30 Hz heading-hold control loop.
@@ -217,12 +240,24 @@ Every control cycle appends one row to `run_log.csv`:
 
 | Column | Description |
 |--------|-------------|
-| `timestamp` | `time.monotonic()` value at loop start |
+| `mono_timestamp` | `time.monotonic()` value at loop start |
+| `utc_timestamp` | Wall-clock UTC timestamp (`ISO-8601`) |
+| `loop_ms` | Loop duration (ms) |
+| `loop_overrun_ms` | Positive overrun above target period |
 | `fsm_state` | FSM state name (`SEARCHING`, `LOCKED`, or `GAPPING`) |
+| `calibration_active` | Calibration gate status (`0`/`1`) |
 | `theta` | Detected tile-gap angle θ (degrees), empty when `None` |
+| `theta_source` | `live`, `stale`, or `none` |
+| `theta_horizontal` | Selected horizontal-group angle before conversion |
+| `reference_group_index` | Chosen line-group index from detector clustering |
+| `selected_group_bbox` | Bounding box of chosen group (`x,y,w,h`) |
+| `lines_count`, `groups_count` | Detector raw/grouped counts |
 | `servo_angle` | Servo angle command sent to hardware (degrees) |
+| `servo_offset` | Servo angle offset from center |
+| `pid_p_term`, `pid_i_term`, `pid_d_term` | PID component snapshots |
 | `pid_integral` | Current accumulated integral term |
 | `pid_last_error` | Error value from the previous cycle |
+| `hardware_send_latency_ms` | Servo send latency estimate |
 
 ---
 
@@ -244,6 +279,19 @@ All tunable parameters are now loaded from environment variables through `config
 | `MAIN_CAMERA_INDEX` | `0` | Camera index for `main.py`. |
 | `MAIN_FLIP_FRAME` | `false` | Flip camera frame by 180° in `main.py`. |
 | `MAIN_CSV_LOG_FILE` | `run_log.csv` | CSV path for live mode logging. |
+| `MAIN_DEBUG_MODE` | `false` | Enable debug visuals/telemetry path in `main.py`. |
+| `MAIN_SHOW_PREVIEW` | `false` | Show local OpenCV preview window. |
+| `MAIN_SHOW_DETECTOR_DEBUG` | `false` | Include detector panel under the main frame. |
+| `MAIN_WRITE_DEBUG_VIDEO` | `false` | Enable annotated live video output. |
+| `MAIN_DEBUG_VIDEO_OUTPUT` | `main_debug.mp4` | Base path for live debug video output. |
+| `MAIN_CAMERA_RETRY_LIMIT` | `3` | Camera init retry count before abort. |
+| `MAIN_VIDEO_RETRY_LIMIT` | `5` | Consecutive video-write failures before abort. |
+| `MAIN_HARDWARE_RETRY_LIMIT` | `5` | Consecutive servo-send failures before abort. |
+| `MAIN_HTTPS_STREAM_ENABLED` | `false` | Enable HTTPS MJPEG stream server. |
+| `MAIN_HTTPS_STREAM_HOST` | `127.0.0.1` | Default stream bind host. |
+| `MAIN_HTTPS_STREAM_PORT` | `8443` | HTTPS stream port. |
+| `MAIN_HTTPS_CERT_FILE` | `certs/main_stream_cert.pem` | TLS certificate file path. |
+| `MAIN_HTTPS_KEY_FILE` | `certs/main_stream_key.pem` | TLS private key path. |
 
 ### process_video Settings
 

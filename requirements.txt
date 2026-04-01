@@ -8,3 +8,8 @@ numpy>=1.21.0
 python-dotenv>=1.0.0
 
 matplotlib>=3.4.0
+
+# HTTPS MJPEG stream server
+fastapi>=0.110.0
+uvicorn>=0.29.0
+cryptography>=42.0.0

@@ -7,6 +7,7 @@ import csv
 import logging
 import os
 import time
+from datetime import datetime
 from typing import Any, TextIO, cast
 
 import cv2
@@ -61,12 +62,51 @@ def init_video_writer(path: str, fps: float, width: int, height: int) -> cv2.Vid
     return writer
 
 
+def init_live_video_writer(path: str, fps: float, width: int, height: int) -> tuple[cv2.VideoWriter, str]:
+    """Create a live-camera debug writer with timestamped filename.
+
+    Returns ``(writer, resolved_path)``.
+    """
+    root, ext = os.path.splitext(path)
+    if not ext:
+        ext = ".mp4"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    resolved_path = f"{root}_{timestamp}{ext}"
+    folder = os.path.dirname(resolved_path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    return init_video_writer(resolved_path, fps, width, height), resolved_path
+
+
 def init_camera(index: int) -> cv2.VideoCapture:
     """Open a camera device and validate it."""
     cap = cv2.VideoCapture(index)
     if not cap.isOpened():
         raise RuntimeError(f"Failed to open camera at index {index}.")
     return cap
+
+
+def init_camera_with_retries(index: int, retries: int, logger: logging.Logger) -> cv2.VideoCapture:
+    """Open a camera with bounded retries, logging each failed attempt."""
+    attempts = max(1, retries + 1)
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return init_camera(index)
+        except RuntimeError as exc:
+            last_exc = exc
+            logger.warning(
+                "Camera init failed (attempt %d/%d): %s",
+                attempt,
+                attempts,
+                exc,
+            )
+            if attempt < attempts:
+                time.sleep(0.25)
+
+    raise RuntimeError(
+        f"Failed to open camera after {attempts} attempts."
+    ) from last_exc
 
 
 def init_csv_logger(path: str, fieldnames: list[str]) -> tuple[csv.DictWriter, TextIO]:
@@ -404,4 +444,105 @@ def build_process_video_arg_parser(
         default=stop_calib_threshold_default,
         help="Stop calibrating threshold in degrees around 90.",
     )
+    return parser
+
+
+def build_main_arg_parser(
+    csv_output_default: str,
+    debug_mode_default: bool,
+    terminal_log_default: bool,
+    show_preview_default: bool,
+    show_guidance_overlay_default: bool,
+    show_detector_debug_default: bool,
+    write_debug_video_default: bool,
+    debug_video_output_default: str,
+    flip_frame_default: bool,
+    stream_enabled_default: bool,
+    stream_host_default: str,
+    stream_port_default: int,
+    stream_public_default: bool,
+    stream_token_default: str,
+    camera_retry_limit_default: int,
+    video_retry_limit_default: int,
+    hardware_retry_limit_default: int,
+) -> argparse.ArgumentParser:
+    """Build CLI argument parser for realtime main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Run realtime heading-hold control loop from live camera."
+    )
+    parser.add_argument(
+        "--csv-output",
+        default=csv_output_default,
+        help="Path for realtime CSV log (default from settings).",
+    )
+    parser.add_argument(
+        "--video-output",
+        default=debug_video_output_default,
+        help="Base path for optional debug video (timestamp is appended).",
+    )
+    parser.add_argument(
+        "--host",
+        default=stream_host_default,
+        help="HTTPS stream host (default 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=stream_port_default,
+        help="HTTPS stream port.",
+    )
+    parser.add_argument(
+        "--stream-token",
+        default=stream_token_default,
+        help="Optional token required by stream endpoints.",
+    )
+    parser.add_argument(
+        "--camera-retry-limit",
+        type=int,
+        default=camera_retry_limit_default,
+        help="Max camera init retries before abort.",
+    )
+    parser.add_argument(
+        "--video-retry-limit",
+        type=int,
+        default=video_retry_limit_default,
+        help="Max consecutive video write failures before abort.",
+    )
+    parser.add_argument(
+        "--hardware-retry-limit",
+        type=int,
+        default=hardware_retry_limit_default,
+        help="Max consecutive servo send failures before abort.",
+    )
+
+    parser.set_defaults(
+        debug_mode=debug_mode_default,
+        terminal_log=terminal_log_default,
+        show_preview=show_preview_default,
+        show_guidance_overlay=show_guidance_overlay_default,
+        show_detector_debug=show_detector_debug_default,
+        write_debug_video=write_debug_video_default,
+        flip_frame=flip_frame_default,
+        stream_enabled=stream_enabled_default,
+        stream_public=stream_public_default,
+    )
+
+    parser.add_argument("--debug", action="store_true", dest="debug_mode", help="Enable realtime debug visuals and richer CSV logging.")
+    parser.add_argument("--no-debug", action="store_false", dest="debug_mode", help="Disable realtime debug mode.")
+    parser.add_argument("--terminal-log", action="store_true", dest="terminal_log", help="Show INFO logs in terminal.")
+    parser.add_argument("--no-terminal-log", action="store_false", dest="terminal_log", help="Reduce terminal logs.")
+    parser.add_argument("--show-preview", action="store_true", dest="show_preview", help="Show local OpenCV preview window.")
+    parser.add_argument("--no-preview", action="store_false", dest="show_preview", help="Disable local OpenCV preview window.")
+    parser.add_argument("--show-guidance-overlay", action="store_true", dest="show_guidance_overlay", help="Show guidance overlays in preview/video/stream.")
+    parser.add_argument("--no-guidance-overlay", action="store_false", dest="show_guidance_overlay", help="Disable guidance overlays.")
+    parser.add_argument("--show-detector-debug", action="store_true", dest="show_detector_debug", help="Include detector debug panel below camera frame.")
+    parser.add_argument("--no-detector-debug", action="store_false", dest="show_detector_debug", help="Disable detector debug panel.")
+    parser.add_argument("--write-debug-video", action="store_true", dest="write_debug_video", help="Write annotated live video to file.")
+    parser.add_argument("--no-write-debug-video", action="store_false", dest="write_debug_video", help="Disable debug video output.")
+    parser.add_argument("--flip-frame", action="store_true", dest="flip_frame", help="Flip each camera frame by 180 degrees.")
+    parser.add_argument("--no-flip-frame", action="store_false", dest="flip_frame", help="Disable frame flipping.")
+    parser.add_argument("--stream", action="store_true", dest="stream_enabled", help="Enable HTTPS MJPEG stream.")
+    parser.add_argument("--no-stream", action="store_false", dest="stream_enabled", help="Disable HTTPS MJPEG stream.")
+    parser.add_argument("--public", action="store_true", dest="stream_public", help="Bind stream host to 0.0.0.0 for LAN access.")
+
     return parser

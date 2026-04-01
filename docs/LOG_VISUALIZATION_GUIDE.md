@@ -18,6 +18,26 @@ GAPPING periods are highlighted with a light red background in all panels.
 
 ## Run Commands
 
+Realtime capture with rich CSV + optional debug video:
+
+```bash
+python main.py --debug --show-guidance-overlay --show-detector-debug --write-debug-video --csv-output logs/csv/realtime_debug.csv
+```
+
+Realtime capture with HTTPS MJPEG stream for LAN device viewing:
+
+```bash
+python main.py --debug --stream --public --host 0.0.0.0 --port 8443 --csv-output logs/csv/realtime_stream.csv
+```
+
+From another device on the same LAN:
+
+- Stream: `https://<device-a-ip>:8443/stream.mjpg`
+- Snapshot: `https://<device-a-ip>:8443/snapshot.jpg`
+- Status JSON: `https://<device-a-ip>:8443/status`
+
+Browser warning for self-signed certificate is expected in LAN testing mode.
+
 Generate a plot from one log:
 
 ```bash
@@ -51,3 +71,4 @@ Use the following quick checks when comparing runs:
 
 - This visualization intentionally excludes abstract kinematic states.
 - The output reflects only logged detector and controller telemetry.
+- The realtime `main.py` CSV now includes additional fields (for example selected line-group index and bounding box) on top of plotting essentials (`theta`, `servo_angle`, FSM state).

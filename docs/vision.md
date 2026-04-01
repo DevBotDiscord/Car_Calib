@@ -67,6 +67,24 @@ theta = detector.get_reference_angle(frame)   # e.g. 87.5 or None
 
 **Returns:** `float` — angle θ in degrees relative to the x-axis (range `[0°, 180°)`), or `None` if no valid tile-gap line is found.
 
+#### `get_reference_angle_debug(frame: np.ndarray) -> tuple[Optional[float], dict[str, Any]]`
+
+Runs the same detection pipeline and returns `(theta, debug_data)`.
+
+The `debug_data` dictionary includes intermediate images and selected-line metadata used by realtime debug mode in `main.py` and offline mode in `process_video.py`.
+
+Key fields:
+
+| Field | Description |
+|-------|-------------|
+| `reference_group_index` | Index of the chosen horizontal group after filtering. |
+| `selected_group_bbox` | Bounding rectangle `(x, y, w, h)` of the chosen group. |
+| `theta_horizontal` | Angle of the selected horizontal group before conversion to vertical-equivalent θ. |
+| `theta_candidate` | Converted candidate output angle before sanity decision. |
+| `theta_output` | Final accepted output angle, or `None` when rejected. |
+| `lines_count`, `groups_count` | Raw segment count and grouped-cluster count. |
+| `horizontal_ok`, `sanity_ok`, `stale_output` | Gate flags that explain acceptance/rejection path. |
+
 ---
 
 ### Trapezoid ROI
