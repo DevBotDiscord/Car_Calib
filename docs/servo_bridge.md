@@ -1,57 +1,97 @@
-# Servo Bridge for Raspberry Pi
+# Servo Bridge Flow
 
-This setup splits keyboard steering and Raspberry Pi servo control into two
-separate scripts:
+The current flow keeps the keyboard plugged into the Raspberry Pi while the
+vision controller sends servo angles down over TCP.
 
-- `scripts/servo_bridge_sender.py`: reads keyboard input and sends steering
-  commands over TCP.
-- `scripts/rpi_servo_bridge.py`: receives commands on the Raspberry Pi and
-  drives the servo on GPIO `19`.
+## Components
 
-## Controls
+- `main.py` or `process_video.py` on the vision side:
+  uses `drivers.servo_driver.ServoDriver` to send servo angles.
+- `scripts/rpi_servo_bridge.py` on the Raspberry Pi:
+  keeps the original keyboard and motor controls local, listens for remote
+  servo angles, and applies them only when the user is not steering manually.
 
-- `A`: steer left
-- `D`: steer right
-- `C`: center steering
-- `1`: increase center angle
-- `2`: decrease center angle
-- `Q`: quit
-
-## Receiver on Raspberry Pi
+## Raspberry Pi side
 
 Install dependencies:
 
 ```bash
-pip install gpiozero
+pip install gpiozero evdev RPi.GPIO
 ```
 
 Run:
 
 ```bash
-python scripts/rpi_servo_bridge.py
+SERVO_PIN=19 SERVO_BRIDGE_PORT=8765 python scripts/rpi_servo_bridge.py
 ```
 
-## Sender on keyboard machine
-
-Install dependencies:
+Default remote input mapping expects the vision side to send angles around
+`90` with a range of `60..120`. If your sender already uses the same angle
+space as the keyboard script (`-65 .. -8 .. 60`), set:
 
 ```bash
-pip install evdev
+REMOTE_INPUT_MIN_ANGLE=-65
+REMOTE_INPUT_CENTER_ANGLE=-8
+REMOTE_INPUT_MAX_ANGLE=60
 ```
 
-Set the Raspberry Pi IP with `SERVO_BRIDGE_HOST`, then run:
+Keyboard controls remain active:
+
+- `W`: forward
+- `S`: backward
+- `A`: steer left
+- `D`: steer right
+- `C`: center steering
+- `X`: stop
+- `L`: lock
+- `U`: unlock
+- `1`: center angle +1
+- `2`: center angle -1
+- `Q`: quit
+
+When `A`, `D`, or `C` is pressed, manual steering temporarily overrides the
+remote angle stream. When the user stops steering, remote servo control
+resumes automatically.
+
+## Vision side
+
+Enable bridge mode in `.env` or environment variables:
 
 ```bash
-export SERVO_BRIDGE_HOST=192.168.1.50
-python scripts/servo_bridge_sender.py
+DRIVER_SERVO_BRIDGE_ENABLED=true
+DRIVER_SERVO_BRIDGE_HOST=192.168.1.50
+DRIVER_SERVO_BRIDGE_PORT=8765
+DRIVER_SERVO_BRIDGE_MIN_SEND_INTERVAL_S=0.05
+DRIVER_SERVO_BRIDGE_MIN_ANGLE_DELTA=1.0
 ```
 
-## Notes
+If you want the vision side to send the same signed angles used by the
+keyboard controller, also set:
 
-- The original servo pin `12` was changed to GPIO `19`.
-- You can override `SERVO_PIN`, `SERVO_CENTER_ANGLE`, `SERVO_BRIDGE_HOST`, and
-  `SERVO_BRIDGE_PORT` by environment variable without editing the scripts.
-- The receiver will re-center the servo if no command is received for about
-  one second.
-- The sender keeps the original center-angle trim behaviour from `KEY_1` and
-  `KEY_2`.
+```bash
+SERVO_CENTER_ANGLE=-8
+DRIVER_SERVO_ANGLE_MIN=-90
+DRIVER_SERVO_ANGLE_MAX=90
+```
+
+Then run the existing application as usual:
+
+```bash
+python main.py
+```
+
+or
+
+```bash
+python process_video.py <video_path>
+```
+
+## Why it is slower now
+
+The vision-side `ServoDriver` now throttles outgoing TCP commands:
+
+- it sends at most once every `DRIVER_SERVO_BRIDGE_MIN_SEND_INTERVAL_S`
+- it skips angle changes smaller than `DRIVER_SERVO_BRIDGE_MIN_ANGLE_DELTA`
+
+This reduces servo command spam while still letting the latest valid angle
+reach the Raspberry Pi.

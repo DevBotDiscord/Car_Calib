@@ -218,6 +218,7 @@ def process_video(
         print()
         if servo:
             servo.center()
+            servo.close()
         cap.release()
         video_writer.release()
         csv_file.close()

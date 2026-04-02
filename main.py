@@ -426,6 +426,7 @@ def main() -> None:
         raise
     finally:
         servo.center()
+        servo.close()
         if cap is not None:
             cap.release()
         if video_writer is not None:
