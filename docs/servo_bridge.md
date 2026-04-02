@@ -61,8 +61,8 @@ Enable bridge mode in `.env` or environment variables:
 DRIVER_SERVO_BRIDGE_ENABLED=true
 DRIVER_SERVO_BRIDGE_HOST=192.168.1.50
 DRIVER_SERVO_BRIDGE_PORT=8765
-DRIVER_SERVO_BRIDGE_MIN_SEND_INTERVAL_S=0.05
-DRIVER_SERVO_BRIDGE_MIN_ANGLE_DELTA=1.0
+DRIVER_SERVO_BRIDGE_MIN_SEND_INTERVAL_S=0.0
+DRIVER_SERVO_BRIDGE_MIN_ANGLE_DELTA=0.0
 ```
 
 If you want the vision side to send the same signed angles used by the
@@ -86,12 +86,14 @@ or
 python process_video.py <video_path>
 ```
 
-## Why it is slower now
+## Optional rate limiting
 
-The vision-side `ServoDriver` now throttles outgoing TCP commands:
+By default, bridge sending is now immediate. If you want to slow it down again,
+set these manually:
 
-- it sends at most once every `DRIVER_SERVO_BRIDGE_MIN_SEND_INTERVAL_S`
-- it skips angle changes smaller than `DRIVER_SERVO_BRIDGE_MIN_ANGLE_DELTA`
+```bash
+DRIVER_SERVO_BRIDGE_MIN_SEND_INTERVAL_S=0.05
+DRIVER_SERVO_BRIDGE_MIN_ANGLE_DELTA=1.0
+```
 
-This reduces servo command spam while still letting the latest valid angle
-reach the Raspberry Pi.
+That will send less often and ignore tiny angle changes.
