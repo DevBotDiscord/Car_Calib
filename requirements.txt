@@ -6,6 +6,7 @@ numpy>=1.21.0
 
 # Environment-based configuration loading
 python-dotenv>=1.0.0
+paho-mqtt>=2.1.0
 
 matplotlib>=3.4.0
 

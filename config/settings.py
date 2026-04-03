@@ -148,11 +148,22 @@ CTRL_RELOCK_VALID_FRAMES = _get_int("CTRL_RELOCK_VALID_FRAMES", 3)
 # --------------------------------------------------------------------------- #
 # Driver defaults
 # --------------------------------------------------------------------------- #
+MQTT_BROKER_HOST = _get_str("MQTT_BROKER_HOST", "127.0.0.1")
+MQTT_BROKER_PORT = _get_int("MQTT_BROKER_PORT", 1883)
+MQTT_USERNAME = _get_str("MQTT_USERNAME", "")
+MQTT_PASSWORD = _get_str("MQTT_PASSWORD", "")
+MQTT_KEEPALIVE_S = _get_int("MQTT_KEEPALIVE_S", 60)
+MQTT_SERVO_TOPIC = _get_str("MQTT_SERVO_TOPIC", "car/servo/angle")
+MQTT_BASE_COMMAND_TOPIC = _get_str("MQTT_BASE_COMMAND_TOPIC", "car/base/command")
+MQTT_STATUS_TOPIC = _get_str("MQTT_STATUS_TOPIC", "car/status")
+MQTT_CLIENT_ID_PREFIX = _get_str("MQTT_CLIENT_ID_PREFIX", "car-calib")
+
 DRIVER_SERVO_CHANNEL = _get_int("DRIVER_SERVO_CHANNEL", 0)
 DRIVER_SERVO_PULSE_MIN_US = _get_int("DRIVER_SERVO_PULSE_MIN_US", 1000)
 DRIVER_SERVO_PULSE_MAX_US = _get_int("DRIVER_SERVO_PULSE_MAX_US", 2000)
 DRIVER_SERVO_ANGLE_MIN = _get_float("DRIVER_SERVO_ANGLE_MIN", 0.0)
 DRIVER_SERVO_ANGLE_MAX = _get_float("DRIVER_SERVO_ANGLE_MAX", 180.0)
+DRIVER_SERVO_MQTT_ENABLED = _get_bool("DRIVER_SERVO_MQTT_ENABLED", False)
 DRIVER_SERVO_BRIDGE_ENABLED = _get_bool("DRIVER_SERVO_BRIDGE_ENABLED", False)
 DRIVER_SERVO_BRIDGE_HOST = _get_str("DRIVER_SERVO_BRIDGE_HOST", "127.0.0.1")
 DRIVER_SERVO_BRIDGE_PORT = _get_int("DRIVER_SERVO_BRIDGE_PORT", 8765)

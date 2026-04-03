@@ -1,5 +1,6 @@
 """Unit tests for drivers/servo_driver.py."""
 
+import importlib
 import json
 
 import pytest
@@ -92,6 +93,59 @@ class FakeSocket:
         self.closed = True
 
 
+class FakeMQTTPublishResult:
+    def __init__(self, rc=0):
+        self.rc = rc
+        self.waited = False
+
+    def wait_for_publish(self):
+        self.waited = True
+
+
+class FakeMQTTClient:
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+        self.connected = None
+        self.started = False
+        self.stopped = False
+        self.disconnected = False
+        self.username = None
+        self.published = []
+
+    def username_pw_set(self, username, password):
+        self.username = (username, password)
+
+    def connect(self, host, port, keepalive=60):
+        self.connected = (host, port, keepalive)
+
+    def loop_start(self):
+        self.started = True
+
+    def loop_stop(self):
+        self.stopped = True
+
+    def disconnect(self):
+        self.disconnected = True
+
+    def publish(self, topic, payload):
+        self.published.append((topic, payload))
+        return FakeMQTTPublishResult()
+
+
+class FakeMQTTModule:
+    class CallbackAPIVersion:
+        VERSION1 = object()
+
+    def __init__(self):
+        self.clients = []
+
+    def Client(self, *args, **kwargs):
+        client = FakeMQTTClient(*args, **kwargs)
+        self.clients.append(client)
+        return client
+
+
 class TestBridgeMode:
     def test_bridge_send_angle_sends_json(self, monkeypatch):
         fake_socket = FakeSocket()
@@ -146,3 +200,60 @@ class TestBridgeMode:
         driver.send_angle(91.0)
 
         assert len(fake_socket.sent) == 1
+
+
+class TestMqttMode:
+    def test_mqtt_send_angle_publishes_angle_payload(self, monkeypatch):
+        fake_mqtt = FakeMQTTModule()
+
+        monkeypatch.setattr(
+            "drivers.servo_driver.importlib.import_module",
+            lambda name: fake_mqtt if name == "paho.mqtt.client" else importlib.import_module(name),
+        )
+
+        driver = ServoDriver(
+            mqtt_enabled=True,
+            mqtt_host="broker.local",
+            mqtt_port=1883,
+            mqtt_topic="car/servo/angle",
+        )
+        driver.send_angle(95.5)
+
+        client = fake_mqtt.clients[0]
+        assert client.connected == ("broker.local", 1883, 60)
+        assert client.published == [("car/servo/angle", "95.5000")]
+
+    def test_mqtt_center_uses_center_angle_payload(self, monkeypatch):
+        fake_mqtt = FakeMQTTModule()
+
+        monkeypatch.setattr(
+            "drivers.servo_driver.importlib.import_module",
+            lambda name: fake_mqtt if name == "paho.mqtt.client" else importlib.import_module(name),
+        )
+
+        driver = ServoDriver(
+            mqtt_enabled=True,
+            center_angle=75.0,
+            mqtt_topic="car/servo/angle",
+        )
+        driver.center()
+
+        client = fake_mqtt.clients[0]
+        assert client.published == [("car/servo/angle", "75.0000")]
+
+    def test_mqtt_close_disconnects_client(self, monkeypatch):
+        fake_mqtt = FakeMQTTModule()
+
+        monkeypatch.setattr(
+            "drivers.servo_driver.importlib.import_module",
+            lambda name: fake_mqtt if name == "paho.mqtt.client" else importlib.import_module(name),
+        )
+
+        driver = ServoDriver(mqtt_enabled=True)
+        driver.send_angle(90.0)
+        client = fake_mqtt.clients[0]
+
+        driver.close()
+
+        assert client.stopped is True
+        assert client.disconnected is True

@@ -7,8 +7,10 @@ or over a TCP bridge to a Raspberry Pi.
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
+import os
 import socket
 import time
 from typing import Any
@@ -23,8 +25,16 @@ from config.settings import (
     DRIVER_SERVO_BRIDGE_MIN_SEND_INTERVAL_S,
     DRIVER_SERVO_BRIDGE_PORT,
     DRIVER_SERVO_CHANNEL,
+    DRIVER_SERVO_MQTT_ENABLED,
     DRIVER_SERVO_PULSE_MAX_US,
     DRIVER_SERVO_PULSE_MIN_US,
+    MQTT_BROKER_HOST,
+    MQTT_BROKER_PORT,
+    MQTT_CLIENT_ID_PREFIX,
+    MQTT_KEEPALIVE_S,
+    MQTT_PASSWORD,
+    MQTT_SERVO_TOPIC,
+    MQTT_USERNAME,
     SERVO_CENTER_ANGLE,
 )
 
@@ -45,6 +55,14 @@ class ServoDriver:
         center_angle: float = SERVO_CENTER_ANGLE,
         pulse_min_us: int = _PULSE_MIN_US,
         pulse_max_us: int = _PULSE_MAX_US,
+        mqtt_enabled: bool = DRIVER_SERVO_MQTT_ENABLED,
+        mqtt_host: str = MQTT_BROKER_HOST,
+        mqtt_port: int = MQTT_BROKER_PORT,
+        mqtt_username: str = MQTT_USERNAME,
+        mqtt_password: str = MQTT_PASSWORD,
+        mqtt_keepalive_s: int = MQTT_KEEPALIVE_S,
+        mqtt_topic: str = MQTT_SERVO_TOPIC,
+        mqtt_client_id_prefix: str = MQTT_CLIENT_ID_PREFIX,
         bridge_enabled: bool = DRIVER_SERVO_BRIDGE_ENABLED,
         bridge_host: str = DRIVER_SERVO_BRIDGE_HOST,
         bridge_port: int = DRIVER_SERVO_BRIDGE_PORT,
@@ -56,6 +74,15 @@ class ServoDriver:
         self._center_angle = center_angle
         self._pulse_min_us = pulse_min_us
         self._pulse_max_us = pulse_max_us
+        self._mqtt_enabled = mqtt_enabled
+        self._mqtt_host = mqtt_host
+        self._mqtt_port = mqtt_port
+        self._mqtt_username = mqtt_username
+        self._mqtt_password = mqtt_password
+        self._mqtt_keepalive_s = mqtt_keepalive_s
+        self._mqtt_topic = mqtt_topic
+        self._mqtt_client_id = f"{mqtt_client_id_prefix}-servo-{os.getpid()}"
+        self._mqtt_client: Any | None = None
         self._bridge_enabled = bridge_enabled
         self._bridge_host = bridge_host
         self._bridge_port = bridge_port
@@ -95,6 +122,10 @@ class ServoDriver:
             pulse_us,
         )
 
+        if self._mqtt_enabled:
+            self._publish_mqtt_angle(clamped_angle)
+            return
+
         if self._bridge_enabled:
             self._send_bridge_command("angle", clamped_angle, pulse_us, force=force)
             return
@@ -109,6 +140,10 @@ class ServoDriver:
             self._center_angle,
         )
 
+        if self._mqtt_enabled:
+            self._publish_mqtt_angle(self._center_angle)
+            return
+
         if self._bridge_enabled:
             pulse_us = self._angle_to_pulse(self._center_angle)
             self._send_bridge_command(
@@ -122,7 +157,18 @@ class ServoDriver:
         self.send_angle(self._center_angle, force=True)
 
     def close(self) -> None:
-        """Release any open bridge socket."""
+        """Release any open bridge socket or MQTT client."""
+        if self._mqtt_client is not None:
+            try:
+                loop_stop = getattr(self._mqtt_client, "loop_stop", None)
+                if callable(loop_stop):
+                    loop_stop()
+                disconnect = getattr(self._mqtt_client, "disconnect", None)
+                if callable(disconnect):
+                    disconnect()
+            finally:
+                self._mqtt_client = None
+
         if self._bridge_socket is None:
             return
 
@@ -133,6 +179,60 @@ class ServoDriver:
             self._bridge_last_send_at = None
             self._bridge_last_angle = None
             self._bridge_pending = None
+
+    def _get_mqtt_client(self) -> Any:
+        if self._mqtt_client is not None:
+            return self._mqtt_client
+
+        try:
+            mqtt = importlib.import_module("paho.mqtt.client")
+        except ImportError as exc:
+            raise RuntimeError(
+                "paho-mqtt is required for MQTT servo publishing. Install requirements.txt first."
+            ) from exc
+
+        client_ctor = getattr(mqtt, "Client")
+        callback_api_version = getattr(mqtt, "CallbackAPIVersion", None)
+        if callback_api_version is not None:
+            client = client_ctor(
+                callback_api_version=callback_api_version.VERSION1,
+                client_id=self._mqtt_client_id,
+            )
+        else:
+            client = client_ctor(client_id=self._mqtt_client_id)
+
+        if self._mqtt_username:
+            client.username_pw_set(self._mqtt_username, self._mqtt_password)
+
+        client.connect(self._mqtt_host, self._mqtt_port, keepalive=self._mqtt_keepalive_s)
+        loop_start = getattr(client, "loop_start", None)
+        if callable(loop_start):
+            loop_start()
+
+        logger.info(
+            "ServoDriver MQTT connected to %s:%d topic=%s.",
+            self._mqtt_host,
+            self._mqtt_port,
+            self._mqtt_topic,
+        )
+        self._mqtt_client = client
+        return client
+
+    def _publish_mqtt_angle(self, angle: float) -> None:
+        client = self._get_mqtt_client()
+        payload = f"{angle:.4f}"
+
+        try:
+            result = client.publish(self._mqtt_topic, payload)
+            wait_for_publish = getattr(result, "wait_for_publish", None)
+            if callable(wait_for_publish):
+                wait_for_publish()
+            rc = getattr(result, "rc", 0)
+            if rc not in (0, None):
+                raise OSError(f"MQTT publish failed with rc={rc}")
+        except Exception as exc:  # noqa: BLE001
+            self.close()
+            raise OSError(f"MQTT publish failed: {exc}") from exc
 
     def _connect_bridge(self) -> socket.socket:
         if self._bridge_socket is not None:
