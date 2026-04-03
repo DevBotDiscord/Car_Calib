@@ -16,13 +16,22 @@ vision controller sends servo angles down over TCP.
 Install dependencies:
 
 ```bash
-pip install gpiozero evdev RPi.GPIO
+sudo apt install -y pigpio python3-pigpio
+pip install evdev python-dotenv
+sudo systemctl enable --now pigpiod
 ```
 
 Run:
 
 ```bash
 SERVO_PIN=19 SERVO_BRIDGE_PORT=8765 python scripts/rpi_servo_bridge.py
+```
+
+If `pigpiod` is running on a different host, set:
+
+```bash
+PIGPIO_HOST=127.0.0.1
+PIGPIO_PORT=8888
 ```
 
 Default remote input mapping expects the vision side to send angles around
@@ -52,6 +61,20 @@ Keyboard controls remain active:
 When `A`, `D`, or `C` is pressed, manual steering temporarily overrides the
 remote angle stream. When the user stops steering, remote servo control
 resumes automatically.
+
+By default, the bridge now holds the last TCP steering angle until a new
+message arrives:
+
+```bash
+REMOTE_SERVO_HOLD_LAST=true
+```
+
+If you want the old timeout behavior back, set:
+
+```bash
+REMOTE_SERVO_HOLD_LAST=false
+REMOTE_SERVO_TIMEOUT=0.6
+```
 
 ## Vision side
 
@@ -97,3 +120,9 @@ DRIVER_SERVO_BRIDGE_MIN_ANGLE_DELTA=1.0
 ```
 
 That will send less often and ignore tiny angle changes.
+
+## Notes
+
+- `SERVO_PIN` defaults to `19`
+- default base pins are `17`, `27`, `22`
+- servo/base output is now driven through `pigpio`

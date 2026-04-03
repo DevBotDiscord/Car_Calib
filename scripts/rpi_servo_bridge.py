@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Raspberry Pi keyboard controller with remote servo bridge support.
+"""Raspberry Pi keyboard controller with TCP servo bridge support.
 
 The keyboard stays connected directly to the Raspberry Pi. Motor control
 remains local, while remote servo angles received over TCP are applied
@@ -14,9 +14,23 @@ import signal
 import socket
 import time
 
-import RPi.GPIO as GPIO
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional on Raspberry Pi
+    load_dotenv = None
+
 from evdev import InputDevice, ecodes
-from gpiozero import AngularServo
+
+try:
+    import pigpio
+except ImportError as exc:  # pragma: no cover - runtime dependency on Raspberry Pi
+    raise RuntimeError(
+        "pigpio is required for scripts/rpi_servo_bridge.py. Install pigpio and start pigpiod."
+    ) from exc
+
+if load_dotenv is not None:
+    load_dotenv()
+
 
 # =========================================================
 # CONFIG
@@ -27,6 +41,8 @@ KEYBOARD_DEVICE = os.getenv(
 )
 BRIDGE_HOST = os.getenv("SERVO_BRIDGE_HOST", "0.0.0.0")
 BRIDGE_PORT = int(os.getenv("SERVO_BRIDGE_PORT", "8765"))
+PIGPIO_HOST = os.getenv("PIGPIO_HOST", "127.0.0.1")
+PIGPIO_PORT = int(os.getenv("PIGPIO_PORT", "8888"))
 SERVO_PIN = int(os.getenv("SERVO_PIN", "19"))
 
 OUT1 = int(os.getenv("BASE_OUT1", "17"))
@@ -41,12 +57,21 @@ REMOTE_INPUT_MIN_ANGLE = float(os.getenv("REMOTE_INPUT_MIN_ANGLE", "60"))
 REMOTE_INPUT_CENTER_ANGLE = float(os.getenv("REMOTE_INPUT_CENTER_ANGLE", "90"))
 REMOTE_INPUT_MAX_ANGLE = float(os.getenv("REMOTE_INPUT_MAX_ANGLE", "120"))
 
-SERVO_MIN_PULSE = float(os.getenv("SERVO_MIN_PULSE", "0.0005"))
-SERVO_MAX_PULSE = float(os.getenv("SERVO_MAX_PULSE", "0.0025"))
+SERVO_MIN_PULSE_US = int(round(float(os.getenv("SERVO_MIN_PULSE", "0.0005")) * 1_000_000))
+SERVO_MAX_PULSE_US = int(round(float(os.getenv("SERVO_MAX_PULSE", "0.0025")) * 1_000_000))
 
 REMOTE_SERVO_TIMEOUT = float(os.getenv("REMOTE_SERVO_TIMEOUT", "0.6"))
+REMOTE_SERVO_HOLD_LAST = os.getenv("REMOTE_SERVO_HOLD_LAST", "true").strip().lower() in {
+    "1",
+    "true",
+    "t",
+    "yes",
+    "y",
+    "on",
+}
 MANUAL_STEER_HOLD = float(os.getenv("MANUAL_STEER_HOLD", "0.25"))
 LOOP_DELAY = float(os.getenv("LOOP_DELAY", "0.01"))
+
 
 # =========================================================
 # GLOBAL STATE
@@ -64,24 +89,7 @@ bridge_server: socket.socket | None = None
 bridge_client: socket.socket | None = None
 bridge_client_addr: tuple[str, int] | None = None
 bridge_buffer = ""
-
-# =========================================================
-# GPIO SETUP
-# =========================================================
-GPIO.setmode(GPIO.BCM)
-GPIO.setwarnings(False)
-
-GPIO.setup(OUT1, GPIO.OUT)
-GPIO.setup(OUT2, GPIO.OUT)
-GPIO.setup(OUT3, GPIO.OUT)
-
-servo = AngularServo(
-    SERVO_PIN,
-    min_angle=-90,
-    max_angle=90,
-    min_pulse_width=SERVO_MIN_PULSE,
-    max_pulse_width=SERVO_MAX_PULSE,
-)
+gpio: pigpio.pi | None = None
 keyboard = InputDevice(KEYBOARD_DEVICE)
 
 
@@ -91,6 +99,30 @@ def clamp(value: float, low: float, high: float) -> float:
 
 def log(message: str) -> None:
     print(message)
+
+
+def setup_gpio() -> None:
+    global gpio
+
+    gpio = pigpio.pi(PIGPIO_HOST, PIGPIO_PORT)
+    if not gpio.connected:
+        raise RuntimeError(
+            f"Cannot connect to pigpio at {PIGPIO_HOST}:{PIGPIO_PORT}. "
+            "Start pigpiod first, for example: sudo systemctl enable --now pigpiod"
+        )
+
+    for pin in (OUT1, OUT2, OUT3, SERVO_PIN):
+        gpio.set_mode(pin, pigpio.OUTPUT)
+
+
+def angle_to_pulse_us(angle: float) -> int:
+    clamped_angle = clamp(angle, LEFT_LIMIT, RIGHT_LIMIT)
+    angle_span = RIGHT_LIMIT - LEFT_LIMIT
+    if angle_span <= 0:
+        return SERVO_MIN_PULSE_US
+
+    ratio = (clamped_angle - LEFT_LIMIT) / angle_span
+    return int(round(SERVO_MIN_PULSE_US + ratio * (SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US)))
 
 
 def setup_bridge_server() -> None:
@@ -133,9 +165,12 @@ def set_base(b1: int, b2: int, b3: int, label: str | None = None) -> None:
     global last_base_state
     state = (b1, b2, b3)
 
-    GPIO.output(OUT1, GPIO.HIGH if b1 else GPIO.LOW)
-    GPIO.output(OUT2, GPIO.HIGH if b2 else GPIO.LOW)
-    GPIO.output(OUT3, GPIO.HIGH if b3 else GPIO.LOW)
+    if gpio is None:
+        raise RuntimeError("pigpio is not initialized.")
+
+    gpio.write(OUT1, 1 if b1 else 0)
+    gpio.write(OUT2, 1 if b2 else 0)
+    gpio.write(OUT3, 1 if b3 else 0)
 
     if state != last_base_state:
         if label:
@@ -171,8 +206,13 @@ def apply_steering(target_angle: float, source: str) -> None:
     steer_angle = clamp(target_angle, LEFT_LIMIT, RIGHT_LIMIT)
 
     if steer_angle != last_steer_angle or source != last_steer_source:
-        servo.angle = steer_angle
-        log(f"STEER[{source}]: {steer_angle:.1f} deg | CENTER: {CENTER_ANGLE:.1f} deg")
+        if gpio is None:
+            raise RuntimeError("pigpio is not initialized.")
+        pulse_us = angle_to_pulse_us(steer_angle)
+        gpio.set_servo_pulsewidth(SERVO_PIN, pulse_us)
+        log(
+            f"STEER[{source}]: {steer_angle:.1f} deg | CENTER: {CENTER_ANGLE:.1f} deg | PULSE: {pulse_us} us"
+        )
         last_steer_angle = steer_angle
         last_steer_source = source
 
@@ -190,6 +230,10 @@ def steer_left_step(source: str) -> None:
 
 
 def remote_control_active(now: float) -> bool:
+    if REMOTE_SERVO_HOLD_LAST:
+        del now
+        return remote_servo_angle is not None
+
     return (
         remote_servo_angle is not None
         and now - remote_servo_updated_at <= REMOTE_SERVO_TIMEOUT
@@ -213,15 +257,26 @@ def map_remote_angle(angle: float) -> float:
     return CENTER_ANGLE + ratio * (RIGHT_LIMIT - CENTER_ANGLE)
 
 
-def handle_remote_payload(payload: dict[str, float | int | str]) -> None:
-    global remote_servo_angle, remote_servo_updated_at
-
+def resolve_remote_servo_angle(payload: dict[str, float | int | str]) -> float:
     command = payload.get("type")
     if command not in {"angle", "center"}:
         raise ValueError(f"Unsupported command: {command}")
 
-    angle = float(payload.get("angle", REMOTE_INPUT_CENTER_ANGLE))
-    remote_servo_angle = clamp(map_remote_angle(angle), LEFT_LIMIT, RIGHT_LIMIT)
+    if command == "center":
+        raw_angle = CENTER_ANGLE
+    else:
+        raw_angle = float(payload.get("angle", REMOTE_INPUT_CENTER_ANGLE))
+
+    if LEFT_LIMIT <= raw_angle <= RIGHT_LIMIT:
+        return clamp(raw_angle, LEFT_LIMIT, RIGHT_LIMIT)
+
+    return clamp(map_remote_angle(raw_angle), LEFT_LIMIT, RIGHT_LIMIT)
+
+
+def handle_remote_payload(payload: dict[str, float | int | str]) -> None:
+    global remote_servo_angle, remote_servo_updated_at
+
+    remote_servo_angle = resolve_remote_servo_angle(payload)
     remote_servo_updated_at = time.monotonic()
 
 
@@ -290,12 +345,14 @@ def cleanup() -> None:
     close_bridge_server()
 
     try:
-        servo.detach()
+        if gpio is not None:
+            gpio.set_servo_pulsewidth(SERVO_PIN, 0)
     except Exception:
         pass
 
     try:
-        GPIO.cleanup()
+        if gpio is not None:
+            gpio.stop()
     except Exception:
         pass
 
@@ -396,11 +453,13 @@ def process_controls() -> None:
 def main() -> None:
     global running
 
+    setup_gpio()
     setup_bridge_server()
 
-    print("=== RPI KEYBOARD + SERVO BRIDGE MODE ===")
+    print("=== RPI KEYBOARD + TCP SERVO BRIDGE MODE ===")
     print(f"Keyboard: {keyboard.path}")
     print(f"Bridge listen: {BRIDGE_HOST}:{BRIDGE_PORT}")
+    print(f"pigpio: {PIGPIO_HOST}:{PIGPIO_PORT}")
     print(f"Servo GPIO pin: {SERVO_PIN}")
     print("W = forward")
     print("S = backward")
@@ -417,8 +476,11 @@ def main() -> None:
     print("")
     print(
         f"Steering center={CENTER_ANGLE:.1f}, left={LEFT_LIMIT:.1f}, right={RIGHT_LIMIT:.1f}, "
-        f"step={STEP:.1f}, remote_timeout={REMOTE_SERVO_TIMEOUT:.2f}s"
+        f"step={STEP:.1f}, remote_hold_last={REMOTE_SERVO_HOLD_LAST}"
     )
+    if not REMOTE_SERVO_HOLD_LAST:
+        print(f"Remote timeout={REMOTE_SERVO_TIMEOUT:.2f}s")
+    print(f"Servo pulse range={SERVO_MIN_PULSE_US}..{SERVO_MAX_PULSE_US} us")
     print(
         f"Remote input range={REMOTE_INPUT_MIN_ANGLE:.1f}..{REMOTE_INPUT_CENTER_ANGLE:.1f}..{REMOTE_INPUT_MAX_ANGLE:.1f}"
     )
