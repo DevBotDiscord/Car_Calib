@@ -5,40 +5,49 @@ import json
 
 import pytest
 
-from drivers.servo_driver import ServoDriver, _ANGLE_MAX, _ANGLE_MIN, _PULSE_MAX_US, _PULSE_MIN_US
+from drivers import servo_driver as servo_module
+from drivers.servo_driver import ServoDriver
+
+
+@pytest.fixture(autouse=True)
+def reset_servo_module_defaults(monkeypatch):
+    monkeypatch.setattr(servo_module, "_ANGLE_MIN", 0.0)
+    monkeypatch.setattr(servo_module, "_ANGLE_MAX", 180.0)
+    monkeypatch.setattr(servo_module, "_PULSE_MIN_US", 1000)
+    monkeypatch.setattr(servo_module, "_PULSE_MAX_US", 2000)
 
 
 @pytest.fixture()
 def driver():
-    return ServoDriver(channel=0)
+    return ServoDriver(channel=0, mqtt_enabled=False, bridge_enabled=False)
 
 
 class TestAngleToPulse:
     def test_center_angle(self, driver):
         pulse = driver._angle_to_pulse(90.0)
-        expected = _PULSE_MIN_US + ((90.0 - _ANGLE_MIN) / (_ANGLE_MAX - _ANGLE_MIN)) * (
-            _PULSE_MAX_US - _PULSE_MIN_US
+        expected = servo_module._PULSE_MIN_US + (
+            (90.0 - servo_module._ANGLE_MIN) / (servo_module._ANGLE_MAX - servo_module._ANGLE_MIN)
+        ) * (
+            servo_module._PULSE_MAX_US - servo_module._PULSE_MIN_US
         )
         assert pulse == int(round(expected))
 
     def test_zero_degrees(self, driver):
-        assert driver._angle_to_pulse(0.0) == _PULSE_MIN_US
+        assert driver._angle_to_pulse(0.0) == servo_module._PULSE_MIN_US
 
     def test_180_degrees(self, driver):
-        assert driver._angle_to_pulse(180.0) == _PULSE_MAX_US
+        assert driver._angle_to_pulse(180.0) == servo_module._PULSE_MAX_US
 
     def test_clamps_below_min(self, driver):
-        assert driver._angle_to_pulse(-10.0) == _PULSE_MIN_US
+        assert driver._angle_to_pulse(-10.0) == servo_module._PULSE_MIN_US
 
     def test_clamps_above_max(self, driver):
-        assert driver._angle_to_pulse(200.0) == _PULSE_MAX_US
+        assert driver._angle_to_pulse(200.0) == servo_module._PULSE_MAX_US
 
     def test_returns_int(self, driver):
         assert isinstance(driver._angle_to_pulse(90.0), int)
 
     def test_negative_angle_range_supported(self):
-        from drivers import servo_driver as servo_module
-
         driver = ServoDriver(pulse_min_us=500, pulse_max_us=2500)
         original_min = servo_module._ANGLE_MIN
         original_max = servo_module._ANGLE_MAX
@@ -67,13 +76,18 @@ class TestCenter:
         driver.center()
 
     def test_custom_center_angle(self):
-        driver = ServoDriver(center_angle=75.0)
+        driver = ServoDriver(center_angle=75.0, mqtt_enabled=False, bridge_enabled=False)
         driver.center()
 
 
 class TestCustomPulseRange:
     def test_custom_pulse_min_max(self):
-        driver = ServoDriver(pulse_min_us=500, pulse_max_us=2500)
+        driver = ServoDriver(
+            pulse_min_us=500,
+            pulse_max_us=2500,
+            mqtt_enabled=False,
+            bridge_enabled=False,
+        )
         assert driver._angle_to_pulse(0.0) == 500
         assert driver._angle_to_pulse(180.0) == 2500
 
@@ -154,7 +168,11 @@ class TestBridgeMode:
         monkeypatch.setattr("drivers.servo_driver.socket.create_connection", lambda *args, **kwargs: fake_socket)
         monkeypatch.setattr("drivers.servo_driver.time.monotonic", lambda: next(moments))
 
-        driver = ServoDriver(bridge_enabled=True, bridge_min_send_interval_s=0.0)
+        driver = ServoDriver(
+            bridge_enabled=True,
+            bridge_min_send_interval_s=0.0,
+            mqtt_enabled=False,
+        )
         driver.send_angle(90.0)
 
         assert len(fake_socket.sent) == 1
@@ -173,6 +191,7 @@ class TestBridgeMode:
             bridge_enabled=True,
             bridge_min_send_interval_s=0.05,
             bridge_min_angle_delta=0.0,
+            mqtt_enabled=False,
         )
         driver.send_angle(90.0)
         driver.send_angle(91.0)
@@ -195,6 +214,7 @@ class TestBridgeMode:
             bridge_enabled=True,
             bridge_min_send_interval_s=0.0,
             bridge_min_angle_delta=2.0,
+            mqtt_enabled=False,
         )
         driver.send_angle(90.0)
         driver.send_angle(91.0)
@@ -222,6 +242,31 @@ class TestMqttMode:
         client = fake_mqtt.clients[0]
         assert client.connected == ("broker.local", 1883, 60)
         assert client.published == [("car/servo/angle", "95.5000")]
+
+    def test_mqtt_skips_small_angle_delta(self, monkeypatch):
+        fake_mqtt = FakeMQTTModule()
+
+        monkeypatch.setattr(
+            "drivers.servo_driver.importlib.import_module",
+            lambda name: fake_mqtt if name == "paho.mqtt.client" else importlib.import_module(name),
+        )
+
+        driver = ServoDriver(
+            mqtt_enabled=True,
+            mqtt_host="broker.local",
+            mqtt_port=1883,
+            mqtt_topic="car/servo/angle",
+            mqtt_min_angle_delta=0.5,
+        )
+        driver.send_angle(95.5)
+        driver.send_angle(95.9)
+        driver.send_angle(96.1)
+
+        client = fake_mqtt.clients[0]
+        assert client.published == [
+            ("car/servo/angle", "95.5000"),
+            ("car/servo/angle", "96.1000"),
+        ]
 
     def test_mqtt_center_uses_center_angle_payload(self, monkeypatch):
         fake_mqtt = FakeMQTTModule()
