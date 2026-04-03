@@ -18,15 +18,20 @@ try:
 except ImportError:  # pragma: no cover - optional on Raspberry Pi
     load_dotenv = None
 
-import RPi.GPIO as GPIO
 from evdev import InputDevice, ecodes
-from gpiozero import AngularServo
 
 try:
     import paho.mqtt.client as mqtt
 except ImportError as exc:  # pragma: no cover - runtime dependency on Raspberry Pi
     raise RuntimeError(
         "paho-mqtt is required for scripts/rpi_mqtt_bridge.py. Install requirements first."
+    ) from exc
+
+try:
+    import pigpio
+except ImportError as exc:  # pragma: no cover - runtime dependency on Raspberry Pi
+    raise RuntimeError(
+        "pigpio is required for scripts/rpi_mqtt_bridge.py. Install pigpio and start pigpiod."
     ) from exc
 
 if load_dotenv is not None:
@@ -51,6 +56,8 @@ MQTT_CLIENT_ID = os.getenv(
     "RPI_MQTT_BRIDGE_CLIENT_ID",
     f"rpi-mqtt-bridge-{os.getpid()}",
 )
+PIGPIO_HOST = os.getenv("PIGPIO_HOST", "127.0.0.1")
+PIGPIO_PORT = int(os.getenv("PIGPIO_PORT", "8888"))
 SERVO_PIN = int(os.getenv("SERVO_PIN", "19"))
 
 OUT1 = int(os.getenv("BASE_OUT1", "17"))
@@ -65,8 +72,8 @@ REMOTE_INPUT_MIN_ANGLE = float(os.getenv("REMOTE_INPUT_MIN_ANGLE", "60"))
 REMOTE_INPUT_CENTER_ANGLE = float(os.getenv("REMOTE_INPUT_CENTER_ANGLE", "90"))
 REMOTE_INPUT_MAX_ANGLE = float(os.getenv("REMOTE_INPUT_MAX_ANGLE", "120"))
 
-SERVO_MIN_PULSE = float(os.getenv("SERVO_MIN_PULSE", "0.0005"))
-SERVO_MAX_PULSE = float(os.getenv("SERVO_MAX_PULSE", "0.0025"))
+SERVO_MIN_PULSE_US = int(round(float(os.getenv("SERVO_MIN_PULSE", "0.0005")) * 1_000_000))
+SERVO_MAX_PULSE_US = int(round(float(os.getenv("SERVO_MAX_PULSE", "0.0025")) * 1_000_000))
 
 REMOTE_SERVO_TIMEOUT = float(os.getenv("REMOTE_SERVO_TIMEOUT", "0.6"))
 MANUAL_STEER_HOLD = float(os.getenv("MANUAL_STEER_HOLD", "0.25"))
@@ -87,25 +94,7 @@ remote_servo_updated_at = 0.0
 manual_override_until = 0.0
 mqtt_client: mqtt.Client | None = None
 mqtt_connected = False
-
-
-# =========================================================
-# GPIO SETUP
-# =========================================================
-GPIO.setmode(GPIO.BCM)
-GPIO.setwarnings(False)
-
-GPIO.setup(OUT1, GPIO.OUT)
-GPIO.setup(OUT2, GPIO.OUT)
-GPIO.setup(OUT3, GPIO.OUT)
-
-servo = AngularServo(
-    SERVO_PIN,
-    min_angle=-90,
-    max_angle=90,
-    min_pulse_width=SERVO_MIN_PULSE,
-    max_pulse_width=SERVO_MAX_PULSE,
-)
+gpio: pigpio.pi | None = None
 keyboard = InputDevice(KEYBOARD_DEVICE)
 
 
@@ -117,13 +106,40 @@ def log(message: str) -> None:
     print(message)
 
 
+def setup_gpio() -> None:
+    global gpio
+
+    gpio = pigpio.pi(PIGPIO_HOST, PIGPIO_PORT)
+    if not gpio.connected:
+        raise RuntimeError(
+            f"Cannot connect to pigpio at {PIGPIO_HOST}:{PIGPIO_PORT}. "
+            "Start pigpiod first, for example: sudo systemctl enable --now pigpiod"
+        )
+
+    for pin in (OUT1, OUT2, OUT3, SERVO_PIN):
+        gpio.set_mode(pin, pigpio.OUTPUT)
+
+
+def angle_to_pulse_us(angle: float) -> int:
+    clamped_angle = clamp(angle, LEFT_LIMIT, RIGHT_LIMIT)
+    angle_span = RIGHT_LIMIT - LEFT_LIMIT
+    if angle_span <= 0:
+        return SERVO_MIN_PULSE_US
+
+    ratio = (clamped_angle - LEFT_LIMIT) / angle_span
+    return int(round(SERVO_MIN_PULSE_US + ratio * (SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US)))
+
+
 def set_base(b1: int, b2: int, b3: int, label: str | None = None) -> None:
     global last_base_state
     state = (b1, b2, b3)
 
-    GPIO.output(OUT1, GPIO.HIGH if b1 else GPIO.LOW)
-    GPIO.output(OUT2, GPIO.HIGH if b2 else GPIO.LOW)
-    GPIO.output(OUT3, GPIO.HIGH if b3 else GPIO.LOW)
+    if gpio is None:
+        raise RuntimeError("pigpio is not initialized.")
+
+    gpio.write(OUT1, 1 if b1 else 0)
+    gpio.write(OUT2, 1 if b2 else 0)
+    gpio.write(OUT3, 1 if b3 else 0)
 
     if state != last_base_state:
         if label:
@@ -159,8 +175,13 @@ def apply_steering(target_angle: float, source: str) -> None:
     steer_angle = clamp(target_angle, LEFT_LIMIT, RIGHT_LIMIT)
 
     if steer_angle != last_steer_angle or source != last_steer_source:
-        servo.angle = steer_angle
-        log(f"STEER[{source}]: {steer_angle:.1f} deg | CENTER: {CENTER_ANGLE:.1f} deg")
+        if gpio is None:
+            raise RuntimeError("pigpio is not initialized.")
+        pulse_us = angle_to_pulse_us(steer_angle)
+        gpio.set_servo_pulsewidth(SERVO_PIN, pulse_us)
+        log(
+            f"STEER[{source}]: {steer_angle:.1f} deg | CENTER: {CENTER_ANGLE:.1f} deg | PULSE: {pulse_us} us"
+        )
         last_steer_angle = steer_angle
         last_steer_source = source
 
@@ -236,6 +257,7 @@ def publish_status(state: str) -> None:
             "steer_angle": round(steer_angle, 2),
             "center_angle": round(CENTER_ANGLE, 2),
             "servo_pin": SERVO_PIN,
+            "pigpio_host": PIGPIO_HOST,
             "ts": time.time(),
         }
     )
@@ -351,12 +373,14 @@ def cleanup() -> None:
     close_mqtt()
 
     try:
-        servo.detach()
+        if gpio is not None:
+            gpio.set_servo_pulsewidth(SERVO_PIN, 0)
     except Exception:
         pass
 
     try:
-        GPIO.cleanup()
+        if gpio is not None:
+            gpio.stop()
     except Exception:
         pass
 
@@ -457,12 +481,14 @@ def process_controls() -> None:
 def main() -> None:
     global running
 
+    setup_gpio()
     setup_mqtt()
 
     print("=== RPI KEYBOARD + MQTT SERVO BRIDGE MODE ===")
     print(f"Keyboard: {keyboard.path}")
     print(f"MQTT broker: {MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}")
     print(f"MQTT servo topic: {MQTT_SERVO_TOPIC}")
+    print(f"pigpio: {PIGPIO_HOST}:{PIGPIO_PORT}")
     print(f"Servo GPIO pin: {SERVO_PIN}")
     print("W = forward")
     print("S = backward")
@@ -480,6 +506,9 @@ def main() -> None:
     print(
         f"Steering center={CENTER_ANGLE:.1f}, left={LEFT_LIMIT:.1f}, right={RIGHT_LIMIT:.1f}, "
         f"step={STEP:.1f}, remote_timeout={REMOTE_SERVO_TIMEOUT:.2f}s"
+    )
+    print(
+        f"Servo pulse range={SERVO_MIN_PULSE_US}..{SERVO_MAX_PULSE_US} us"
     )
     print(
         f"Remote mapped input range={REMOTE_INPUT_MIN_ANGLE:.1f}..{REMOTE_INPUT_CENTER_ANGLE:.1f}..{REMOTE_INPUT_MAX_ANGLE:.1f}"

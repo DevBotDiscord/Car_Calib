@@ -14,13 +14,22 @@ vision controller publishes steering angles over MQTT.
 Install dependencies:
 
 ```bash
-pip install gpiozero evdev RPi.GPIO paho-mqtt python-dotenv
+sudo apt install -y pigpio python3-pigpio
+pip install evdev paho-mqtt python-dotenv
+sudo systemctl enable --now pigpiod
 ```
 
 Run:
 
 ```bash
 MQTT_BROKER_HOST=192.168.1.50 SERVO_PIN=19 python scripts/rpi_mqtt_bridge.py
+```
+
+If `pigpiod` is running on a different host, set:
+
+```bash
+PIGPIO_HOST=127.0.0.1
+PIGPIO_PORT=8888
 ```
 
 Keyboard controls remain local:
@@ -92,4 +101,5 @@ python scripts/mqtt_servo_command.py 90
 
 - `SERVO_PIN` defaults to `19`
 - default base pins are `17`, `27`, `22`
+- servo/base output is now driven through `pigpio`
 - broker host and topic must match on both machines
