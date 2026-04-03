@@ -10,7 +10,7 @@ const char* WIFI_AP_NAME = "ESP32-Car-Setup";
 const char* WIFI_AP_PASSWORD = "setup1234";
 const unsigned long WIFI_PORTAL_TIMEOUT_S = 180;
 
-const char* MQTT_HOST = "192.168.1.50";
+const char* MQTT_HOST = "minipc-tc";
 const uint16_t MQTT_PORT = 1883;
 const char* MQTT_USERNAME = "";
 const char* MQTT_PASSWORD = "";
@@ -25,8 +25,8 @@ const char* MQTT_STATUS_TOPIC = "car/status";
 // =========================================================
 const int SERVO_PIN = 19;
 const int BASE_OUT1_PIN = 17;
-const int BASE_OUT2_PIN = 27;
-const int BASE_OUT3_PIN = 22;
+const int BASE_OUT2_PIN = 18;
+const int BASE_OUT3_PIN = 21;
 
 // =========================================================
 // SERVO MAPPING
@@ -39,9 +39,9 @@ const float LOCAL_RIGHT_LIMIT = 60.0f;
 
 // Vision side default output range from Car_Calib.
 // If you publish signed angles directly, change these to -65 / -8 / 60.
-const float REMOTE_INPUT_MIN_ANGLE = 60.0f;
-const float REMOTE_INPUT_CENTER_ANGLE = 90.0f;
-const float REMOTE_INPUT_MAX_ANGLE = 120.0f;
+const float REMOTE_INPUT_MIN_ANGLE = -65.0f;
+const float REMOTE_INPUT_CENTER_ANGLE = -8.0f;
+const float REMOTE_INPUT_MAX_ANGLE =  60.0f;
 
 const unsigned long MQTT_RECONNECT_DELAY_MS = 3000;
 const unsigned long STATUS_INTERVAL_MS = 5000;
