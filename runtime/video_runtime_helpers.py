@@ -15,10 +15,28 @@ import numpy as np
 
 
 def maybe_flip_frame(frame: np.ndarray, flip_frame: bool) -> np.ndarray:
-    """Return flipped frame when *flip_frame* is enabled (180 degree flip)."""
+    """Return a horizontally mirrored frame when *flip_frame* is enabled."""
     if not flip_frame:
         return frame
-    return cv2.flip(frame, -1)
+    return cv2.flip(frame, 1)
+
+
+def resolve_show_preview(
+    show_preview: bool,
+    debug_mode: bool,
+    argv: list[str] | None = None,
+) -> bool:
+    """Resolve live preview visibility from defaults and CLI intent."""
+    if argv is None:
+        argv = []
+
+    if "--no-preview" in argv:
+        return False
+    if "--show-preview" in argv:
+        return True
+    if debug_mode:
+        return True
+    return show_preview
 
 
 def configure_terminal_logging(enabled: bool) -> None:
@@ -423,7 +441,7 @@ def build_process_video_arg_parser(
         "--flip-frame",
         action="store_true",
         dest="flip_frame",
-        help="Flip each frame by 180 degrees before processing.",
+        help="Mirror each frame horizontally before processing.",
     )
     parser.add_argument(
         "--no-flip-frame",
@@ -553,14 +571,14 @@ def build_main_arg_parser(
     parser.add_argument("--terminal-log", action="store_true", dest="terminal_log", help="Show INFO logs in terminal.")
     parser.add_argument("--no-terminal-log", action="store_false", dest="terminal_log", help="Reduce terminal logs.")
     parser.add_argument("--show-preview", action="store_true", dest="show_preview", help="Show local OpenCV preview window.")
-    parser.add_argument("--no-preview", action="store_false", dest="show_preview", help="Disable local OpenCV preview window.")
+    parser.add_argument("--no-preview", action="store_false", dest="show_preview", help="Disable local OpenCV preview window, even in debug mode.")
     parser.add_argument("--show-guidance-overlay", action="store_true", dest="show_guidance_overlay", help="Show guidance overlays in preview/video/stream.")
     parser.add_argument("--no-guidance-overlay", action="store_false", dest="show_guidance_overlay", help="Disable guidance overlays.")
     parser.add_argument("--show-detector-debug", action="store_true", dest="show_detector_debug", help="Include detector debug panel below camera frame.")
     parser.add_argument("--no-detector-debug", action="store_false", dest="show_detector_debug", help="Disable detector debug panel.")
     parser.add_argument("--write-debug-video", action="store_true", dest="write_debug_video", help="Write annotated live video to file.")
     parser.add_argument("--no-write-debug-video", action="store_false", dest="write_debug_video", help="Disable debug video output.")
-    parser.add_argument("--flip-frame", action="store_true", dest="flip_frame", help="Flip each camera frame by 180 degrees.")
+    parser.add_argument("--flip-frame", action="store_true", dest="flip_frame", help="Mirror each camera frame horizontally.")
     parser.add_argument("--no-flip-frame", action="store_false", dest="flip_frame", help="Disable frame flipping.")
     parser.add_argument("--stream", action="store_true", dest="stream_enabled", help="Enable HTTPS MJPEG stream.")
     parser.add_argument("--no-stream", action="store_false", dest="stream_enabled", help="Disable HTTPS MJPEG stream.")

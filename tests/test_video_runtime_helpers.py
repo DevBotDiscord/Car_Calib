@@ -1,0 +1,51 @@
+"""Tests for runtime.video_runtime_helpers."""
+
+from __future__ import annotations
+
+import importlib
+import sys
+import types
+
+import numpy as np
+
+
+def _load_helpers():
+    fake_cv2 = types.SimpleNamespace(
+        flip=lambda frame, mode: np.flip(frame, axis=1 if mode == 1 else 0),
+    )
+    sys.modules["cv2"] = fake_cv2
+    sys.modules.pop("runtime.video_runtime_helpers", None)
+    return importlib.import_module("runtime.video_runtime_helpers")
+
+
+def test_maybe_flip_frame_mirrors_horizontally():
+    helpers = _load_helpers()
+    frame = np.array(
+        [
+            [[1, 0, 0], [2, 0, 0], [3, 0, 0]],
+            [[4, 0, 0], [5, 0, 0], [6, 0, 0]],
+        ],
+        dtype=np.uint8,
+    )
+
+    flipped = helpers.maybe_flip_frame(frame, True)
+
+    assert flipped.tolist() == [
+        [[3, 0, 0], [2, 0, 0], [1, 0, 0]],
+        [[6, 0, 0], [5, 0, 0], [4, 0, 0]],
+    ]
+
+
+def test_resolve_show_preview_enables_preview_in_debug_mode():
+    helpers = _load_helpers()
+    assert helpers.resolve_show_preview(False, True, []) is True
+
+
+def test_resolve_show_preview_respects_explicit_no_preview():
+    helpers = _load_helpers()
+    assert helpers.resolve_show_preview(True, True, ["--no-preview"]) is False
+
+
+def test_resolve_show_preview_keeps_preview_disabled_without_debug():
+    helpers = _load_helpers()
+    assert helpers.resolve_show_preview(False, False, []) is False

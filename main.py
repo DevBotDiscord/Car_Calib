@@ -70,6 +70,7 @@ from runtime.video_runtime_helpers import (
     init_csv_logger,
     init_live_video_writer,
     maybe_flip_frame,
+    resolve_show_preview,
     sleep_remainder,
 )
 from vision.detector import LineDetector
@@ -158,6 +159,11 @@ def main() -> None:
         hardware_retry_limit_default=MAIN_HARDWARE_RETRY_LIMIT,
     )
     args = parser.parse_args()
+    args.show_preview = resolve_show_preview(
+        show_preview=args.show_preview,
+        debug_mode=args.debug_mode,
+        argv=sys.argv[1:],
+    )
     configure_terminal_logging(args.terminal_log)
 
     state = RobotState()
