@@ -242,9 +242,6 @@ class ServoDriver:
 
         try:
             result = client.publish(self._mqtt_topic, payload)
-            wait_for_publish = getattr(result, "wait_for_publish", None)
-            if callable(wait_for_publish):
-                wait_for_publish()
             rc = getattr(result, "rc", 0)
             if rc not in (0, None):
                 raise OSError(f"MQTT publish failed with rc={rc}")
