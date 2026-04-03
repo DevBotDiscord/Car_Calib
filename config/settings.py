@@ -144,6 +144,8 @@ VISION_DEBUG_MASK_FILE = _get_str("VISION_DEBUG_MASK_FILE", "debug_mask.jpg")
 CTRL_HYSTERESIS_HIGH = _get_float("CTRL_HYSTERESIS_HIGH", 5.0)
 CTRL_HYSTERESIS_LOW = _get_float("CTRL_HYSTERESIS_LOW", 3.0)
 CTRL_RELOCK_VALID_FRAMES = _get_int("CTRL_RELOCK_VALID_FRAMES", 3)
+CTRL_SERVO_OUTPUT_DEADBAND_DEG = _get_float("CTRL_SERVO_OUTPUT_DEADBAND_DEG", 0.5)
+CTRL_SERVO_OUTPUT_SLEW_RATE_DEG_PER_S = _get_float("CTRL_SERVO_OUTPUT_SLEW_RATE_DEG_PER_S", 180.0)
 
 # --------------------------------------------------------------------------- #
 # Driver defaults

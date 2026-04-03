@@ -174,7 +174,13 @@ class TestCalibrationStage:
 
     def test_threshold_hysteresis_controls_start_and_stop(self, state):
         """Calibration starts at high threshold and stops at low threshold."""
-        controller = ServoPID(state, start_calib_threshold_deg=5.0, stop_calib_threshold_deg=3.0)
+        controller = ServoPID(
+            state,
+            start_calib_threshold_deg=5.0,
+            stop_calib_threshold_deg=3.0,
+            servo_output_deadband_deg=0.0,
+            servo_output_slew_rate_deg_per_s=0.0,
+        )
 
         # Below start threshold: should not calibrate.
         result1 = controller.update(94.0)  # error=4.0°
@@ -197,3 +203,46 @@ class TestCalibrationStage:
         assert result4 == pytest.approx(state.servo_center_angle)
         assert state.pid_integral == pytest.approx(0.0)
         assert state.pid_last_error == pytest.approx(0.0)
+
+
+class TestOutputShaping:
+    def test_deadband_holds_previous_servo_angle(self, monkeypatch, state):
+        moments = iter([10.0, 10.1])
+        monkeypatch.setattr("control.servo_pid.time.monotonic", lambda: next(moments))
+
+        state.pid.kp = 1.0
+        state.pid.ki = 0.0
+        state.pid.kd = 0.0
+        controller = ServoPID(
+            state,
+            start_calib_threshold_deg=0.1,
+            stop_calib_threshold_deg=0.05,
+            servo_output_deadband_deg=0.5,
+            servo_output_slew_rate_deg_per_s=0.0,
+        )
+
+        result = controller.update(90.4)
+
+        assert result == pytest.approx(state.servo_center_angle)
+        assert state.last_valid_servo_angle == pytest.approx(state.servo_center_angle)
+
+    def test_slew_rate_limits_output_step(self, monkeypatch, state):
+        moments = iter([20.0, 20.1, 20.2])
+        monkeypatch.setattr("control.servo_pid.time.monotonic", lambda: next(moments))
+
+        state.pid.kp = 1.0
+        state.pid.ki = 0.0
+        state.pid.kd = 0.0
+        controller = ServoPID(
+            state,
+            start_calib_threshold_deg=0.1,
+            stop_calib_threshold_deg=0.05,
+            servo_output_deadband_deg=0.0,
+            servo_output_slew_rate_deg_per_s=50.0,
+        )
+
+        first = controller.update(120.0)
+        second = controller.update(120.0)
+
+        assert first == pytest.approx(state.servo_center_angle + 5.0, abs=1e-6)
+        assert second == pytest.approx(state.servo_center_angle + 10.0, abs=1e-6)
