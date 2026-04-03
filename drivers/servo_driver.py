@@ -26,7 +26,6 @@ from config.settings import (
     DRIVER_SERVO_BRIDGE_PORT,
     DRIVER_SERVO_CHANNEL,
     DRIVER_SERVO_MQTT_ENABLED,
-    DRIVER_SERVO_MQTT_MIN_ANGLE_DELTA,
     DRIVER_SERVO_PULSE_MAX_US,
     DRIVER_SERVO_PULSE_MIN_US,
     MQTT_BROKER_HOST,
@@ -64,7 +63,6 @@ class ServoDriver:
         mqtt_keepalive_s: int = MQTT_KEEPALIVE_S,
         mqtt_topic: str = MQTT_SERVO_TOPIC,
         mqtt_client_id_prefix: str = MQTT_CLIENT_ID_PREFIX,
-        mqtt_min_angle_delta: float = DRIVER_SERVO_MQTT_MIN_ANGLE_DELTA,
         bridge_enabled: bool = DRIVER_SERVO_BRIDGE_ENABLED,
         bridge_host: str = DRIVER_SERVO_BRIDGE_HOST,
         bridge_port: int = DRIVER_SERVO_BRIDGE_PORT,
@@ -84,9 +82,7 @@ class ServoDriver:
         self._mqtt_keepalive_s = mqtt_keepalive_s
         self._mqtt_topic = mqtt_topic
         self._mqtt_client_id = f"{mqtt_client_id_prefix}-servo-{os.getpid()}"
-        self._mqtt_min_angle_delta = max(0.0, mqtt_min_angle_delta)
         self._mqtt_client: Any | None = None
-        self._mqtt_last_angle: float | None = None
         self._bridge_enabled = bridge_enabled
         self._bridge_host = bridge_host
         self._bridge_port = bridge_port
@@ -172,7 +168,6 @@ class ServoDriver:
                     disconnect()
             finally:
                 self._mqtt_client = None
-                self._mqtt_last_angle = None
 
         if self._bridge_socket is None:
             return
@@ -224,18 +219,7 @@ class ServoDriver:
         return client
 
     def _publish_mqtt_angle(self, angle: float, *, force: bool = False) -> None:
-        if (
-            not force
-            and self._mqtt_last_angle is not None
-            and abs(angle - self._mqtt_last_angle) <= self._mqtt_min_angle_delta
-        ):
-            logger.debug(
-                "ServoDriver MQTT skipped small delta: angle=%.2f deg last=%.2f deg min_delta=%.2f deg",
-                angle,
-                self._mqtt_last_angle,
-                self._mqtt_min_angle_delta,
-            )
-            return
+        del force
 
         client = self._get_mqtt_client()
         payload = f"{angle:.4f}"
@@ -245,7 +229,6 @@ class ServoDriver:
             rc = getattr(result, "rc", 0)
             if rc not in (0, None):
                 raise OSError(f"MQTT publish failed with rc={rc}")
-            self._mqtt_last_angle = angle
         except Exception as exc:  # noqa: BLE001
             self.close()
             raise OSError(f"MQTT publish failed: {exc}") from exc

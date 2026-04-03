@@ -250,7 +250,7 @@ class TestMqttMode:
         assert client.retains == [True]
         assert client.publish_results[0].waited is False
 
-    def test_mqtt_skips_small_angle_delta(self, monkeypatch):
+    def test_mqtt_publishes_every_send(self, monkeypatch):
         fake_mqtt = FakeMQTTModule()
 
         monkeypatch.setattr(
@@ -263,7 +263,6 @@ class TestMqttMode:
             mqtt_host="broker.local",
             mqtt_port=1883,
             mqtt_topic="car/servo/angle",
-            mqtt_min_angle_delta=0.5,
         )
         driver.send_angle(95.5)
         driver.send_angle(95.9)
@@ -272,9 +271,10 @@ class TestMqttMode:
         client = fake_mqtt.clients[0]
         assert client.published == [
             ("car/servo/angle", "95.5000"),
+            ("car/servo/angle", "95.9000"),
             ("car/servo/angle", "96.1000"),
         ]
-        assert client.retains == [True, True]
+        assert client.retains == [True, True, True]
 
     def test_mqtt_center_uses_center_angle_payload(self, monkeypatch):
         fake_mqtt = FakeMQTTModule()
