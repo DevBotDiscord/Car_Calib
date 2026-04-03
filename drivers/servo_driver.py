@@ -241,7 +241,7 @@ class ServoDriver:
         payload = f"{angle:.4f}"
 
         try:
-            result = client.publish(self._mqtt_topic, payload)
+            result = client.publish(self._mqtt_topic, payload, retain=True)
             rc = getattr(result, "rc", 0)
             if rc not in (0, None):
                 raise OSError(f"MQTT publish failed with rc={rc}")

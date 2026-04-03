@@ -127,6 +127,7 @@ class FakeMQTTClient:
         self.username = None
         self.published = []
         self.publish_results = []
+        self.retains = []
 
     def username_pw_set(self, username, password):
         self.username = (username, password)
@@ -143,8 +144,9 @@ class FakeMQTTClient:
     def disconnect(self):
         self.disconnected = True
 
-    def publish(self, topic, payload):
+    def publish(self, topic, payload, retain=False):
         self.published.append((topic, payload))
+        self.retains.append(retain)
         result = FakeMQTTPublishResult()
         self.publish_results.append(result)
         return result
@@ -245,6 +247,7 @@ class TestMqttMode:
         client = fake_mqtt.clients[0]
         assert client.connected == ("broker.local", 1883, 60)
         assert client.published == [("car/servo/angle", "95.5000")]
+        assert client.retains == [True]
         assert client.publish_results[0].waited is False
 
     def test_mqtt_skips_small_angle_delta(self, monkeypatch):
@@ -271,6 +274,7 @@ class TestMqttMode:
             ("car/servo/angle", "95.5000"),
             ("car/servo/angle", "96.1000"),
         ]
+        assert client.retains == [True, True]
 
     def test_mqtt_center_uses_center_angle_payload(self, monkeypatch):
         fake_mqtt = FakeMQTTModule()
@@ -289,6 +293,7 @@ class TestMqttMode:
 
         client = fake_mqtt.clients[0]
         assert client.published == [("car/servo/angle", "75.0000")]
+        assert client.retains == [True]
 
     def test_mqtt_close_disconnects_client(self, monkeypatch):
         fake_mqtt = FakeMQTTModule()

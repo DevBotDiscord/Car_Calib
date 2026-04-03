@@ -50,6 +50,20 @@ When `A`, `D`, or `C` is pressed, local steering temporarily overrides the
 MQTT angle stream. When the user stops steering, remote servo control
 resumes automatically.
 
+By default, the bridge now holds the last MQTT steering angle until a new
+message arrives:
+
+```bash
+REMOTE_SERVO_HOLD_LAST=true
+```
+
+If you want the old timeout behavior back, set:
+
+```bash
+REMOTE_SERVO_HOLD_LAST=false
+REMOTE_SERVO_TIMEOUT=0.6
+```
+
 ## Accepted Servo Payload
 
 The Python bridge accepts either:
@@ -102,4 +116,5 @@ python scripts/mqtt_servo_command.py 90
 - `SERVO_PIN` defaults to `19`
 - default base pins are `17`, `27`, `22`
 - servo/base output is now driven through `pigpio`
+- servo MQTT angle is published as a retained message
 - broker host and topic must match on both machines

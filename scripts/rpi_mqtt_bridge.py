@@ -76,6 +76,14 @@ SERVO_MIN_PULSE_US = int(round(float(os.getenv("SERVO_MIN_PULSE", "0.0005")) * 1
 SERVO_MAX_PULSE_US = int(round(float(os.getenv("SERVO_MAX_PULSE", "0.0025")) * 1_000_000))
 
 REMOTE_SERVO_TIMEOUT = float(os.getenv("REMOTE_SERVO_TIMEOUT", "0.6"))
+REMOTE_SERVO_HOLD_LAST = os.getenv("REMOTE_SERVO_HOLD_LAST", "true").strip().lower() in {
+    "1",
+    "true",
+    "t",
+    "yes",
+    "y",
+    "on",
+}
 MANUAL_STEER_HOLD = float(os.getenv("MANUAL_STEER_HOLD", "0.25"))
 LOOP_DELAY = float(os.getenv("LOOP_DELAY", "0.01"))
 
@@ -199,6 +207,10 @@ def steer_left_step(source: str) -> None:
 
 
 def remote_control_active(now: float) -> bool:
+    if REMOTE_SERVO_HOLD_LAST:
+        del now
+        return remote_servo_angle is not None
+
     return (
         remote_servo_angle is not None
         and now - remote_servo_updated_at <= REMOTE_SERVO_TIMEOUT
@@ -505,8 +517,10 @@ def main() -> None:
     print("")
     print(
         f"Steering center={CENTER_ANGLE:.1f}, left={LEFT_LIMIT:.1f}, right={RIGHT_LIMIT:.1f}, "
-        f"step={STEP:.1f}, remote_timeout={REMOTE_SERVO_TIMEOUT:.2f}s"
+        f"step={STEP:.1f}, remote_hold_last={REMOTE_SERVO_HOLD_LAST}"
     )
+    if not REMOTE_SERVO_HOLD_LAST:
+        print(f"Remote timeout={REMOTE_SERVO_TIMEOUT:.2f}s")
     print(
         f"Servo pulse range={SERVO_MIN_PULSE_US}..{SERVO_MAX_PULSE_US} us"
     )
