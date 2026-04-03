@@ -48,6 +48,7 @@ Required Arduino libraries:
 
 - `PubSubClient`
 - `ESP32Servo`
+- `WiFiManager`
 
 Open and edit:
 
@@ -55,12 +56,22 @@ Open and edit:
 
 Update these values before flashing:
 
-- `WIFI_SSID`
-- `WIFI_PASSWORD`
 - `MQTT_HOST`
 - `MQTT_PORT`
 - `MQTT_USERNAME`
 - `MQTT_PASSWORD`
+
+Wi-Fi credentials no longer need to be hardcoded in the sketch.
+
+If the ESP32 has no saved Wi-Fi credentials, or it cannot reconnect, it
+will open its own local setup access point:
+
+- SSID: `ESP32-Car-Setup`
+- Password: `setup1234`
+- Config page: `http://192.168.4.1`
+
+Connect to that AP from your phone or laptop, choose the target Wi-Fi
+network, save, and the board will join that network automatically.
 
 Default pin mapping in the firmware:
 

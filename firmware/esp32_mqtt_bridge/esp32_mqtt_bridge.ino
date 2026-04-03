@@ -1,12 +1,14 @@
 #include <WiFi.h>
+#include <WiFiManager.h>
 #include <PubSubClient.h>
 #include <ESP32Servo.h>
 
 // =========================================================
 // WIFI + MQTT
 // =========================================================
-const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char* WIFI_AP_NAME = "ESP32-Car-Setup";
+const char* WIFI_AP_PASSWORD = "setup1234";
+const unsigned long WIFI_PORTAL_TIMEOUT_S = 180;
 
 const char* MQTT_HOST = "192.168.1.50";
 const uint16_t MQTT_PORT = 1883;
@@ -37,8 +39,8 @@ const float LOCAL_RIGHT_LIMIT = 60.0f;
 
 // Vision side default output range from Car_Calib.
 // If you publish signed angles directly, change these to -65 / -8 / 60.
-const float REMOTE_INPUT_MIN_ANGLE = 60.0f;
-const float REMOTE_INPUT_CENTER_ANGLE = 90.0f;
+const float REMOTE_INPUT_MIN_ANGLE = -60.0f;
+const float REMOTE_INPUT_CENTER_ANGLE = -8.0f;
 const float REMOTE_INPUT_MAX_ANGLE = 120.0f;
 
 const unsigned long MQTT_RECONNECT_DELAY_MS = 3000;
@@ -46,6 +48,7 @@ const unsigned long STATUS_INTERVAL_MS = 5000;
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
+WiFiManager wifiManager;
 Servo steeringServo;
 
 float lastServoAngle = LOCAL_CENTER_ANGLE;
@@ -170,14 +173,19 @@ void connectWifi() {
     return;
   }
 
+  Serial.println("WiFi not connected. Starting WiFiManager portal if needed...");
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  WiFi.setAutoReconnect(true);
+  wifiManager.setConfigPortalBlocking(true);
+  wifiManager.setConfigPortalTimeout(WIFI_PORTAL_TIMEOUT_S);
+  wifiManager.setHostname(MQTT_CLIENT_ID);
+
+  if (!wifiManager.autoConnect(WIFI_AP_NAME, WIFI_AP_PASSWORD)) {
+    Serial.println("WiFiManager portal timed out. Restarting...");
+    delay(1000);
+    ESP.restart();
   }
-  Serial.println();
+
   Serial.print("WiFi connected, IP=");
   Serial.println(WiFi.localIP());
 }
