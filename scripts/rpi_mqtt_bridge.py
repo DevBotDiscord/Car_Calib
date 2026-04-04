@@ -105,10 +105,14 @@ OUT3 = int(os.getenv("BASE_OUT3", "22"))
 STEER_AXIS = ecodes.ABS_RX
 DRIVE_AXIS = ecodes.ABS_Y
 HAT_Y_AXIS = ecodes.ABS_HAT0Y
+REMOTE_STEER_TRIGGER_AXIS = int(
+    os.getenv("GAMEPAD_REMOTE_STEER_AXIS", str(ecodes.ABS_Z))
+)
 BUTTON_STOP = ecodes.BTN_SOUTH
 BUTTON_CENTER = ecodes.BTN_EAST
 BUTTON_LOCK = ecodes.BTN_TL
 BUTTON_UNLOCK = ecodes.BTN_TR
+BUTTON_REMOTE_STEER_ONLY = ecodes.BTN_TL2
 BUTTON_QUIT = ecodes.BTN_START
 BUTTON_CENTER_PLUS = ecodes.BTN_NORTH
 BUTTON_CENTER_MINUS = ecodes.BTN_WEST
@@ -138,6 +142,9 @@ LOOP_DELAY = float(os.getenv("LOOP_DELAY", "0.01"))
 STEER_DEADBAND_DEG = float(os.getenv("STEER_DEADBAND_DEG", "1.0"))
 GAMEPAD_STEER_DEADZONE = float(os.getenv("GAMEPAD_STEER_DEADZONE", "0.12"))
 GAMEPAD_DRIVE_DEADZONE = float(os.getenv("GAMEPAD_DRIVE_DEADZONE", "0.20"))
+GAMEPAD_REMOTE_STEER_TRIGGER_THRESHOLD = float(
+    os.getenv("GAMEPAD_REMOTE_STEER_TRIGGER_THRESHOLD", "0.5")
+)
 INVERT_STEER_AXIS = os.getenv("INVERT_STEER_AXIS", "false").strip().lower() in {
     "1",
     "true",
@@ -177,6 +184,9 @@ axis_state = {
 hat_state = {
     HAT_Y_AXIS: 0,
 }
+trigger_axis_state = {
+    REMOTE_STEER_TRIGGER_AXIS: 0.0,
+}
 steer_angle = CENTER_ANGLE
 last_base_state: tuple[int, int, int] | None = None
 last_steer_angle: float | None = None
@@ -184,6 +194,7 @@ last_steer_source: str | None = None
 remote_servo_angle: float | None = None
 remote_servo_updated_at = 0.0
 manual_override_until = 0.0
+manual_override_source: str | None = None
 mqtt_client: mqtt.Client | None = None
 mqtt_connected = False
 gpio: pigpio.pi | None = None
@@ -222,6 +233,44 @@ def normalize_axis(device: InputDevice, axis_code: int, raw_value: int) -> float
 
     value = (raw_value - center) / half_range
     return clamp(value, -1.0, 1.0)
+
+
+def normalize_trigger_axis(device: InputDevice, axis_code: int, raw_value: int) -> float:
+    try:
+        info = device.absinfo(axis_code)
+    except Exception:
+        return 0.0
+
+    minimum = info.min
+    maximum = info.max
+    span = maximum - minimum
+    if span <= 0:
+        return 0.0
+
+    value = (raw_value - minimum) / span
+    return clamp(value, 0.0, 1.0)
+
+
+def controller_remote_steer_only_enabled() -> bool:
+    return (
+        BUTTON_REMOTE_STEER_ONLY in pressed_buttons
+        or trigger_axis_state.get(REMOTE_STEER_TRIGGER_AXIS, 0.0)
+        >= GAMEPAD_REMOTE_STEER_TRIGGER_THRESHOLD
+    )
+
+
+def activate_manual_override(source: str, now: float) -> None:
+    global manual_override_until, manual_override_source
+
+    manual_override_until = now + MANUAL_STEER_HOLD
+    manual_override_source = source
+
+
+def clear_manual_override() -> None:
+    global manual_override_until, manual_override_source
+
+    manual_override_until = 0.0
+    manual_override_source = None
 
 
 def setup_gpio() -> None:
@@ -379,7 +428,7 @@ def steer_from_gamepad_axis(axis_value: float, source: str) -> bool:
 
 
 def adjust_center(delta: float, source: str) -> None:
-    global CENTER_ANGLE, manual_override_until
+    global CENTER_ANGLE
 
     CENTER_ANGLE = clamp(CENTER_ANGLE + delta, LEFT_LIMIT, RIGHT_LIMIT)
     if servo_output is not None:
@@ -387,9 +436,11 @@ def adjust_center(delta: float, source: str) -> None:
     log(f"CENTER_ANGLE: {CENTER_ANGLE}")
 
     if source == "GAMEPAD":
+        if controller_remote_steer_only_enabled():
+            return
         steer_value = apply_deadzone(axis_state[STEER_AXIS], GAMEPAD_STEER_DEADZONE)
         if steer_value == 0.0:
-            manual_override_until = time.monotonic() + MANUAL_STEER_HOLD
+            activate_manual_override(source, time.monotonic())
             steer_center(source)
 
 
@@ -655,6 +706,14 @@ def update_gamepad_axis_state(device: InputDevice, event) -> None:
         axis_state[event.code] = normalize_axis(device, event.code, event.value)
         return
 
+    if event.code in trigger_axis_state:
+        trigger_axis_state[event.code] = normalize_trigger_axis(
+            device,
+            event.code,
+            event.value,
+        )
+        return
+
     if event.code == HAT_Y_AXIS and event.value != hat_state[HAT_Y_AXIS]:
         hat_state[HAT_Y_AXIS] = event.value
         if event.value == -1:
@@ -664,7 +723,7 @@ def update_gamepad_axis_state(device: InputDevice, event) -> None:
 
 
 def process_controls() -> None:
-    global manual_override_until
+    global manual_override_source
 
     now = time.monotonic()
 
@@ -715,33 +774,38 @@ def process_controls() -> None:
     has_a = "KEY_A" in pressed_keys
     has_d = "KEY_D" in pressed_keys
     has_c = "KEY_C" in pressed_keys
+    gamepad_remote_steer_only = controller_remote_steer_only_enabled()
 
     if has_c:
-        manual_override_until = now + MANUAL_STEER_HOLD
+        activate_manual_override("KEYBOARD", now)
         steer_center("KEYBOARD")
         return
 
     if has_a and not has_d:
-        manual_override_until = now + MANUAL_STEER_HOLD
+        activate_manual_override("KEYBOARD", now)
         steer_left_step("KEYBOARD")
         return
 
     if has_d and not has_a:
-        manual_override_until = now + MANUAL_STEER_HOLD
+        activate_manual_override("KEYBOARD", now)
         steer_right_step("KEYBOARD")
         return
+
+    if gamepad_remote_steer_only and manual_override_source == "GAMEPAD":
+        clear_manual_override()
 
     if now < manual_override_until:
         return
 
-    if BUTTON_CENTER in pressed_buttons:
-        manual_override_until = now + MANUAL_STEER_HOLD
-        steer_center("GAMEPAD")
-        return
+    if not gamepad_remote_steer_only:
+        if BUTTON_CENTER in pressed_buttons:
+            activate_manual_override("GAMEPAD", now)
+            steer_center("GAMEPAD")
+            return
 
-    if steer_from_gamepad_axis(axis_state[STEER_AXIS], "GAMEPAD"):
-        manual_override_until = now + MANUAL_STEER_HOLD
-        return
+        if steer_from_gamepad_axis(axis_state[STEER_AXIS], "GAMEPAD"):
+            activate_manual_override("GAMEPAD", now)
+            return
 
     if remote_control_active(now):
         apply_steering(remote_servo_angle if remote_servo_angle is not None else CENTER_ANGLE, "REMOTE")
@@ -791,6 +855,7 @@ def main() -> None:
     print("Q = quit")
     print("Right stick X = steering")
     print("Left stick Y = base drive")
+    print("L2 = keep base local, hand steering back to MQTT")
     print("A = stop | B = center steering | LB = lock | RB = unlock")
     print("Y/X or D-pad up/down = center angle +/-1 | START = quit")
     print("Ctrl+C = emergency exit")
@@ -798,7 +863,9 @@ def main() -> None:
     print(
         f"Steering center={CENTER_ANGLE:.1f}, left={LEFT_LIMIT:.1f}, right={RIGHT_LIMIT:.1f}, "
         f"step={STEP:.1f}, deadband={STEER_DEADBAND_DEG:.1f}, "
-        f"gamepad_steer_deadzone={GAMEPAD_STEER_DEADZONE:.2f}, gamepad_drive_deadzone={GAMEPAD_DRIVE_DEADZONE:.2f}"
+        f"gamepad_steer_deadzone={GAMEPAD_STEER_DEADZONE:.2f}, "
+        f"gamepad_drive_deadzone={GAMEPAD_DRIVE_DEADZONE:.2f}, "
+        f"l2_trigger_threshold={GAMEPAD_REMOTE_STEER_TRIGGER_THRESHOLD:.2f}"
     )
     print(
         f"Remote hold last={REMOTE_SERVO_HOLD_LAST}, timeout={REMOTE_SERVO_TIMEOUT:.2f}s, "
