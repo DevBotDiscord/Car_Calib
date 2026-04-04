@@ -98,6 +98,7 @@ docker compose -f docker-compose.rpi.yml up --build -d
 A production helper similar to your `RobotOS` deploy script now exists at:
 
 - `deploy_production.sh`
+- `deploy_production.bat`
 
 Prepare:
 
@@ -114,6 +115,17 @@ Run:
 ./deploy_production.sh minipc
 ./deploy_production.sh ras
 ```
+
+On Windows:
+
+```bat
+deploy_production.bat
+deploy_production.bat minipc
+deploy_production.bat ras
+```
+
+The `.bat` wrapper looks for `bash.exe` from Git for Windows and then runs
+the same `deploy_production.sh`, so the deploy logic stays in one place.
 
 What it does:
 
