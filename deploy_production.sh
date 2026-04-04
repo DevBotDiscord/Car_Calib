@@ -67,6 +67,11 @@ find_command() {
     return 1
 }
 
+shell_quote() {
+    local value="$1"
+    printf "'%s'" "${value//\'/\'\\\'\'}"
+}
+
 require_file() {
     local file_path="$1"
     if [[ ! -f "$file_path" ]]; then
@@ -238,6 +243,7 @@ deploy_target() {
 
     local remote_archive="/tmp/${PROJECT_NAME}-${VERSION}-${label}.tar.gz"
     local remote_env="/tmp/${PROJECT_NAME}-${VERSION}-${label}.env"
+    local remote_bootstrap=""
     local ssh_check_output=""
 
     validate_password_auth_support "$label" "$password"
@@ -268,50 +274,46 @@ deploy_target() {
     log_ok "[${label}] Upload complete"
 
     log_step "[${label}] Deploying release ${VERSION}..."
-    ssh_base_cmd "$password" "$port" "$host_key" "${user}@${host}" bash -s -- \
-        "$dest_dir" \
-        "$compose_file" \
-        "$VERSION" \
-        "$use_sudo_docker" \
-        "$remote_archive" \
-        "$remote_env" \
-        "$DEPLOY_KEEP_RELEASES" <<'EOF'
+    remote_bootstrap=$(
+        printf '%s' \
+            "DEST_DIR=$(shell_quote "$dest_dir") " \
+            "COMPOSE_FILE=$(shell_quote "$compose_file") " \
+            "VERSION=$(shell_quote "$VERSION") " \
+            "USE_SUDO_DOCKER=$(shell_quote "$use_sudo_docker") " \
+            "REMOTE_ARCHIVE=$(shell_quote "$remote_archive") " \
+            "REMOTE_ENV=$(shell_quote "$remote_env") " \
+            "KEEP_RELEASES=$(shell_quote "$DEPLOY_KEEP_RELEASES") " \
+            "bash -s"
+    )
+    ssh_base_cmd "$password" "$port" "$host_key" "${user}@${host}" "$remote_bootstrap" <<'EOF'
 set -euo pipefail
 
-dest_dir="$1"
-compose_file="$2"
-version="$3"
-use_sudo_docker="$4"
-remote_archive="$5"
-remote_env="$6"
-keep_releases="$7"
-
-root_dir="${dest_dir%/}"
-release_dir="${root_dir}/releases/${version}"
+root_dir="${DEST_DIR%/}"
+release_dir="${root_dir}/releases/${VERSION}"
 current_dir="${root_dir}/current"
 
 mkdir -p "${root_dir}/releases"
 rm -rf "${release_dir}"
 mkdir -p "${release_dir}"
-tar -xzf "${remote_archive}" -C "${release_dir}"
-cp "${remote_env}" "${release_dir}/.env"
-cp "${remote_env}" "${release_dir}/.env.production"
+tar -xzf "${REMOTE_ARCHIVE}" -C "${release_dir}"
+cp "${REMOTE_ENV}" "${release_dir}/.env"
+cp "${REMOTE_ENV}" "${release_dir}/.env.production"
 ln -sfn "${release_dir}" "${current_dir}"
-rm -f "${remote_archive}" "${remote_env}"
+rm -f "${REMOTE_ARCHIVE}" "${REMOTE_ENV}"
 
-if [[ "${use_sudo_docker}" == "true" ]]; then
+if [[ "${USE_SUDO_DOCKER}" == "true" ]]; then
     docker_cmd=(sudo docker)
 else
     docker_cmd=(docker)
 fi
 
 cd "${current_dir}"
-"${docker_cmd[@]}" compose -f "${compose_file}" up --build -d
-"${docker_cmd[@]}" compose -f "${compose_file}" ps
+"${docker_cmd[@]}" compose -f "${COMPOSE_FILE}" up --build -d
+"${docker_cmd[@]}" compose -f "${COMPOSE_FILE}" ps
 
-if [[ "${keep_releases}" =~ ^[0-9]+$ ]] && (( keep_releases > 0 )); then
+if [[ "${KEEP_RELEASES}" =~ ^[0-9]+$ ]] && (( KEEP_RELEASES > 0 )); then
     cd "${root_dir}/releases"
-    mapfile -t old_releases < <(ls -1dt */ 2>/dev/null | tail -n +$((keep_releases + 1)) || true)
+    mapfile -t old_releases < <(ls -1dt */ 2>/dev/null | tail -n +$((KEEP_RELEASES + 1)) || true)
     if (( ${#old_releases[@]} > 0 )); then
         rm -rf -- "${old_releases[@]}"
     fi
