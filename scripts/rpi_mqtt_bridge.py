@@ -186,6 +186,7 @@ remote_servo_angle: float | None = None
 remote_servo_updated_at = 0.0
 manual_override_until = 0.0
 manual_override_source: str | None = None
+last_controller_remote_steer_only = False
 mqtt_client: mqtt.Client | None = None
 mqtt_connected = False
 gpio: pigpio.pi | None = None
@@ -228,6 +229,20 @@ def normalize_axis(device: InputDevice, axis_code: int, raw_value: int) -> float
 
 def controller_remote_steer_only_enabled() -> bool:
     return BUTTON_REMOTE_STEER_ONLY in pressed_buttons
+
+
+def log_controller_mode_transition(remote_steer_only: bool) -> None:
+    global last_controller_remote_steer_only
+
+    if remote_steer_only == last_controller_remote_steer_only:
+        return
+
+    if remote_steer_only:
+        log("MODE: drive local only, steering source=MQTT")
+    else:
+        log("MODE: steer+drive local from controller")
+
+    last_controller_remote_steer_only = remote_steer_only
 
 
 def activate_manual_override(source: str, now: float) -> None:
@@ -738,6 +753,7 @@ def process_controls() -> None:
     has_d = "KEY_D" in pressed_keys
     has_c = "KEY_C" in pressed_keys
     gamepad_remote_steer_only = controller_remote_steer_only_enabled()
+    log_controller_mode_transition(gamepad_remote_steer_only)
 
     if has_c:
         activate_manual_override("KEYBOARD", now)
