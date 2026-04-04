@@ -23,6 +23,7 @@ try:
         angle_within_limits,
         clamp_angle,
     )
+    from .input_device_helpers import open_optional_input_device
     from .angular_servo_output import (
         AngularServoOutput,
         apply_boot_servo_behavior,
@@ -33,6 +34,7 @@ except ImportError:  # pragma: no cover - direct script execution on Raspberry P
         angle_within_limits,
         clamp_angle,
     )
+    from input_device_helpers import open_optional_input_device  # type: ignore
     from angular_servo_output import (  # type: ignore
         AngularServoOutput,
         apply_boot_servo_behavior,
@@ -131,7 +133,7 @@ bridge_client_addr: tuple[str, int] | None = None
 bridge_buffer = ""
 gpio: pigpio.pi | None = None
 servo_output: AngularServoOutput | None = None
-keyboard = InputDevice(KEYBOARD_DEVICE)
+keyboard: InputDevice | None = None
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -169,6 +171,16 @@ def setup_servo_output() -> None:
         pigpio_port=PIGPIO_PORT,
         center_angle=CENTER_ANGLE,
         log=log,
+    )
+
+
+def setup_keyboard() -> None:
+    global keyboard
+
+    keyboard = open_optional_input_device(
+        KEYBOARD_DEVICE,
+        log=log,
+        device_factory=InputDevice,
     )
 
 
@@ -412,7 +424,8 @@ def cleanup() -> None:
         pass
 
     try:
-        keyboard.ungrab()
+        if keyboard is not None:
+            keyboard.ungrab()
     except Exception:
         pass
 
@@ -541,9 +554,13 @@ def main() -> None:
     setup_gpio()
     setup_servo_output()
     setup_bridge_server()
+    setup_keyboard()
 
     print("=== RPI KEYBOARD + TCP SERVO BRIDGE MODE (REBUILT) ===")
-    print(f"Keyboard: {keyboard.path}")
+    if keyboard is not None:
+        print(f"Keyboard: {keyboard.path}")
+    else:
+        print(f"Keyboard: disabled (missing {KEYBOARD_DEVICE})")
     print(f"Bridge listen: {BRIDGE_HOST}:{BRIDGE_PORT}")
     print(f"pigpio: {PIGPIO_HOST}:{PIGPIO_PORT}")
     print(f"Servo GPIO pin: {SERVO_PIN}")
@@ -585,16 +602,18 @@ def main() -> None:
     stop_base()
 
     try:
-        keyboard.grab()
+        if keyboard is not None:
+            keyboard.grab()
 
         while running:
             poll_bridge()
 
-            try:
-                for event in keyboard.read():
-                    update_key_state(event)
-            except (BlockingIOError, OSError):
-                pass
+            if keyboard is not None:
+                try:
+                    for event in keyboard.read():
+                        update_key_state(event)
+                except (BlockingIOError, OSError):
+                    pass
 
             process_controls()
             time.sleep(LOOP_DELAY)
