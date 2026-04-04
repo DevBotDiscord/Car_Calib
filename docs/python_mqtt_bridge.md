@@ -60,7 +60,7 @@ Controller controls are also supported when a gamepad is detected:
 
 - right stick X: steering
 - left stick Y: base forward/backward
-- `Y`: keep drive local but hand steering back to MQTT immediately
+- `Y`: toggle drive local + steering from MQTT on/off
 - `A`: stop base
 - `B`: center steering
 - `LB`: lock
@@ -81,9 +81,11 @@ If a controller is present, it acts as another local manual override source.
 When the stick/buttons return to neutral, remote MQTT steering resumes after
 the normal `MANUAL_STEER_HOLD` window.
 
-While `Y` is held, controller steering is suppressed and any active
-controller steering override is cleared right away, so MQTT steering takes
-back over immediately while left-stick drive continues to work.
+Press `Y` once to enable controller drive with MQTT steering. Press `Y`
+again to return to full local controller steering. When the MQTT steering
+mode is enabled, any active controller steering override is cleared right
+away, so MQTT steering takes over immediately while left-stick drive
+continues to work.
 
 By default, the bridge now holds the last MQTT steering angle until a new
 message arrives:

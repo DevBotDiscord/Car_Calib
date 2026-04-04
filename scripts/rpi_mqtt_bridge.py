@@ -186,6 +186,7 @@ remote_servo_angle: float | None = None
 remote_servo_updated_at = 0.0
 manual_override_until = 0.0
 manual_override_source: str | None = None
+controller_remote_steer_only = False
 last_controller_remote_steer_only = False
 mqtt_client: mqtt.Client | None = None
 mqtt_connected = False
@@ -228,7 +229,7 @@ def normalize_axis(device: InputDevice, axis_code: int, raw_value: int) -> float
 
 
 def controller_remote_steer_only_enabled() -> bool:
-    return BUTTON_REMOTE_STEER_ONLY in pressed_buttons
+    return controller_remote_steer_only
 
 
 def log_controller_mode_transition(remote_steer_only: bool) -> None:
@@ -666,7 +667,7 @@ def update_key_state(event) -> None:
 
 
 def update_gamepad_button_state(event) -> None:
-    global running
+    global controller_remote_steer_only, running
 
     if event.type != ecodes.EV_KEY:
         return
@@ -674,7 +675,9 @@ def update_gamepad_button_state(event) -> None:
     code = event.code
     if event.value == 1:
         pressed_buttons.add(code)
-        if BUTTON_CENTER_PLUS is not None and code == BUTTON_CENTER_PLUS:
+        if code == BUTTON_REMOTE_STEER_ONLY:
+            controller_remote_steer_only = not controller_remote_steer_only
+        elif BUTTON_CENTER_PLUS is not None and code == BUTTON_CENTER_PLUS:
             adjust_center(1, "GAMEPAD")
         elif code == BUTTON_CENTER_MINUS:
             adjust_center(-1, "GAMEPAD")
@@ -834,7 +837,7 @@ def main() -> None:
     print("Q = quit")
     print("Right stick X = steering")
     print("Left stick Y = base drive")
-    print("Y = keep base local, hand steering back to MQTT")
+    print("Y = toggle drive local + steering from MQTT")
     print("A = stop | B = center steering | LB = lock | RB = unlock")
     print("X or D-pad down = center angle -1 | D-pad up = center angle +1 | START = quit")
     print("Ctrl+C = emergency exit")
