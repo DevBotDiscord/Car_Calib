@@ -352,6 +352,9 @@ def resolve_remote_servo_angle(payload: dict[str, float | int | str]) -> float:
     else:
         raw_angle = float(payload.get("angle", REMOTE_INPUT_CENTER_ANGLE))
 
+    if raw_angle == 0:
+        raw_angle = REMOTE_INPUT_CENTER_ANGLE
+
     if angle_within_limits(raw_angle, LEFT_LIMIT, RIGHT_LIMIT):
         return clamp(raw_angle, LEFT_LIMIT, RIGHT_LIMIT)
 
