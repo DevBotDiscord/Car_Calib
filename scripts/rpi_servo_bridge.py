@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Raspberry Pi keyboard controller with TCP servo bridge support.
+"""Raspberry Pi keyboard controller with safer TCP servo bridge support.
 
-The keyboard stays connected directly to the Raspberry Pi. Motor control
-remains local, while remote servo angles received over TCP are applied
-only when the user is not actively steering with the keyboard.
+Changes vs the original:
+- Releases servo PWM when idle instead of forcing center continuously.
+- Remote command expires unless refreshed.
+- Uses safer default MG996R pulse range.
+- Adds steering deadband to reduce jitter.
+- Clears stale remote command when client disconnects.
+- Non-blocking keyboard read loop kept intact.
 """
 
 from __future__ import annotations
@@ -38,7 +42,7 @@ try:
     import pigpio
 except ImportError as exc:  # pragma: no cover - runtime dependency on Raspberry Pi
     raise RuntimeError(
-        "pigpio is required for scripts/rpi_servo_bridge.py. Install pigpio and start pigpiod."
+        "pigpio is required for rpi_servo_bridge_rebuilt.py. Install pigpio and start pigpiod."
     ) from exc
 
 if load_dotenv is not None:
@@ -66,15 +70,18 @@ CENTER_ANGLE = float(os.getenv("SERVO_CENTER_ANGLE", "-8"))
 LEFT_LIMIT = float(os.getenv("SERVO_LEFT_LIMIT", "-65"))
 RIGHT_LIMIT = float(os.getenv("SERVO_RIGHT_LIMIT", "60"))
 STEP = float(os.getenv("SERVO_STEP", "20"))
+
 REMOTE_INPUT_MIN_ANGLE = float(os.getenv("REMOTE_INPUT_MIN_ANGLE", "60"))
 REMOTE_INPUT_CENTER_ANGLE = float(os.getenv("REMOTE_INPUT_CENTER_ANGLE", "90"))
 REMOTE_INPUT_MAX_ANGLE = float(os.getenv("REMOTE_INPUT_MAX_ANGLE", "120"))
 
-SERVO_MIN_PULSE_US = int(round(float(os.getenv("SERVO_MIN_PULSE", "0.0005")) * 1_000_000))
-SERVO_MAX_PULSE_US = int(round(float(os.getenv("SERVO_MAX_PULSE", "0.0025")) * 1_000_000))
+# Safer defaults for MG996R than 500..2500us
+SERVO_MIN_PULSE_US = int(round(float(os.getenv("SERVO_MIN_PULSE", "0.0010")) * 1_000_000))
+SERVO_MAX_PULSE_US = int(round(float(os.getenv("SERVO_MAX_PULSE", "0.0020")) * 1_000_000))
 
-REMOTE_SERVO_TIMEOUT = float(os.getenv("REMOTE_SERVO_TIMEOUT", "0.6"))
-REMOTE_SERVO_HOLD_LAST = os.getenv("REMOTE_SERVO_HOLD_LAST", "true").strip().lower() in {
+# Remote commands should expire unless continuously refreshed
+REMOTE_SERVO_TIMEOUT = float(os.getenv("REMOTE_SERVO_TIMEOUT", "0.30"))
+REMOTE_SERVO_HOLD_LAST = os.getenv("REMOTE_SERVO_HOLD_LAST", "false").strip().lower() in {
     "1",
     "true",
     "t",
@@ -82,8 +89,20 @@ REMOTE_SERVO_HOLD_LAST = os.getenv("REMOTE_SERVO_HOLD_LAST", "true").strip().low
     "y",
     "on",
 }
+
 MANUAL_STEER_HOLD = float(os.getenv("MANUAL_STEER_HOLD", "0.25"))
 LOOP_DELAY = float(os.getenv("LOOP_DELAY", "0.01"))
+
+# Reduce chatter / jitter
+STEER_DEADBAND_DEG = float(os.getenv("STEER_DEADBAND_DEG", "1.0"))
+SERVO_RELEASE_IDLE = os.getenv("SERVO_RELEASE_IDLE", "true").strip().lower() in {
+    "1",
+    "true",
+    "t",
+    "yes",
+    "y",
+    "on",
+}
 
 
 # =========================================================
@@ -104,6 +123,7 @@ bridge_client_addr: tuple[str, int] | None = None
 bridge_buffer = ""
 gpio: pigpio.pi | None = None
 keyboard = InputDevice(KEYBOARD_DEVICE)
+servo_attached = False
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -148,7 +168,13 @@ def setup_bridge_server() -> None:
     bridge_server.setblocking(False)
 
 
-def close_bridge_client() -> None:
+def clear_remote_servo() -> None:
+    global remote_servo_angle, remote_servo_updated_at
+    remote_servo_angle = None
+    remote_servo_updated_at = 0.0
+
+
+def close_bridge_client(clear_remote: bool = True) -> None:
     global bridge_client, bridge_client_addr, bridge_buffer
 
     if bridge_client is not None:
@@ -160,12 +186,14 @@ def close_bridge_client() -> None:
     bridge_client = None
     bridge_client_addr = None
     bridge_buffer = ""
+    if clear_remote:
+        clear_remote_servo()
 
 
 def close_bridge_server() -> None:
     global bridge_server
 
-    close_bridge_client()
+    close_bridge_client(clear_remote=True)
     if bridge_server is not None:
         try:
             bridge_server.close()
@@ -213,21 +241,44 @@ def unlock_base() -> None:
     set_base(1, 1, 0, "UNLOCK")
 
 
+def release_servo(reason: str = "IDLE") -> None:
+    global servo_attached, last_steer_source
+    if gpio is None:
+        raise RuntimeError("pigpio is not initialized.")
+    if servo_attached:
+        gpio.set_servo_pulsewidth(SERVO_PIN, 0)
+        servo_attached = False
+        last_steer_source = f"RELEASE:{reason}"
+        log(f"STEER[RELEASE]: servo PWM off ({reason})")
+
+
 def apply_steering(target_angle: float, source: str) -> None:
-    global steer_angle, last_steer_angle, last_steer_source
+    global steer_angle, last_steer_angle, last_steer_source, servo_attached
 
-    steer_angle = clamp(target_angle, LEFT_LIMIT, RIGHT_LIMIT)
+    target = clamp(target_angle, LEFT_LIMIT, RIGHT_LIMIT)
 
-    if steer_angle != last_steer_angle or source != last_steer_source:
-        if gpio is None:
-            raise RuntimeError("pigpio is not initialized.")
-        pulse_us = angle_to_pulse_us(steer_angle)
-        gpio.set_servo_pulsewidth(SERVO_PIN, pulse_us)
-        log(
-            f"STEER[{source}]: {steer_angle:.1f} deg | CENTER: {CENTER_ANGLE:.1f} deg | PULSE: {pulse_us} us"
-        )
-        last_steer_angle = steer_angle
-        last_steer_source = source
+    # Deadband to prevent constant tiny corrections
+    if (
+        last_steer_angle is not None
+        and abs(target - last_steer_angle) < STEER_DEADBAND_DEG
+        and source == last_steer_source
+        and servo_attached
+    ):
+        return
+
+    steer_angle = target
+
+    if gpio is None:
+        raise RuntimeError("pigpio is not initialized.")
+
+    pulse_us = angle_to_pulse_us(steer_angle)
+    gpio.set_servo_pulsewidth(SERVO_PIN, pulse_us)
+    servo_attached = True
+    log(
+        f"STEER[{source}]: {steer_angle:.1f} deg | CENTER: {CENTER_ANGLE:.1f} deg | PULSE: {pulse_us} us"
+    )
+    last_steer_angle = steer_angle
+    last_steer_source = source
 
 
 def steer_center(source: str) -> None:
@@ -243,14 +294,17 @@ def steer_left_step(source: str) -> None:
 
 
 def remote_control_active(now: float) -> bool:
-    if REMOTE_SERVO_HOLD_LAST:
-        del now
-        return remote_servo_angle is not None
+    if remote_servo_angle is None:
+        return False
 
-    return (
-        remote_servo_angle is not None
-        and now - remote_servo_updated_at <= REMOTE_SERVO_TIMEOUT
-    )
+    if REMOTE_SERVO_HOLD_LAST:
+        return True
+
+    if now - remote_servo_updated_at <= REMOTE_SERVO_TIMEOUT:
+        return True
+
+    clear_remote_servo()
+    return False
 
 
 def map_remote_angle(angle: float) -> float:
@@ -291,6 +345,7 @@ def handle_remote_payload(payload: dict[str, float | int | str]) -> None:
 
     remote_servo_angle = resolve_remote_servo_angle(payload)
     remote_servo_updated_at = time.monotonic()
+    log(f"BRIDGE: remote angle updated -> {remote_servo_angle:.1f} deg")
 
 
 def poll_bridge() -> None:
@@ -317,16 +372,16 @@ def poll_bridge() -> None:
             break
         except OSError as exc:
             log(f"BRIDGE: recv error {exc}")
-            close_bridge_client()
+            close_bridge_client(clear_remote=True)
             break
 
         if not data:
             if bridge_client_addr is not None:
                 log(f"BRIDGE: client disconnected {bridge_client_addr[0]}:{bridge_client_addr[1]}")
-            close_bridge_client()
+            close_bridge_client(clear_remote=True)
             break
 
-        bridge_buffer += data.decode("utf-8")
+        bridge_buffer += data.decode("utf-8", errors="ignore")
         while "\n" in bridge_buffer:
             line, bridge_buffer = bridge_buffer.split("\n", 1)
             if not line.strip():
@@ -346,7 +401,7 @@ def cleanup() -> None:
         pass
 
     try:
-        steer_center("CLEANUP")
+        release_servo("CLEANUP")
     except Exception:
         pass
 
@@ -356,12 +411,6 @@ def cleanup() -> None:
         pass
 
     close_bridge_server()
-
-    try:
-        if gpio is not None:
-            gpio.set_servo_pulsewidth(SERVO_PIN, 0)
-    except Exception:
-        pass
 
     try:
         if gpio is not None:
@@ -460,7 +509,10 @@ def process_controls() -> None:
     if remote_control_active(now):
         apply_steering(remote_servo_angle if remote_servo_angle is not None else CENTER_ANGLE, "REMOTE")
     else:
-        steer_center("IDLE")
+        if SERVO_RELEASE_IDLE:
+            release_servo("IDLE")
+        else:
+            steer_center("IDLE")
 
 
 def main() -> None:
@@ -469,7 +521,7 @@ def main() -> None:
     setup_gpio()
     setup_bridge_server()
 
-    print("=== RPI KEYBOARD + TCP SERVO BRIDGE MODE ===")
+    print("=== RPI KEYBOARD + TCP SERVO BRIDGE MODE (REBUILT) ===")
     print(f"Keyboard: {keyboard.path}")
     print(f"Bridge listen: {BRIDGE_HOST}:{BRIDGE_PORT}")
     print(f"pigpio: {PIGPIO_HOST}:{PIGPIO_PORT}")
@@ -489,17 +541,22 @@ def main() -> None:
     print("")
     print(
         f"Steering center={CENTER_ANGLE:.1f}, left={LEFT_LIMIT:.1f}, right={RIGHT_LIMIT:.1f}, "
-        f"step={STEP:.1f}, remote_hold_last={REMOTE_SERVO_HOLD_LAST}"
+        f"step={STEP:.1f}, deadband={STEER_DEADBAND_DEG:.1f}"
     )
-    if not REMOTE_SERVO_HOLD_LAST:
-        print(f"Remote timeout={REMOTE_SERVO_TIMEOUT:.2f}s")
+    print(
+        f"Remote hold last={REMOTE_SERVO_HOLD_LAST}, timeout={REMOTE_SERVO_TIMEOUT:.2f}s, "
+        f"release_idle={SERVO_RELEASE_IDLE}"
+    )
     print(f"Servo pulse range={SERVO_MIN_PULSE_US}..{SERVO_MAX_PULSE_US} us")
     print(
         f"Remote input range={REMOTE_INPUT_MIN_ANGLE:.1f}..{REMOTE_INPUT_CENTER_ANGLE:.1f}..{REMOTE_INPUT_MAX_ANGLE:.1f}"
     )
     print("")
 
-    steer_center("BOOT")
+    if not SERVO_RELEASE_IDLE:
+        steer_center("BOOT")
+    else:
+        release_servo("BOOT")
     stop_base()
 
     try:

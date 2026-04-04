@@ -10,7 +10,7 @@ const char* WIFI_AP_NAME = "ESP32-Car-Setup";
 const char* WIFI_AP_PASSWORD = "setup1234";
 const unsigned long WIFI_PORTAL_TIMEOUT_S = 180;
 
-const char* MQTT_HOST = "minipc-tc";
+const char* MQTT_HOST = "192.168.10.60";
 const uint16_t MQTT_PORT = 1883;
 const char* MQTT_USERNAME = "";
 const char* MQTT_PASSWORD = "";
@@ -23,7 +23,7 @@ const char* MQTT_STATUS_TOPIC = "car/status";
 // =========================================================
 // PINOUT
 // =========================================================
-const int SERVO_PIN = 19;
+const int SERVO_PIN = 25;
 const int BASE_OUT1_PIN = 17;
 const int BASE_OUT2_PIN = 18;
 const int BASE_OUT3_PIN = 21;
@@ -31,8 +31,8 @@ const int BASE_OUT3_PIN = 21;
 // =========================================================
 // SERVO MAPPING
 // =========================================================
-const int SERVO_MIN_US = 500;
-const int SERVO_MAX_US = 2500;
+const int SERVO_MIN_US = 700;
+const int SERVO_MAX_US = 2300;
 const float LOCAL_LEFT_LIMIT = -65.0f;
 const float LOCAL_CENTER_ANGLE = -8.0f;
 const float LOCAL_RIGHT_LIMIT = 60.0f;
