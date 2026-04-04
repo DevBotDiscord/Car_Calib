@@ -16,7 +16,7 @@ vision controller sends servo angles down over TCP.
 Install dependencies:
 
 ```bash
-sudo apt install -y pigpio python3-pigpio
+sudo apt install -y pigpio python3-pigpio python3-gpiozero
 pip install evdev python-dotenv
 sudo systemctl enable --now pigpiod
 ```
@@ -125,4 +125,5 @@ That will send less often and ignore tiny angle changes.
 
 - `SERVO_PIN` defaults to `19`
 - default base pins are `17`, `27`, `22`
-- servo/base output is now driven through `pigpio`
+- base output is driven through `pigpio`
+- servo output now uses `gpiozero.AngularServo` with `PiGPIOFactory`

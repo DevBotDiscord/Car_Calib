@@ -20,15 +20,23 @@ import time
 
 try:
     from .servo_bridge_common import (
-        angle_to_pulse_us as map_angle_to_pulse_us,
         angle_within_limits,
         clamp_angle,
     )
+    from .angular_servo_output import (
+        AngularServoOutput,
+        apply_boot_servo_behavior,
+        apply_idle_servo_behavior,
+    )
 except ImportError:  # pragma: no cover - direct script execution on Raspberry Pi
     from servo_bridge_common import (  # type: ignore
-        angle_to_pulse_us as map_angle_to_pulse_us,
         angle_within_limits,
         clamp_angle,
+    )
+    from angular_servo_output import (  # type: ignore
+        AngularServoOutput,
+        apply_boot_servo_behavior,
+        apply_idle_servo_behavior,
     )
 
 try:
@@ -42,7 +50,7 @@ try:
     import pigpio
 except ImportError as exc:  # pragma: no cover - runtime dependency on Raspberry Pi
     raise RuntimeError(
-        "pigpio is required for rpi_servo_bridge_rebuilt.py. Install pigpio and start pigpiod."
+        "pigpio is required for scripts/rpi_servo_bridge.py. Install pigpio and start pigpiod."
     ) from exc
 
 if load_dotenv is not None:
@@ -122,8 +130,8 @@ bridge_client: socket.socket | None = None
 bridge_client_addr: tuple[str, int] | None = None
 bridge_buffer = ""
 gpio: pigpio.pi | None = None
+servo_output: AngularServoOutput | None = None
 keyboard = InputDevice(KEYBOARD_DEVICE)
-servo_attached = False
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -144,17 +152,23 @@ def setup_gpio() -> None:
             "Start pigpiod first, for example: sudo systemctl enable --now pigpiod"
         )
 
-    for pin in (OUT1, OUT2, OUT3, SERVO_PIN):
+    for pin in (OUT1, OUT2, OUT3):
         gpio.set_mode(pin, pigpio.OUTPUT)
 
 
-def angle_to_pulse_us(angle: float) -> int:
-    return map_angle_to_pulse_us(
-        angle,
-        LEFT_LIMIT,
-        RIGHT_LIMIT,
-        SERVO_MIN_PULSE_US,
-        SERVO_MAX_PULSE_US,
+def setup_servo_output() -> None:
+    global servo_output
+
+    servo_output = AngularServoOutput(
+        servo_pin=SERVO_PIN,
+        left_limit=LEFT_LIMIT,
+        right_limit=RIGHT_LIMIT,
+        servo_min_pulse_us=SERVO_MIN_PULSE_US,
+        servo_max_pulse_us=SERVO_MAX_PULSE_US,
+        pigpio_host=PIGPIO_HOST,
+        pigpio_port=PIGPIO_PORT,
+        center_angle=CENTER_ANGLE,
+        log=log,
     )
 
 
@@ -242,18 +256,14 @@ def unlock_base() -> None:
 
 
 def release_servo(reason: str = "IDLE") -> None:
-    global servo_attached, last_steer_source
-    if gpio is None:
-        raise RuntimeError("pigpio is not initialized.")
-    if servo_attached:
-        gpio.set_servo_pulsewidth(SERVO_PIN, 0)
-        servo_attached = False
-        last_steer_source = f"RELEASE:{reason}"
-        log(f"STEER[RELEASE]: servo PWM off ({reason})")
+    if servo_output is None:
+        raise RuntimeError("AngularServo output is not initialized.")
+
+    servo_output.detach_servo(reason)
 
 
 def apply_steering(target_angle: float, source: str) -> None:
-    global steer_angle, last_steer_angle, last_steer_source, servo_attached
+    global steer_angle, last_steer_angle, last_steer_source
 
     target = clamp(target_angle, LEFT_LIMIT, RIGHT_LIMIT)
 
@@ -262,21 +272,17 @@ def apply_steering(target_angle: float, source: str) -> None:
         last_steer_angle is not None
         and abs(target - last_steer_angle) < STEER_DEADBAND_DEG
         and source == last_steer_source
-        and servo_attached
+        and servo_output is not None
+        and servo_output.attached
     ):
         return
 
     steer_angle = target
 
-    if gpio is None:
-        raise RuntimeError("pigpio is not initialized.")
+    if servo_output is None:
+        raise RuntimeError("AngularServo output is not initialized.")
 
-    pulse_us = angle_to_pulse_us(steer_angle)
-    gpio.set_servo_pulsewidth(SERVO_PIN, pulse_us)
-    servo_attached = True
-    log(
-        f"STEER[{source}]: {steer_angle:.1f} deg | CENTER: {CENTER_ANGLE:.1f} deg | PULSE: {pulse_us} us"
-    )
+    steer_angle = servo_output.set_servo(steer_angle, source)
     last_steer_angle = steer_angle
     last_steer_source = source
 
@@ -413,6 +419,12 @@ def cleanup() -> None:
     close_bridge_server()
 
     try:
+        if servo_output is not None:
+            servo_output.close()
+    except Exception:
+        pass
+
+    try:
         if gpio is not None:
             gpio.stop()
     except Exception:
@@ -447,9 +459,13 @@ def update_key_state(event) -> None:
             if event.value == 1:
                 if key == "KEY_1":
                     CENTER_ANGLE = clamp(CENTER_ANGLE + 1, LEFT_LIMIT, RIGHT_LIMIT)
+                    if servo_output is not None:
+                        servo_output.set_center_angle(CENTER_ANGLE)
                     log(f"CENTER_ANGLE INCREASED: {CENTER_ANGLE}")
                 elif key == "KEY_2":
                     CENTER_ANGLE = clamp(CENTER_ANGLE - 1, LEFT_LIMIT, RIGHT_LIMIT)
+                    if servo_output is not None:
+                        servo_output.set_center_angle(CENTER_ANGLE)
                     log(f"CENTER_ANGLE DECREASED: {CENTER_ANGLE}")
                 elif key == "KEY_Q":
                     running = False
@@ -509,16 +525,21 @@ def process_controls() -> None:
     if remote_control_active(now):
         apply_steering(remote_servo_angle if remote_servo_angle is not None else CENTER_ANGLE, "REMOTE")
     else:
-        if SERVO_RELEASE_IDLE:
-            release_servo("IDLE")
-        else:
-            steer_center("IDLE")
+        if servo_output is None:
+            raise RuntimeError("AngularServo output is not initialized.")
+
+        apply_idle_servo_behavior(
+            servo_output,
+            release_idle=SERVO_RELEASE_IDLE,
+            center_angle=CENTER_ANGLE,
+        )
 
 
 def main() -> None:
     global running
 
     setup_gpio()
+    setup_servo_output()
     setup_bridge_server()
 
     print("=== RPI KEYBOARD + TCP SERVO BRIDGE MODE (REBUILT) ===")
@@ -553,10 +574,14 @@ def main() -> None:
     )
     print("")
 
-    if not SERVO_RELEASE_IDLE:
-        steer_center("BOOT")
-    else:
-        release_servo("BOOT")
+    if servo_output is None:
+        raise RuntimeError("AngularServo output is not initialized.")
+
+    apply_boot_servo_behavior(
+        servo_output,
+        release_idle=SERVO_RELEASE_IDLE,
+        center_angle=CENTER_ANGLE,
+    )
     stop_base()
 
     try:
