@@ -91,6 +91,39 @@ require_vars() {
     fi
 }
 
+validate_password_auth_support() {
+    local label="$1"
+    local password="$2"
+    local has_sshpass=1
+    local has_plink=1
+    local has_pscp=1
+
+    password="$(trim_whitespace "$password")"
+    if [[ -z "$password" ]]; then
+        return 0
+    fi
+
+    if find_command sshpass >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if find_command plink.exe plink >/dev/null 2>&1; then
+        has_plink=0
+    fi
+    if find_command pscp.exe pscp >/dev/null 2>&1; then
+        has_pscp=0
+    fi
+
+    if (( has_plink == 0 && has_pscp == 0 )); then
+        return 0
+    fi
+
+    log_err "[${label}] Password auth is configured, but no supported helper tools were found."
+    log_err "[${label}] Install sshpass, or install PuTTY and ensure both plink.exe and pscp.exe are in PATH."
+    log_err "[${label}] Otherwise leave ${label^^}_PASSWORD blank and use SSH keys."
+    exit 1
+}
+
 ssh_base_cmd() {
     local password="$1"
     local port="$2"
@@ -192,11 +225,19 @@ deploy_target() {
 
     local remote_archive="/tmp/${PROJECT_NAME}-${VERSION}-${label}.tar.gz"
     local remote_env="/tmp/${PROJECT_NAME}-${VERSION}-${label}.env"
+    local ssh_check_output=""
+
+    validate_password_auth_support "$label" "$password"
 
     log_step "[${label}] Checking SSH connectivity..."
-    if ! ssh_base_cmd "$password" "$port" "${user}@${host}" exit >/dev/null 2>&1; then
+    if ! ssh_check_output="$(ssh_base_cmd "$password" "$port" "${user}@${host}" exit 2>&1)"; then
         log_err "[${label}] Cannot connect to ${user}@${host}:${port}"
-        log_err "[${label}] Check SSH key access or verify ${label^^}_PASSWORD and sshpass/plink availability."
+        log_err "[${label}] Check SSH key access or verify ${label^^}_PASSWORD and helper-tool availability."
+        if [[ -n "$ssh_check_output" ]]; then
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && log_err "[${label}] ${line}"
+            done <<< "$ssh_check_output"
+        fi
         exit 1
     fi
     log_ok "[${label}] SSH connection OK"
