@@ -127,6 +127,13 @@ deploy_production.bat ras
 The `.bat` wrapper looks for `bash.exe` from Git for Windows and then runs
 the same `deploy_production.sh`, so the deploy logic stays in one place.
 
+SSH auth behavior:
+
+- leave `MINIPC_PASSWORD` / `RPI_PASSWORD` blank to use SSH keys
+- if a password is set, the script uses `sshpass` when available
+- on Windows, password mode can also use PuTTY tools via `plink.exe` and `pscp.exe`
+- key mode now uses SSH batch mode, so it fails fast instead of hanging on a password prompt
+
 What it does:
 
 - creates a release tarball from the repository

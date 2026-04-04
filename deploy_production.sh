@@ -47,6 +47,26 @@ log_err() {
     echo -e "${RED}$1${NC}"
 }
 
+trim_whitespace() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+
+find_command() {
+    local candidate
+
+    for candidate in "$@"; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 require_file() {
     local file_path="$1"
     if [[ ! -f "$file_path" ]]; then
@@ -74,37 +94,69 @@ require_vars() {
 ssh_base_cmd() {
     local password="$1"
     local port="$2"
+    local sshpass_bin=""
+    local plink_bin=""
     shift 2
 
+    password="$(trim_whitespace "$password")"
+
     if [[ -n "$password" ]]; then
-        if ! command -v sshpass >/dev/null 2>&1; then
-            log_err "sshpass is required when using SSH passwords."
-            exit 1
+        if sshpass_bin="$(find_command sshpass)"; then
+            "$sshpass_bin" -p "$password" ssh -p "$port" -o ConnectTimeout="${SSH_CONNECT_TIMEOUT_S}" \
+                -o StrictHostKeyChecking=accept-new "$@"
+            return
         fi
-        sshpass -p "$password" ssh -p "$port" -o ConnectTimeout="${SSH_CONNECT_TIMEOUT_S}" \
-            -o StrictHostKeyChecking=accept-new "$@"
-    else
-        ssh -p "$port" -o ConnectTimeout="${SSH_CONNECT_TIMEOUT_S}" \
-            -o StrictHostKeyChecking=accept-new "$@"
+
+        if plink_bin="$(find_command plink.exe plink)"; then
+            "$plink_bin" -P "$port" -pw "$password" -batch "$@"
+            return
+        fi
+
+        log_err "Password-based SSH requested, but neither sshpass nor plink.exe is available."
+        log_err "Install sshpass or PuTTY (plink/pscp), or leave *_PASSWORD empty and use SSH keys."
+        exit 1
     fi
+
+    ssh -p "$port" \
+        -o BatchMode=yes \
+        -o NumberOfPasswordPrompts=0 \
+        -o ConnectTimeout="${SSH_CONNECT_TIMEOUT_S}" \
+        -o StrictHostKeyChecking=accept-new \
+        "$@"
 }
 
 scp_base_cmd() {
     local password="$1"
     local port="$2"
+    local sshpass_bin=""
+    local pscp_bin=""
     shift 2
 
+    password="$(trim_whitespace "$password")"
+
     if [[ -n "$password" ]]; then
-        if ! command -v sshpass >/dev/null 2>&1; then
-            log_err "sshpass is required when using SSH passwords."
-            exit 1
+        if sshpass_bin="$(find_command sshpass)"; then
+            "$sshpass_bin" -p "$password" scp -P "$port" -o ConnectTimeout="${SSH_CONNECT_TIMEOUT_S}" \
+                -o StrictHostKeyChecking=accept-new "$@"
+            return
         fi
-        sshpass -p "$password" scp -P "$port" -o ConnectTimeout="${SSH_CONNECT_TIMEOUT_S}" \
-            -o StrictHostKeyChecking=accept-new "$@"
-    else
-        scp -P "$port" -o ConnectTimeout="${SSH_CONNECT_TIMEOUT_S}" \
-            -o StrictHostKeyChecking=accept-new "$@"
+
+        if pscp_bin="$(find_command pscp.exe pscp)"; then
+            "$pscp_bin" -P "$port" -pw "$password" -batch "$@"
+            return
+        fi
+
+        log_err "Password-based SCP requested, but neither sshpass nor pscp.exe is available."
+        log_err "Install sshpass or PuTTY (plink/pscp), or leave *_PASSWORD empty and use SSH keys."
+        exit 1
     fi
+
+    scp -P "$port" \
+        -o BatchMode=yes \
+        -o NumberOfPasswordPrompts=0 \
+        -o ConnectTimeout="${SSH_CONNECT_TIMEOUT_S}" \
+        -o StrictHostKeyChecking=accept-new \
+        "$@"
 }
 
 create_archive() {
@@ -144,6 +196,7 @@ deploy_target() {
     log_step "[${label}] Checking SSH connectivity..."
     if ! ssh_base_cmd "$password" "$port" "${user}@${host}" exit >/dev/null 2>&1; then
         log_err "[${label}] Cannot connect to ${user}@${host}:${port}"
+        log_err "[${label}] Check SSH key access or verify ${label^^}_PASSWORD and sshpass/plink availability."
         exit 1
     fi
     log_ok "[${label}] SSH connection OK"
@@ -254,6 +307,9 @@ set -a
 source "$ENV_FILE"
 set +a
 
+MINIPC_PASSWORD="$(trim_whitespace "${MINIPC_PASSWORD:-}")"
+RPI_PASSWORD="$(trim_whitespace "${RPI_PASSWORD:-}")"
+
 PROJECT_NAME="${PROJECT_NAME:-car-calib}"
 SSH_CONNECT_TIMEOUT_S="${SSH_CONNECT_TIMEOUT_S:-10}"
 DEPLOY_KEEP_RELEASES="${DEPLOY_KEEP_RELEASES:-3}"
@@ -301,9 +357,19 @@ echo "  Version: ${VERSION}"
 echo "  Target: ${TARGET}"
 if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
     echo "  MiniPC: ${MINIPC_USER}@${MINIPC_HOST}:${MINIPC_SSH_PORT} -> ${MINIPC_DEST_DIR}"
+    if [[ -n "${MINIPC_PASSWORD}" ]]; then
+        echo "  MiniPC auth: password"
+    else
+        echo "  MiniPC auth: ssh-key"
+    fi
 fi
 if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
     echo "  Raspberry Pi: ${RPI_USER}@${RPI_HOST}:${RPI_SSH_PORT} -> ${RPI_DEST_DIR}"
+    if [[ -n "${RPI_PASSWORD}" ]]; then
+        echo "  Raspberry Pi auth: password"
+    else
+        echo "  Raspberry Pi auth: ssh-key"
+    fi
 fi
 echo ""
 
