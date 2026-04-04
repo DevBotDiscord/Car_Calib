@@ -1,0 +1,22 @@
+services:
+  rpi-mqtt-bridge:
+    build:
+      context: .
+      dockerfile: docker/rpi/Dockerfile
+      args:
+        BASE_IMAGE: ${RPI_BASE_IMAGE:-python:3.11-slim-bookworm}
+    image: ${RPI_IMAGE_NAME:-car-calib-rpi-mqtt-bridge:latest}
+    restart: unless-stopped
+    network_mode: host
+    privileged: true
+    env_file:
+      - .env
+    environment:
+      START_PIGPIOD: ${START_PIGPIOD:-true}
+      PIGPIO_HOST: 127.0.0.1
+      PIGPIO_PORT: 8888
+    volumes:
+      - /dev/input:/dev/input:ro
+    command:
+      - python
+      - scripts/rpi_mqtt_bridge.py

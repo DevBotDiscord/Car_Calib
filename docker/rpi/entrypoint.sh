@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+case "${START_PIGPIOD:-true}" in
+  1|true|TRUE|yes|YES|on|ON)
+    pigpiod || true
+    sleep "${PIGPIOD_STARTUP_DELAY_S:-1}"
+    ;;
+esac
+
+exec "$@"

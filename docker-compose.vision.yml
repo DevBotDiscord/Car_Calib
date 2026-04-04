@@ -1,0 +1,24 @@
+services:
+  vision:
+    build:
+      context: .
+      dockerfile: docker/vision/Dockerfile
+      args:
+        BASE_IMAGE: ${VISION_BASE_IMAGE:-python:3.11-slim-bookworm}
+    image: ${VISION_IMAGE_NAME:-car-calib-vision:latest}
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      MAIN_SHOW_PREVIEW: ${MAIN_SHOW_PREVIEW:-false}
+      MAIN_CSV_LOG_FILE: /data/run_log.csv
+      MAIN_HTTPS_CERT_FILE: /data/certs/main_stream_cert.pem
+      MAIN_HTTPS_KEY_FILE: /data/certs/main_stream_key.pem
+    devices:
+      - ${VISION_CAMERA_DEVICE:-/dev/video0}:${VISION_CAMERA_DEVICE:-/dev/video0}
+    volumes:
+      - vision-data:/data
+
+volumes:
+  vision-data:

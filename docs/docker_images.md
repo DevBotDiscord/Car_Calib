@@ -1,0 +1,104 @@
+# Docker Images
+
+This repository now ships with two separate container targets:
+
+- `vision`: runs `main.py` and publishes steering over MQTT
+- `rpi-mqtt-bridge`: runs `scripts/rpi_mqtt_bridge.py` on the Raspberry Pi
+
+They are meant to be built and deployed independently on their respective
+machines.
+
+## Files
+
+- `docker/vision/Dockerfile`
+- `docker/rpi/Dockerfile`
+- `docker/rpi/entrypoint.sh`
+- `docker-compose.vision.yml`
+- `docker-compose.rpi.yml`
+- `.dockerignore`
+- `requirements-rpi.txt`
+
+## Vision Image
+
+Build:
+
+```bash
+docker build -f docker/vision/Dockerfile -t car-calib-vision:latest .
+```
+
+Run with Docker Compose:
+
+```bash
+docker compose -f docker-compose.vision.yml up --build -d
+```
+
+Notes:
+
+- The compose file assumes a V4L2 camera such as `/dev/video0`
+- Output files such as `run_log.csv` and generated HTTPS certs are stored in
+  the Docker volume mounted at `/data`
+- `network_mode: host` is used so the container can expose the MJPEG stream
+  directly and reach the MQTT broker without extra port mapping
+- `MAIN_SHOW_PREVIEW=false` is the safe default for container use
+
+If your vision host is Jetson Nano with CSI camera support, override the base
+image during build with an L4T-compatible image:
+
+```bash
+docker build \
+  --build-arg BASE_IMAGE=nvcr.io/nvidia/l4t-jetpack:r35.4.1 \
+  -f docker/vision/Dockerfile \
+  -t car-calib-vision:jetson .
+```
+
+## Raspberry Pi MQTT Bridge Image
+
+Build:
+
+```bash
+docker build -f docker/rpi/Dockerfile -t car-calib-rpi-mqtt-bridge:latest .
+```
+
+Run with Docker Compose:
+
+```bash
+docker compose -f docker-compose.rpi.yml up --build -d
+```
+
+Notes:
+
+- The RPi container uses `privileged: true` because it needs GPIO and input
+  device access for `pigpiod` and `/dev/input`
+- `/dev/input` is mounted read-only so keyboard/controller devices remain
+  visible inside the container
+- `pigpiod` is started automatically by `docker/rpi/entrypoint.sh`
+- The container joins host networking so `PIGPIO_HOST=127.0.0.1` and MQTT
+  broker settings behave the same as bare metal
+
+## Typical Deployment Flow
+
+### Vision host
+
+```bash
+cp .env.example .env
+# edit MQTT host, camera index, debug flags, etc.
+docker compose -f docker-compose.vision.yml up --build -d
+```
+
+### Raspberry Pi host
+
+```bash
+cp .env.example .env
+# edit MQTT host, SERVO_PIN, KEYBOARD_DEVICE, GAMEPAD_DEVICE, etc.
+docker compose -f docker-compose.rpi.yml up --build -d
+```
+
+## Important Runtime Assumptions
+
+- Vision and Raspberry Pi usually run on different machines, so use the two
+  compose files separately rather than starting both on one host
+- The MQTT broker must still be reachable from both containers
+- If you need GUI preview from the vision container, add an X11/Wayland
+  passthrough setup; this repository does not enable that by default
+- If the Raspberry Pi host already runs `pigpiod`, set `START_PIGPIOD=false`
+  for the container
