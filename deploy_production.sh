@@ -127,11 +127,13 @@ validate_password_auth_support() {
 ssh_base_cmd() {
     local password="$1"
     local port="$2"
+    local host_key="$3"
     local sshpass_bin=""
     local plink_bin=""
-    shift 2
+    shift 3
 
     password="$(trim_whitespace "$password")"
+    host_key="$(trim_whitespace "$host_key")"
 
     if [[ -n "$password" ]]; then
         if sshpass_bin="$(find_command sshpass)"; then
@@ -141,7 +143,11 @@ ssh_base_cmd() {
         fi
 
         if plink_bin="$(find_command plink.exe plink)"; then
-            "$plink_bin" -P "$port" -pw "$password" -batch "$@"
+            if [[ -n "$host_key" ]]; then
+                "$plink_bin" -P "$port" -pw "$password" -batch -hostkey "$host_key" "$@"
+            else
+                "$plink_bin" -P "$port" -pw "$password" -batch "$@"
+            fi
             return
         fi
 
@@ -161,11 +167,13 @@ ssh_base_cmd() {
 scp_base_cmd() {
     local password="$1"
     local port="$2"
+    local host_key="$3"
     local sshpass_bin=""
     local pscp_bin=""
-    shift 2
+    shift 3
 
     password="$(trim_whitespace "$password")"
+    host_key="$(trim_whitespace "$host_key")"
 
     if [[ -n "$password" ]]; then
         if sshpass_bin="$(find_command sshpass)"; then
@@ -175,7 +183,11 @@ scp_base_cmd() {
         fi
 
         if pscp_bin="$(find_command pscp.exe pscp)"; then
-            "$pscp_bin" -P "$port" -pw "$password" -batch "$@"
+            if [[ -n "$host_key" ]]; then
+                "$pscp_bin" -P "$port" -pw "$password" -batch -hostkey "$host_key" "$@"
+            else
+                "$pscp_bin" -P "$port" -pw "$password" -batch "$@"
+            fi
             return
         fi
 
@@ -222,17 +234,24 @@ deploy_target() {
     local dest_dir="$6"
     local compose_file="$7"
     local use_sudo_docker="$8"
+    local host_key="$9"
 
     local remote_archive="/tmp/${PROJECT_NAME}-${VERSION}-${label}.tar.gz"
     local remote_env="/tmp/${PROJECT_NAME}-${VERSION}-${label}.env"
     local ssh_check_output=""
 
     validate_password_auth_support "$label" "$password"
+    host_key="$(trim_whitespace "$host_key")"
 
     log_step "[${label}] Checking SSH connectivity..."
-    if ! ssh_check_output="$(ssh_base_cmd "$password" "$port" "${user}@${host}" exit 2>&1)"; then
+    if ! ssh_check_output="$(ssh_base_cmd "$password" "$port" "$host_key" "${user}@${host}" exit 2>&1)"; then
         log_err "[${label}] Cannot connect to ${user}@${host}:${port}"
         log_err "[${label}] Check SSH key access or verify ${label^^}_PASSWORD and helper-tool availability."
+        if [[ -n "$password" && -n "$host_key" ]]; then
+            log_err "[${label}] Using pinned host key from ${label^^}_SSH_HOST_KEY."
+        elif [[ -n "$password" ]]; then
+            log_err "[${label}] For PuTTY/plink password mode, set ${label^^}_SSH_HOST_KEY=SHA256:... to trust the host non-interactively."
+        fi
         if [[ -n "$ssh_check_output" ]]; then
             while IFS= read -r line; do
                 [[ -n "$line" ]] && log_err "[${label}] ${line}"
@@ -243,13 +262,13 @@ deploy_target() {
     log_ok "[${label}] SSH connection OK"
 
     log_step "[${label}] Uploading release bundle..."
-    ssh_base_cmd "$password" "$port" "${user}@${host}" "mkdir -p '${dest_dir}/releases'"
-    scp_base_cmd "$password" "$port" "$ARCHIVE_PATH" "${user}@${host}:${remote_archive}"
-    scp_base_cmd "$password" "$port" "$ENV_FILE" "${user}@${host}:${remote_env}"
+    ssh_base_cmd "$password" "$port" "$host_key" "${user}@${host}" "mkdir -p '${dest_dir}/releases'"
+    scp_base_cmd "$password" "$port" "$host_key" "$ARCHIVE_PATH" "${user}@${host}:${remote_archive}"
+    scp_base_cmd "$password" "$port" "$host_key" "$ENV_FILE" "${user}@${host}:${remote_env}"
     log_ok "[${label}] Upload complete"
 
     log_step "[${label}] Deploying release ${VERSION}..."
-    ssh_base_cmd "$password" "$port" "${user}@${host}" bash -s -- \
+    ssh_base_cmd "$password" "$port" "$host_key" "${user}@${host}" bash -s -- \
         "$dest_dir" \
         "$compose_file" \
         "$VERSION" \
@@ -350,6 +369,8 @@ set +a
 
 MINIPC_PASSWORD="$(trim_whitespace "${MINIPC_PASSWORD:-}")"
 RPI_PASSWORD="$(trim_whitespace "${RPI_PASSWORD:-}")"
+MINIPC_SSH_HOST_KEY="$(trim_whitespace "${MINIPC_SSH_HOST_KEY:-}")"
+RPI_SSH_HOST_KEY="$(trim_whitespace "${RPI_SSH_HOST_KEY:-}")"
 
 PROJECT_NAME="${PROJECT_NAME:-car-calib}"
 SSH_CONNECT_TIMEOUT_S="${SSH_CONNECT_TIMEOUT_S:-10}"
@@ -403,6 +424,9 @@ if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
     else
         echo "  MiniPC auth: ssh-key"
     fi
+    if [[ -n "${MINIPC_SSH_HOST_KEY}" ]]; then
+        echo "  MiniPC host key: pinned"
+    fi
 fi
 if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
     echo "  Raspberry Pi: ${RPI_USER}@${RPI_HOST}:${RPI_SSH_PORT} -> ${RPI_DEST_DIR}"
@@ -410,6 +434,9 @@ if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
         echo "  Raspberry Pi auth: password"
     else
         echo "  Raspberry Pi auth: ssh-key"
+    fi
+    if [[ -n "${RPI_SSH_HOST_KEY}" ]]; then
+        echo "  Raspberry Pi host key: pinned"
     fi
 fi
 echo ""
@@ -424,7 +451,8 @@ if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
         "${MINIPC_PASSWORD:-}" \
         "$MINIPC_DEST_DIR" \
         "$MINIPC_COMPOSE_FILE" \
-        "$MINIPC_USE_SUDO_DOCKER"
+        "$MINIPC_USE_SUDO_DOCKER" \
+        "${MINIPC_SSH_HOST_KEY:-}"
     step_index=$((step_index + 1))
 fi
 
@@ -437,7 +465,8 @@ if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
         "${RPI_PASSWORD:-}" \
         "$RPI_DEST_DIR" \
         "$RPI_COMPOSE_FILE" \
-        "$RPI_USE_SUDO_DOCKER"
+        "$RPI_USE_SUDO_DOCKER" \
+        "${RPI_SSH_HOST_KEY:-}"
 fi
 
 echo "${VERSION}" > "${SCRIPT_DIR}/.last_production_version"

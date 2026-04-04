@@ -133,6 +133,7 @@ SSH auth behavior:
 - if a password is set, the script uses `sshpass` when available
 - on Windows, password mode can also use PuTTY tools via `plink.exe` and `pscp.exe`
 - key mode now uses SSH batch mode, so it fails fast instead of hanging on a password prompt
+- when using PuTTY password mode for a host not yet trusted, set `MINIPC_SSH_HOST_KEY` or `RPI_SSH_HOST_KEY` to the host `SHA256:...` fingerprint
 
 What it does:
 
