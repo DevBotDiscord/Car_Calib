@@ -15,6 +15,19 @@ import socket
 import time
 
 try:
+    from .servo_bridge_common import (
+        angle_to_pulse_us as map_angle_to_pulse_us,
+        angle_within_limits,
+        clamp_angle,
+    )
+except ImportError:  # pragma: no cover - direct script execution on Raspberry Pi
+    from servo_bridge_common import (  # type: ignore
+        angle_to_pulse_us as map_angle_to_pulse_us,
+        angle_within_limits,
+        clamp_angle,
+    )
+
+try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - optional on Raspberry Pi
     load_dotenv = None
@@ -94,7 +107,7 @@ keyboard = InputDevice(KEYBOARD_DEVICE)
 
 
 def clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
+    return clamp_angle(value, low, high)
 
 
 def log(message: str) -> None:
@@ -116,13 +129,13 @@ def setup_gpio() -> None:
 
 
 def angle_to_pulse_us(angle: float) -> int:
-    clamped_angle = clamp(angle, LEFT_LIMIT, RIGHT_LIMIT)
-    angle_span = RIGHT_LIMIT - LEFT_LIMIT
-    if angle_span <= 0:
-        return SERVO_MIN_PULSE_US
-
-    ratio = (clamped_angle - LEFT_LIMIT) / angle_span
-    return int(round(SERVO_MIN_PULSE_US + ratio * (SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US)))
+    return map_angle_to_pulse_us(
+        angle,
+        LEFT_LIMIT,
+        RIGHT_LIMIT,
+        SERVO_MIN_PULSE_US,
+        SERVO_MAX_PULSE_US,
+    )
 
 
 def setup_bridge_server() -> None:
@@ -267,7 +280,7 @@ def resolve_remote_servo_angle(payload: dict[str, float | int | str]) -> float:
     else:
         raw_angle = float(payload.get("angle", REMOTE_INPUT_CENTER_ANGLE))
 
-    if LEFT_LIMIT <= raw_angle <= RIGHT_LIMIT:
+    if angle_within_limits(raw_angle, LEFT_LIMIT, RIGHT_LIMIT):
         return clamp(raw_angle, LEFT_LIMIT, RIGHT_LIMIT)
 
     return clamp(map_remote_angle(raw_angle), LEFT_LIMIT, RIGHT_LIMIT)
