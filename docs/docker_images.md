@@ -93,6 +93,36 @@ cp .env.example .env
 docker compose -f docker-compose.rpi.yml up --build -d
 ```
 
+## Production Deployment Script
+
+A production helper similar to your `RobotOS` deploy script now exists at:
+
+- `deploy_production.sh`
+
+Prepare:
+
+```bash
+cp .env.production.example .env.production
+# fill in MINIPC_HOST / MINIPC_USER / RPI_HOST / RPI_USER / MQTT / camera / GPIO settings
+chmod +x deploy_production.sh
+```
+
+Run:
+
+```bash
+./deploy_production.sh
+./deploy_production.sh minipc
+./deploy_production.sh ras
+```
+
+What it does:
+
+- creates a release tarball from the repository
+- uploads it to the MiniPC and/or Raspberry Pi over SSH
+- writes `.env.production` as remote `.env`
+- switches `current` to the new release under `releases/<version>`
+- runs `docker compose up --build -d` on the target host
+
 ## Important Runtime Assumptions
 
 - Vision and Raspberry Pi usually run on different machines, so use the two
