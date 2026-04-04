@@ -18,7 +18,10 @@ try:
         angle_within_limits,
         clamp_angle,
     )
-    from .input_device_helpers import open_optional_input_device
+    from .input_device_helpers import (
+        find_optional_abs_input_device,
+        open_optional_input_device,
+    )
     from .angular_servo_output import (
         AngularServoOutput,
         apply_boot_servo_behavior,
@@ -29,7 +32,10 @@ except ImportError:  # pragma: no cover - direct script execution on Raspberry P
         angle_within_limits,
         clamp_angle,
     )
-    from input_device_helpers import open_optional_input_device  # type: ignore
+    from input_device_helpers import (  # type: ignore
+        find_optional_abs_input_device,
+        open_optional_input_device,
+    )
     from angular_servo_output import (  # type: ignore
         AngularServoOutput,
         apply_boot_servo_behavior,
@@ -41,7 +47,7 @@ try:
 except ImportError:  # pragma: no cover - optional on Raspberry Pi
     load_dotenv = None
 
-from evdev import InputDevice, ecodes
+from evdev import InputDevice, ecodes, list_devices
 
 try:
     import paho.mqtt.client as mqtt
@@ -68,6 +74,15 @@ KEYBOARD_DEVICE = os.getenv(
     "KEYBOARD_DEVICE",
     "/dev/input/by-id/usb-YJX_CHIP_WirelessDevice-event-kbd",
 )
+GAMEPAD_DEVICE = os.getenv("GAMEPAD_DEVICE", "").strip()
+GAMEPAD_NAME_HINTS = tuple(
+    hint.strip().lower()
+    for hint in os.getenv(
+        "GAMEPAD_NAME_HINTS",
+        "edra,joystick,gamepad,controller,pad",
+    ).split(",")
+    if hint.strip()
+)
 MQTT_BROKER_HOST = os.getenv("MQTT_BROKER_HOST", "127.0.0.1")
 MQTT_BROKER_PORT = int(os.getenv("MQTT_BROKER_PORT", "1883"))
 MQTT_USERNAME = os.getenv("MQTT_USERNAME", "")
@@ -86,6 +101,17 @@ SERVO_PIN = int(os.getenv("SERVO_PIN", "19"))
 OUT1 = int(os.getenv("BASE_OUT1", "17"))
 OUT2 = int(os.getenv("BASE_OUT2", "27"))
 OUT3 = int(os.getenv("BASE_OUT3", "22"))
+
+STEER_AXIS = ecodes.ABS_RX
+DRIVE_AXIS = ecodes.ABS_Y
+HAT_Y_AXIS = ecodes.ABS_HAT0Y
+BUTTON_STOP = ecodes.BTN_SOUTH
+BUTTON_CENTER = ecodes.BTN_EAST
+BUTTON_LOCK = ecodes.BTN_TL
+BUTTON_UNLOCK = ecodes.BTN_TR
+BUTTON_QUIT = ecodes.BTN_START
+BUTTON_CENTER_PLUS = ecodes.BTN_NORTH
+BUTTON_CENTER_MINUS = ecodes.BTN_WEST
 
 CENTER_ANGLE = float(os.getenv("SERVO_CENTER_ANGLE", "-8"))
 LEFT_LIMIT = float(os.getenv("SERVO_LEFT_LIMIT", "-65"))
@@ -110,6 +136,24 @@ REMOTE_SERVO_HOLD_LAST = os.getenv("REMOTE_SERVO_HOLD_LAST", "true").strip().low
 MANUAL_STEER_HOLD = float(os.getenv("MANUAL_STEER_HOLD", "0.25"))
 LOOP_DELAY = float(os.getenv("LOOP_DELAY", "0.01"))
 STEER_DEADBAND_DEG = float(os.getenv("STEER_DEADBAND_DEG", "1.0"))
+GAMEPAD_STEER_DEADZONE = float(os.getenv("GAMEPAD_STEER_DEADZONE", "0.12"))
+GAMEPAD_DRIVE_DEADZONE = float(os.getenv("GAMEPAD_DRIVE_DEADZONE", "0.20"))
+INVERT_STEER_AXIS = os.getenv("INVERT_STEER_AXIS", "false").strip().lower() in {
+    "1",
+    "true",
+    "t",
+    "yes",
+    "y",
+    "on",
+}
+INVERT_DRIVE_AXIS = os.getenv("INVERT_DRIVE_AXIS", "false").strip().lower() in {
+    "1",
+    "true",
+    "t",
+    "yes",
+    "y",
+    "on",
+}
 SERVO_RELEASE_IDLE = os.getenv("SERVO_RELEASE_IDLE", "true").strip().lower() in {
     "1",
     "true",
@@ -125,6 +169,14 @@ SERVO_RELEASE_IDLE = os.getenv("SERVO_RELEASE_IDLE", "true").strip().lower() in 
 # =========================================================
 running = True
 pressed_keys: set[str] = set()
+pressed_buttons: set[int] = set()
+axis_state = {
+    STEER_AXIS: 0.0,
+    DRIVE_AXIS: 0.0,
+}
+hat_state = {
+    HAT_Y_AXIS: 0,
+}
 steer_angle = CENTER_ANGLE
 last_base_state: tuple[int, int, int] | None = None
 last_steer_angle: float | None = None
@@ -137,6 +189,7 @@ mqtt_connected = False
 gpio: pigpio.pi | None = None
 servo_output: AngularServoOutput | None = None
 keyboard: InputDevice | None = None
+gamepad: InputDevice | None = None
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -145,6 +198,30 @@ def clamp(value: float, low: float, high: float) -> float:
 
 def log(message: str) -> None:
     print(message)
+
+
+def apply_deadzone(value: float, deadzone: float) -> float:
+    if abs(value) < deadzone:
+        return 0.0
+    return value
+
+
+def normalize_axis(device: InputDevice, axis_code: int, raw_value: int) -> float:
+    try:
+        info = device.absinfo(axis_code)
+    except Exception:
+        return 0.0
+
+    minimum = info.min
+    maximum = info.max
+    center = (minimum + maximum) / 2.0
+    half_range = (maximum - minimum) / 2.0
+
+    if half_range <= 0:
+        return 0.0
+
+    value = (raw_value - center) / half_range
+    return clamp(value, -1.0, 1.0)
 
 
 def setup_gpio() -> None:
@@ -185,6 +262,21 @@ def setup_keyboard() -> None:
         log=log,
         device_factory=InputDevice,
     )
+
+
+def setup_gamepad() -> None:
+    global gamepad
+
+    gamepad = find_optional_abs_input_device(
+        GAMEPAD_DEVICE,
+        log=log,
+        device_factory=InputDevice,
+        list_devices_fn=list_devices,
+        name_hints=GAMEPAD_NAME_HINTS,
+        ev_abs_code=ecodes.EV_ABS,
+    )
+    if gamepad is not None:
+        log(f"INPUT: controller ready: {gamepad.name} ({gamepad.path})")
 
 
 def set_base(b1: int, b2: int, b3: int, label: str | None = None) -> None:
@@ -267,6 +359,38 @@ def steer_right_step(source: str) -> None:
 
 def steer_left_step(source: str) -> None:
     apply_steering(steer_angle + STEP, source)
+
+
+def steer_from_gamepad_axis(axis_value: float, source: str) -> bool:
+    if INVERT_STEER_AXIS:
+        axis_value = -axis_value
+
+    axis_value = apply_deadzone(axis_value, GAMEPAD_STEER_DEADZONE)
+    if axis_value == 0.0:
+        return False
+
+    if axis_value < 0:
+        target_angle = CENTER_ANGLE + axis_value * (CENTER_ANGLE - LEFT_LIMIT)
+    else:
+        target_angle = CENTER_ANGLE + axis_value * (RIGHT_LIMIT - CENTER_ANGLE)
+
+    apply_steering(target_angle, source)
+    return True
+
+
+def adjust_center(delta: float, source: str) -> None:
+    global CENTER_ANGLE, manual_override_until
+
+    CENTER_ANGLE = clamp(CENTER_ANGLE + delta, LEFT_LIMIT, RIGHT_LIMIT)
+    if servo_output is not None:
+        servo_output.set_center_angle(CENTER_ANGLE)
+    log(f"CENTER_ANGLE: {CENTER_ANGLE}")
+
+    if source == "GAMEPAD":
+        steer_value = apply_deadzone(axis_state[STEER_AXIS], GAMEPAD_STEER_DEADZONE)
+        if steer_value == 0.0:
+            manual_override_until = time.monotonic() + MANUAL_STEER_HOLD
+            steer_center(source)
 
 
 def remote_control_active(now: float) -> bool:
@@ -446,6 +570,12 @@ def cleanup() -> None:
     except Exception:
         pass
 
+    try:
+        if gamepad is not None:
+            gamepad.ungrab()
+    except Exception:
+        pass
+
     close_mqtt()
 
     try:
@@ -472,7 +602,7 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 
 def update_key_state(event) -> None:
-    global CENTER_ANGLE, running
+    global running
 
     if event.type != ecodes.EV_KEY:
         return
@@ -488,20 +618,49 @@ def update_key_state(event) -> None:
             pressed_keys.add(key)
             if event.value == 1:
                 if key == "KEY_1":
-                    CENTER_ANGLE = clamp(CENTER_ANGLE + 1, LEFT_LIMIT, RIGHT_LIMIT)
-                    if servo_output is not None:
-                        servo_output.set_center_angle(CENTER_ANGLE)
-                    log(f"CENTER_ANGLE INCREASED: {CENTER_ANGLE}")
+                    adjust_center(1, "KEYBOARD")
                 elif key == "KEY_2":
-                    CENTER_ANGLE = clamp(CENTER_ANGLE - 1, LEFT_LIMIT, RIGHT_LIMIT)
-                    if servo_output is not None:
-                        servo_output.set_center_angle(CENTER_ANGLE)
-                    log(f"CENTER_ANGLE DECREASED: {CENTER_ANGLE}")
+                    adjust_center(-1, "KEYBOARD")
                 elif key == "KEY_Q":
                     running = False
     elif event.value == 0:
         for key in keys:
             pressed_keys.discard(key)
+
+
+def update_gamepad_button_state(event) -> None:
+    global running
+
+    if event.type != ecodes.EV_KEY:
+        return
+
+    code = event.code
+    if event.value == 1:
+        pressed_buttons.add(code)
+        if code == BUTTON_CENTER_PLUS:
+            adjust_center(1, "GAMEPAD")
+        elif code == BUTTON_CENTER_MINUS:
+            adjust_center(-1, "GAMEPAD")
+        elif code == BUTTON_QUIT:
+            running = False
+    elif event.value == 0:
+        pressed_buttons.discard(code)
+
+
+def update_gamepad_axis_state(device: InputDevice, event) -> None:
+    if event.type != ecodes.EV_ABS:
+        return
+
+    if event.code in axis_state:
+        axis_state[event.code] = normalize_axis(device, event.code, event.value)
+        return
+
+    if event.code == HAT_Y_AXIS and event.value != hat_state[HAT_Y_AXIS]:
+        hat_state[HAT_Y_AXIS] = event.value
+        if event.value == -1:
+            adjust_center(1, "GAMEPAD")
+        elif event.value == 1:
+            adjust_center(-1, "GAMEPAD")
 
 
 def process_controls() -> None:
@@ -521,6 +680,7 @@ def process_controls() -> None:
     has_s = "KEY_S" in pressed_keys
     has_x = "KEY_X" in pressed_keys
 
+    keyboard_base_active = has_x or has_w or has_s
     if has_x or (has_w and has_s):
         stop_base()
     elif has_w:
@@ -528,7 +688,29 @@ def process_controls() -> None:
     elif has_s:
         forward()
     else:
-        stop_base()
+        drive_value = axis_state[DRIVE_AXIS]
+        if INVERT_DRIVE_AXIS:
+            drive_value = -drive_value
+        drive_value = apply_deadzone(drive_value, GAMEPAD_DRIVE_DEADZONE)
+
+        if BUTTON_LOCK in pressed_buttons:
+            lock_base()
+            return
+
+        if BUTTON_UNLOCK in pressed_buttons:
+            unlock_base()
+            return
+
+        if BUTTON_STOP in pressed_buttons:
+            stop_base()
+        elif drive_value < 0:
+            set_base(0, 1, 0, "FORWARD")
+        elif drive_value > 0:
+            set_base(0, 0, 1, "BACKWARD")
+        elif keyboard_base_active:
+            stop_base()
+        else:
+            stop_base()
 
     has_a = "KEY_A" in pressed_keys
     has_d = "KEY_D" in pressed_keys
@@ -552,6 +734,15 @@ def process_controls() -> None:
     if now < manual_override_until:
         return
 
+    if BUTTON_CENTER in pressed_buttons:
+        manual_override_until = now + MANUAL_STEER_HOLD
+        steer_center("GAMEPAD")
+        return
+
+    if steer_from_gamepad_axis(axis_state[STEER_AXIS], "GAMEPAD"):
+        manual_override_until = now + MANUAL_STEER_HOLD
+        return
+
     if remote_control_active(now):
         apply_steering(remote_servo_angle if remote_servo_angle is not None else CENTER_ANGLE, "REMOTE")
     else:
@@ -571,6 +762,7 @@ def main() -> None:
     setup_gpio()
     setup_servo_output()
     setup_keyboard()
+    setup_gamepad()
     setup_mqtt()
 
     print("=== RPI KEYBOARD + MQTT SERVO BRIDGE MODE ===")
@@ -578,6 +770,10 @@ def main() -> None:
         print(f"Keyboard: {keyboard.path}")
     else:
         print(f"Keyboard: disabled (missing {KEYBOARD_DEVICE})")
+    if gamepad is not None:
+        print(f"Controller: {gamepad.name} ({gamepad.path})")
+    else:
+        print("Controller: disabled (not detected)")
     print(f"MQTT broker: {MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}")
     print(f"MQTT servo topic: {MQTT_SERVO_TOPIC}")
     print(f"pigpio: {PIGPIO_HOST}:{PIGPIO_PORT}")
@@ -593,11 +789,16 @@ def main() -> None:
     print("1 = increase center angle")
     print("2 = decrease center angle")
     print("Q = quit")
+    print("Right stick X = steering")
+    print("Left stick Y = base drive")
+    print("A = stop | B = center steering | LB = lock | RB = unlock")
+    print("Y/X or D-pad up/down = center angle +/-1 | START = quit")
     print("Ctrl+C = emergency exit")
     print("")
     print(
         f"Steering center={CENTER_ANGLE:.1f}, left={LEFT_LIMIT:.1f}, right={RIGHT_LIMIT:.1f}, "
-        f"step={STEP:.1f}, deadband={STEER_DEADBAND_DEG:.1f}"
+        f"step={STEP:.1f}, deadband={STEER_DEADBAND_DEG:.1f}, "
+        f"gamepad_steer_deadzone={GAMEPAD_STEER_DEADZONE:.2f}, gamepad_drive_deadzone={GAMEPAD_DRIVE_DEADZONE:.2f}"
     )
     print(
         f"Remote hold last={REMOTE_SERVO_HOLD_LAST}, timeout={REMOTE_SERVO_TIMEOUT:.2f}s, "
@@ -625,12 +826,22 @@ def main() -> None:
     try:
         if keyboard is not None:
             keyboard.grab()
+        if gamepad is not None:
+            gamepad.grab()
 
         while running:
             if keyboard is not None:
                 try:
                     for event in keyboard.read():
                         update_key_state(event)
+                except (BlockingIOError, OSError):
+                    pass
+
+            if gamepad is not None:
+                try:
+                    for event in gamepad.read():
+                        update_gamepad_button_state(event)
+                        update_gamepad_axis_state(gamepad, event)
                 except (BlockingIOError, OSError):
                     pass
 

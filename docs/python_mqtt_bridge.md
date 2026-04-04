@@ -25,6 +25,16 @@ Run:
 MQTT_BROKER_HOST=192.168.1.50 SERVO_PIN=19 python scripts/rpi_mqtt_bridge.py
 ```
 
+Optional controller tuning:
+
+```bash
+GAMEPAD_DEVICE=/dev/input/event5
+GAMEPAD_STEER_DEADZONE=0.12
+GAMEPAD_DRIVE_DEADZONE=0.20
+INVERT_STEER_AXIS=false
+INVERT_DRIVE_AXIS=false
+```
+
 If `pigpiod` is running on a different host, set:
 
 ```bash
@@ -46,6 +56,18 @@ Keyboard controls remain local:
 - `2`: center angle -1
 - `Q`: quit
 
+Controller controls are also supported when a gamepad is detected:
+
+- right stick X: steering
+- left stick Y: base forward/backward
+- `A`: stop base
+- `B`: center steering
+- `LB`: lock
+- `RB`: unlock
+- `Y` / `X`: center angle `+1 / -1`
+- D-pad up/down: center angle `+1 / -1`
+- `START`: quit
+
 When `A`, `D`, or `C` is pressed, local steering temporarily overrides the
 MQTT angle stream. When the user stops steering, remote servo control
 resumes automatically.
@@ -53,6 +75,10 @@ resumes automatically.
 If the configured `KEYBOARD_DEVICE` does not exist, the bridge still starts
 and remote MQTT steering continues to work; local keyboard control is simply
 disabled for that session.
+
+If a controller is present, it acts as another local manual override source.
+When the stick/buttons return to neutral, remote MQTT steering resumes after
+the normal `MANUAL_STEER_HOLD` window.
 
 By default, the bridge now holds the last MQTT steering angle until a new
 message arrives:
@@ -121,5 +147,6 @@ python scripts/mqtt_servo_command.py 90
 - default base pins are `17`, `27`, `22`
 - base output is driven through `pigpio`
 - servo output now uses `gpiozero.AngularServo` with `PiGPIOFactory`
+- gamepad auto-detect matches names like `edra`, `joystick`, `gamepad`, `controller`, `pad`
 - servo MQTT angle is published as a retained message
 - broker host and topic must match on both machines
