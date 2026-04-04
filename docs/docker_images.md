@@ -134,6 +134,9 @@ SSH auth behavior:
 - on Windows, password mode can also use PuTTY tools via `plink.exe` and `pscp.exe`
 - key mode now uses SSH batch mode, so it fails fast instead of hanging on a password prompt
 - when using PuTTY password mode for a host not yet trusted, set `MINIPC_SSH_HOST_KEY` or `RPI_SSH_HOST_KEY` to the host `SHA256:...` fingerprint
+- release directory operations now have separate flags: `MINIPC_USE_SUDO_REMOTE` and `RPI_USE_SUDO_REMOTE`
+- these default to `true` because the sample deploy paths use `/opt/...`, which usually needs elevated privileges
+- `MINIPC_SUDO_PASSWORD` / `RPI_SUDO_PASSWORD` are optional; when blank, the script reuses the SSH password first, then falls back to passwordless sudo
 
 What it does:
 

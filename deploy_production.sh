@@ -239,7 +239,9 @@ deploy_target() {
     local dest_dir="$6"
     local compose_file="$7"
     local use_sudo_docker="$8"
-    local host_key="$9"
+    local use_sudo_remote="$9"
+    local host_key="${10}"
+    local sudo_password="${11}"
 
     local remote_archive="/tmp/${PROJECT_NAME}-${VERSION}-${label}.tar.gz"
     local remote_env="/tmp/${PROJECT_NAME}-${VERSION}-${label}.env"
@@ -248,6 +250,10 @@ deploy_target() {
 
     validate_password_auth_support "$label" "$password"
     host_key="$(trim_whitespace "$host_key")"
+    sudo_password="$(trim_whitespace "$sudo_password")"
+    if [[ -z "$sudo_password" ]]; then
+        sudo_password="$password"
+    fi
 
     log_step "[${label}] Checking SSH connectivity..."
     if ! ssh_check_output="$(ssh_base_cmd "$password" "$port" "$host_key" "${user}@${host}" exit 2>&1)"; then
@@ -280,6 +286,8 @@ deploy_target() {
             "COMPOSE_FILE=$(shell_quote "$compose_file") " \
             "VERSION=$(shell_quote "$VERSION") " \
             "USE_SUDO_DOCKER=$(shell_quote "$use_sudo_docker") " \
+            "USE_SUDO_REMOTE=$(shell_quote "$use_sudo_remote") " \
+            "SUDO_PASSWORD=$(shell_quote "$sudo_password") " \
             "REMOTE_ARCHIVE=$(shell_quote "$remote_archive") " \
             "REMOTE_ENV=$(shell_quote "$remote_env") " \
             "KEEP_RELEASES=$(shell_quote "$DEPLOY_KEEP_RELEASES") " \
@@ -292,17 +300,37 @@ root_dir="${DEST_DIR%/}"
 release_dir="${root_dir}/releases/${VERSION}"
 current_dir="${root_dir}/current"
 
-mkdir -p "${root_dir}/releases"
-rm -rf "${release_dir}"
-mkdir -p "${release_dir}"
-tar -xzf "${REMOTE_ARCHIVE}" -C "${release_dir}"
-cp "${REMOTE_ENV}" "${release_dir}/.env"
-cp "${REMOTE_ENV}" "${release_dir}/.env.production"
-ln -sfn "${release_dir}" "${current_dir}"
-rm -f "${REMOTE_ARCHIVE}" "${REMOTE_ENV}"
+if [[ "${USE_SUDO_REMOTE}" == "true" || "${USE_SUDO_DOCKER}" == "true" ]]; then
+    if [[ -n "${SUDO_PASSWORD}" ]]; then
+        printf '%s\n' "${SUDO_PASSWORD}" | sudo -S -p '' true >/dev/null 2>&1 || {
+            echo "Remote sudo authentication failed" >&2
+            exit 1
+        }
+    else
+        sudo -n true >/dev/null 2>&1 || {
+            echo "Remote sudo access is required but no passwordless sudo is available" >&2
+            exit 1
+        }
+    fi
+fi
+
+if [[ "${USE_SUDO_REMOTE}" == "true" ]]; then
+    file_cmd=(sudo -n)
+else
+    file_cmd=()
+fi
+
+"${file_cmd[@]}" mkdir -p "${root_dir}/releases"
+"${file_cmd[@]}" rm -rf "${release_dir}"
+"${file_cmd[@]}" mkdir -p "${release_dir}"
+"${file_cmd[@]}" tar -xzf "${REMOTE_ARCHIVE}" -C "${release_dir}"
+"${file_cmd[@]}" cp "${REMOTE_ENV}" "${release_dir}/.env"
+"${file_cmd[@]}" cp "${REMOTE_ENV}" "${release_dir}/.env.production"
+"${file_cmd[@]}" ln -sfn "${release_dir}" "${current_dir}"
+"${file_cmd[@]}" rm -f "${REMOTE_ARCHIVE}" "${REMOTE_ENV}"
 
 if [[ "${USE_SUDO_DOCKER}" == "true" ]]; then
-    docker_cmd=(sudo docker)
+    docker_cmd=(sudo -n docker)
 else
     docker_cmd=(docker)
 fi
@@ -373,6 +401,8 @@ MINIPC_PASSWORD="$(trim_whitespace "${MINIPC_PASSWORD:-}")"
 RPI_PASSWORD="$(trim_whitespace "${RPI_PASSWORD:-}")"
 MINIPC_SSH_HOST_KEY="$(trim_whitespace "${MINIPC_SSH_HOST_KEY:-}")"
 RPI_SSH_HOST_KEY="$(trim_whitespace "${RPI_SSH_HOST_KEY:-}")"
+MINIPC_SUDO_PASSWORD="$(trim_whitespace "${MINIPC_SUDO_PASSWORD:-}")"
+RPI_SUDO_PASSWORD="$(trim_whitespace "${RPI_SUDO_PASSWORD:-}")"
 
 PROJECT_NAME="${PROJECT_NAME:-car-calib}"
 SSH_CONNECT_TIMEOUT_S="${SSH_CONNECT_TIMEOUT_S:-10}"
@@ -385,6 +415,8 @@ MINIPC_COMPOSE_FILE="${MINIPC_COMPOSE_FILE:-docker-compose.vision.yml}"
 RPI_COMPOSE_FILE="${RPI_COMPOSE_FILE:-docker-compose.rpi.yml}"
 MINIPC_USE_SUDO_DOCKER="${MINIPC_USE_SUDO_DOCKER:-false}"
 RPI_USE_SUDO_DOCKER="${RPI_USE_SUDO_DOCKER:-true}"
+MINIPC_USE_SUDO_REMOTE="${MINIPC_USE_SUDO_REMOTE:-true}"
+RPI_USE_SUDO_REMOTE="${RPI_USE_SUDO_REMOTE:-true}"
 MINIPC_DOCKER_LOG_CMD="docker compose -f ${MINIPC_COMPOSE_FILE} logs -f"
 RPI_DOCKER_LOG_CMD="docker compose -f ${RPI_COMPOSE_FILE} logs -f"
 if [[ "${MINIPC_USE_SUDO_DOCKER}" == "true" ]]; then
@@ -426,6 +458,14 @@ if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
     else
         echo "  MiniPC auth: ssh-key"
     fi
+    echo "  MiniPC remote sudo: ${MINIPC_USE_SUDO_REMOTE}"
+    if [[ -n "${MINIPC_SUDO_PASSWORD}" ]]; then
+        echo "  MiniPC sudo auth: password"
+    elif [[ -n "${MINIPC_PASSWORD}" ]]; then
+        echo "  MiniPC sudo auth: ssh-password fallback"
+    else
+        echo "  MiniPC sudo auth: passwordless sudo required"
+    fi
     if [[ -n "${MINIPC_SSH_HOST_KEY}" ]]; then
         echo "  MiniPC host key: pinned"
     fi
@@ -436,6 +476,14 @@ if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
         echo "  Raspberry Pi auth: password"
     else
         echo "  Raspberry Pi auth: ssh-key"
+    fi
+    echo "  Raspberry Pi remote sudo: ${RPI_USE_SUDO_REMOTE}"
+    if [[ -n "${RPI_SUDO_PASSWORD}" ]]; then
+        echo "  Raspberry Pi sudo auth: password"
+    elif [[ -n "${RPI_PASSWORD}" ]]; then
+        echo "  Raspberry Pi sudo auth: ssh-password fallback"
+    else
+        echo "  Raspberry Pi sudo auth: passwordless sudo required"
     fi
     if [[ -n "${RPI_SSH_HOST_KEY}" ]]; then
         echo "  Raspberry Pi host key: pinned"
@@ -454,7 +502,9 @@ if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
         "$MINIPC_DEST_DIR" \
         "$MINIPC_COMPOSE_FILE" \
         "$MINIPC_USE_SUDO_DOCKER" \
-        "${MINIPC_SSH_HOST_KEY:-}"
+        "$MINIPC_USE_SUDO_REMOTE" \
+        "${MINIPC_SSH_HOST_KEY:-}" \
+        "${MINIPC_SUDO_PASSWORD:-}"
     step_index=$((step_index + 1))
 fi
 
@@ -468,7 +518,9 @@ if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
         "$RPI_DEST_DIR" \
         "$RPI_COMPOSE_FILE" \
         "$RPI_USE_SUDO_DOCKER" \
-        "${RPI_SSH_HOST_KEY:-}"
+        "$RPI_USE_SUDO_REMOTE" \
+        "${RPI_SSH_HOST_KEY:-}" \
+        "${RPI_SUDO_PASSWORD:-}"
 fi
 
 echo "${VERSION}" > "${SCRIPT_DIR}/.last_production_version"
