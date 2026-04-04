@@ -105,16 +105,13 @@ OUT3 = int(os.getenv("BASE_OUT3", "22"))
 STEER_AXIS = ecodes.ABS_RX
 DRIVE_AXIS = ecodes.ABS_Y
 HAT_Y_AXIS = ecodes.ABS_HAT0Y
-REMOTE_STEER_TRIGGER_AXIS = int(
-    os.getenv("GAMEPAD_REMOTE_STEER_AXIS", str(ecodes.ABS_Z))
-)
 BUTTON_STOP = ecodes.BTN_SOUTH
 BUTTON_CENTER = ecodes.BTN_EAST
 BUTTON_LOCK = ecodes.BTN_TL
 BUTTON_UNLOCK = ecodes.BTN_TR
-BUTTON_REMOTE_STEER_ONLY = ecodes.BTN_TL2
+BUTTON_REMOTE_STEER_ONLY = ecodes.BTN_NORTH
 BUTTON_QUIT = ecodes.BTN_START
-BUTTON_CENTER_PLUS = ecodes.BTN_NORTH
+BUTTON_CENTER_PLUS = None
 BUTTON_CENTER_MINUS = ecodes.BTN_WEST
 
 CENTER_ANGLE = float(os.getenv("SERVO_CENTER_ANGLE", "-8"))
@@ -142,9 +139,6 @@ LOOP_DELAY = float(os.getenv("LOOP_DELAY", "0.01"))
 STEER_DEADBAND_DEG = float(os.getenv("STEER_DEADBAND_DEG", "1.0"))
 GAMEPAD_STEER_DEADZONE = float(os.getenv("GAMEPAD_STEER_DEADZONE", "0.12"))
 GAMEPAD_DRIVE_DEADZONE = float(os.getenv("GAMEPAD_DRIVE_DEADZONE", "0.20"))
-GAMEPAD_REMOTE_STEER_TRIGGER_THRESHOLD = float(
-    os.getenv("GAMEPAD_REMOTE_STEER_TRIGGER_THRESHOLD", "0.5")
-)
 INVERT_STEER_AXIS = os.getenv("INVERT_STEER_AXIS", "false").strip().lower() in {
     "1",
     "true",
@@ -183,9 +177,6 @@ axis_state = {
 }
 hat_state = {
     HAT_Y_AXIS: 0,
-}
-trigger_axis_state = {
-    REMOTE_STEER_TRIGGER_AXIS: 0.0,
 }
 steer_angle = CENTER_ANGLE
 last_base_state: tuple[int, int, int] | None = None
@@ -235,28 +226,8 @@ def normalize_axis(device: InputDevice, axis_code: int, raw_value: int) -> float
     return clamp(value, -1.0, 1.0)
 
 
-def normalize_trigger_axis(device: InputDevice, axis_code: int, raw_value: int) -> float:
-    try:
-        info = device.absinfo(axis_code)
-    except Exception:
-        return 0.0
-
-    minimum = info.min
-    maximum = info.max
-    span = maximum - minimum
-    if span <= 0:
-        return 0.0
-
-    value = (raw_value - minimum) / span
-    return clamp(value, 0.0, 1.0)
-
-
 def controller_remote_steer_only_enabled() -> bool:
-    return (
-        BUTTON_REMOTE_STEER_ONLY in pressed_buttons
-        or trigger_axis_state.get(REMOTE_STEER_TRIGGER_AXIS, 0.0)
-        >= GAMEPAD_REMOTE_STEER_TRIGGER_THRESHOLD
-    )
+    return BUTTON_REMOTE_STEER_ONLY in pressed_buttons
 
 
 def activate_manual_override(source: str, now: float) -> None:
@@ -688,7 +659,7 @@ def update_gamepad_button_state(event) -> None:
     code = event.code
     if event.value == 1:
         pressed_buttons.add(code)
-        if code == BUTTON_CENTER_PLUS:
+        if BUTTON_CENTER_PLUS is not None and code == BUTTON_CENTER_PLUS:
             adjust_center(1, "GAMEPAD")
         elif code == BUTTON_CENTER_MINUS:
             adjust_center(-1, "GAMEPAD")
@@ -704,14 +675,6 @@ def update_gamepad_axis_state(device: InputDevice, event) -> None:
 
     if event.code in axis_state:
         axis_state[event.code] = normalize_axis(device, event.code, event.value)
-        return
-
-    if event.code in trigger_axis_state:
-        trigger_axis_state[event.code] = normalize_trigger_axis(
-            device,
-            event.code,
-            event.value,
-        )
         return
 
     if event.code == HAT_Y_AXIS and event.value != hat_state[HAT_Y_AXIS]:
@@ -855,17 +818,16 @@ def main() -> None:
     print("Q = quit")
     print("Right stick X = steering")
     print("Left stick Y = base drive")
-    print("L2 = keep base local, hand steering back to MQTT")
+    print("Y = keep base local, hand steering back to MQTT")
     print("A = stop | B = center steering | LB = lock | RB = unlock")
-    print("Y/X or D-pad up/down = center angle +/-1 | START = quit")
+    print("X or D-pad down = center angle -1 | D-pad up = center angle +1 | START = quit")
     print("Ctrl+C = emergency exit")
     print("")
     print(
         f"Steering center={CENTER_ANGLE:.1f}, left={LEFT_LIMIT:.1f}, right={RIGHT_LIMIT:.1f}, "
         f"step={STEP:.1f}, deadband={STEER_DEADBAND_DEG:.1f}, "
         f"gamepad_steer_deadzone={GAMEPAD_STEER_DEADZONE:.2f}, "
-        f"gamepad_drive_deadzone={GAMEPAD_DRIVE_DEADZONE:.2f}, "
-        f"l2_trigger_threshold={GAMEPAD_REMOTE_STEER_TRIGGER_THRESHOLD:.2f}"
+        f"gamepad_drive_deadzone={GAMEPAD_DRIVE_DEADZONE:.2f}"
     )
     print(
         f"Remote hold last={REMOTE_SERVO_HOLD_LAST}, timeout={REMOTE_SERVO_TIMEOUT:.2f}s, "

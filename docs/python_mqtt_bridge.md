@@ -31,8 +31,6 @@ Optional controller tuning:
 GAMEPAD_DEVICE=/dev/input/event5
 GAMEPAD_STEER_DEADZONE=0.12
 GAMEPAD_DRIVE_DEADZONE=0.20
-GAMEPAD_REMOTE_STEER_TRIGGER_THRESHOLD=0.50
-GAMEPAD_REMOTE_STEER_AXIS=2
 INVERT_STEER_AXIS=false
 INVERT_DRIVE_AXIS=false
 ```
@@ -62,12 +60,12 @@ Controller controls are also supported when a gamepad is detected:
 
 - right stick X: steering
 - left stick Y: base forward/backward
-- `L2`: keep drive local but hand steering back to MQTT immediately
+- `Y`: keep drive local but hand steering back to MQTT immediately
 - `A`: stop base
 - `B`: center steering
 - `LB`: lock
 - `RB`: unlock
-- `Y` / `X`: center angle `+1 / -1`
+- `X`: center angle `-1`
 - D-pad up/down: center angle `+1 / -1`
 - `START`: quit
 
@@ -83,7 +81,7 @@ If a controller is present, it acts as another local manual override source.
 When the stick/buttons return to neutral, remote MQTT steering resumes after
 the normal `MANUAL_STEER_HOLD` window.
 
-While `L2` is held, controller steering is suppressed and any active
+While `Y` is held, controller steering is suppressed and any active
 controller steering override is cleared right away, so MQTT steering takes
 back over immediately while left-stick drive continues to work.
 
