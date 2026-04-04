@@ -14,7 +14,7 @@ vision controller publishes steering angles over MQTT.
 Install dependencies:
 
 ```bash
-sudo apt install -y pigpio python3-pigpio
+sudo apt install -y pigpio python3-pigpio python3-gpiozero
 pip install evdev paho-mqtt python-dotenv
 sudo systemctl enable --now pigpiod
 ```
@@ -49,6 +49,10 @@ Keyboard controls remain local:
 When `A`, `D`, or `C` is pressed, local steering temporarily overrides the
 MQTT angle stream. When the user stops steering, remote servo control
 resumes automatically.
+
+If the configured `KEYBOARD_DEVICE` does not exist, the bridge still starts
+and remote MQTT steering continues to work; local keyboard control is simply
+disabled for that session.
 
 By default, the bridge now holds the last MQTT steering angle until a new
 message arrives:
@@ -115,6 +119,7 @@ python scripts/mqtt_servo_command.py 90
 
 - `SERVO_PIN` defaults to `19`
 - default base pins are `17`, `27`, `22`
-- servo/base output is now driven through `pigpio`
+- base output is driven through `pigpio`
+- servo output now uses `gpiozero.AngularServo` with `PiGPIOFactory`
 - servo MQTT angle is published as a retained message
 - broker host and topic must match on both machines

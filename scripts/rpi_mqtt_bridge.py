@@ -15,15 +15,25 @@ import time
 
 try:
     from .servo_bridge_common import (
-        angle_to_pulse_us as map_angle_to_pulse_us,
         angle_within_limits,
         clamp_angle,
     )
+    from .input_device_helpers import open_optional_input_device
+    from .angular_servo_output import (
+        AngularServoOutput,
+        apply_boot_servo_behavior,
+        apply_idle_servo_behavior,
+    )
 except ImportError:  # pragma: no cover - direct script execution on Raspberry Pi
     from servo_bridge_common import (  # type: ignore
-        angle_to_pulse_us as map_angle_to_pulse_us,
         angle_within_limits,
         clamp_angle,
+    )
+    from input_device_helpers import open_optional_input_device  # type: ignore
+    from angular_servo_output import (  # type: ignore
+        AngularServoOutput,
+        apply_boot_servo_behavior,
+        apply_idle_servo_behavior,
     )
 
 try:
@@ -99,6 +109,15 @@ REMOTE_SERVO_HOLD_LAST = os.getenv("REMOTE_SERVO_HOLD_LAST", "true").strip().low
 }
 MANUAL_STEER_HOLD = float(os.getenv("MANUAL_STEER_HOLD", "0.25"))
 LOOP_DELAY = float(os.getenv("LOOP_DELAY", "0.01"))
+STEER_DEADBAND_DEG = float(os.getenv("STEER_DEADBAND_DEG", "1.0"))
+SERVO_RELEASE_IDLE = os.getenv("SERVO_RELEASE_IDLE", "true").strip().lower() in {
+    "1",
+    "true",
+    "t",
+    "yes",
+    "y",
+    "on",
+}
 
 
 # =========================================================
@@ -116,7 +135,8 @@ manual_override_until = 0.0
 mqtt_client: mqtt.Client | None = None
 mqtt_connected = False
 gpio: pigpio.pi | None = None
-keyboard = InputDevice(KEYBOARD_DEVICE)
+servo_output: AngularServoOutput | None = None
+keyboard: InputDevice | None = None
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -137,17 +157,33 @@ def setup_gpio() -> None:
             "Start pigpiod first, for example: sudo systemctl enable --now pigpiod"
         )
 
-    for pin in (OUT1, OUT2, OUT3, SERVO_PIN):
+    for pin in (OUT1, OUT2, OUT3):
         gpio.set_mode(pin, pigpio.OUTPUT)
 
 
-def angle_to_pulse_us(angle: float) -> int:
-    return map_angle_to_pulse_us(
-        angle,
-        LEFT_LIMIT,
-        RIGHT_LIMIT,
-        SERVO_MIN_PULSE_US,
-        SERVO_MAX_PULSE_US,
+def setup_servo_output() -> None:
+    global servo_output
+
+    servo_output = AngularServoOutput(
+        servo_pin=SERVO_PIN,
+        left_limit=LEFT_LIMIT,
+        right_limit=RIGHT_LIMIT,
+        servo_min_pulse_us=SERVO_MIN_PULSE_US,
+        servo_max_pulse_us=SERVO_MAX_PULSE_US,
+        pigpio_host=PIGPIO_HOST,
+        pigpio_port=PIGPIO_PORT,
+        center_angle=CENTER_ANGLE,
+        log=log,
+    )
+
+
+def setup_keyboard() -> None:
+    global keyboard
+
+    keyboard = open_optional_input_device(
+        KEYBOARD_DEVICE,
+        log=log,
+        device_factory=InputDevice,
     )
 
 
@@ -193,18 +229,32 @@ def unlock_base() -> None:
 def apply_steering(target_angle: float, source: str) -> None:
     global steer_angle, last_steer_angle, last_steer_source
 
-    steer_angle = clamp(target_angle, LEFT_LIMIT, RIGHT_LIMIT)
+    target = clamp(target_angle, LEFT_LIMIT, RIGHT_LIMIT)
 
-    if steer_angle != last_steer_angle or source != last_steer_source:
-        if gpio is None:
-            raise RuntimeError("pigpio is not initialized.")
-        pulse_us = angle_to_pulse_us(steer_angle)
-        gpio.set_servo_pulsewidth(SERVO_PIN, pulse_us)
-        log(
-            f"STEER[{source}]: {steer_angle:.1f} deg | CENTER: {CENTER_ANGLE:.1f} deg | PULSE: {pulse_us} us"
-        )
-        last_steer_angle = steer_angle
-        last_steer_source = source
+    if (
+        last_steer_angle is not None
+        and abs(target - last_steer_angle) < STEER_DEADBAND_DEG
+        and source == last_steer_source
+        and servo_output is not None
+        and servo_output.attached
+    ):
+        return
+
+    steer_angle = target
+
+    if servo_output is None:
+        raise RuntimeError("AngularServo output is not initialized.")
+
+    steer_angle = servo_output.set_servo(steer_angle, source)
+    last_steer_angle = steer_angle
+    last_steer_source = source
+
+
+def release_servo(reason: str = "IDLE") -> None:
+    if servo_output is None:
+        raise RuntimeError("AngularServo output is not initialized.")
+
+    servo_output.detach_servo(reason)
 
 
 def steer_center(source: str) -> None:
@@ -386,20 +436,21 @@ def cleanup() -> None:
         pass
 
     try:
-        steer_center("CLEANUP")
+        release_servo("CLEANUP")
     except Exception:
         pass
 
     try:
-        keyboard.ungrab()
+        if keyboard is not None:
+            keyboard.ungrab()
     except Exception:
         pass
 
     close_mqtt()
 
     try:
-        if gpio is not None:
-            gpio.set_servo_pulsewidth(SERVO_PIN, 0)
+        if servo_output is not None:
+            servo_output.close()
     except Exception:
         pass
 
@@ -438,9 +489,13 @@ def update_key_state(event) -> None:
             if event.value == 1:
                 if key == "KEY_1":
                     CENTER_ANGLE = clamp(CENTER_ANGLE + 1, LEFT_LIMIT, RIGHT_LIMIT)
+                    if servo_output is not None:
+                        servo_output.set_center_angle(CENTER_ANGLE)
                     log(f"CENTER_ANGLE INCREASED: {CENTER_ANGLE}")
                 elif key == "KEY_2":
                     CENTER_ANGLE = clamp(CENTER_ANGLE - 1, LEFT_LIMIT, RIGHT_LIMIT)
+                    if servo_output is not None:
+                        servo_output.set_center_angle(CENTER_ANGLE)
                     log(f"CENTER_ANGLE DECREASED: {CENTER_ANGLE}")
                 elif key == "KEY_Q":
                     running = False
@@ -500,17 +555,29 @@ def process_controls() -> None:
     if remote_control_active(now):
         apply_steering(remote_servo_angle if remote_servo_angle is not None else CENTER_ANGLE, "REMOTE")
     else:
-        steer_center("IDLE")
+        if servo_output is None:
+            raise RuntimeError("AngularServo output is not initialized.")
+
+        apply_idle_servo_behavior(
+            servo_output,
+            release_idle=SERVO_RELEASE_IDLE,
+            center_angle=CENTER_ANGLE,
+        )
 
 
 def main() -> None:
     global running
 
     setup_gpio()
+    setup_servo_output()
+    setup_keyboard()
     setup_mqtt()
 
     print("=== RPI KEYBOARD + MQTT SERVO BRIDGE MODE ===")
-    print(f"Keyboard: {keyboard.path}")
+    if keyboard is not None:
+        print(f"Keyboard: {keyboard.path}")
+    else:
+        print(f"Keyboard: disabled (missing {KEYBOARD_DEVICE})")
     print(f"MQTT broker: {MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}")
     print(f"MQTT servo topic: {MQTT_SERVO_TOPIC}")
     print(f"pigpio: {PIGPIO_HOST}:{PIGPIO_PORT}")
@@ -530,10 +597,12 @@ def main() -> None:
     print("")
     print(
         f"Steering center={CENTER_ANGLE:.1f}, left={LEFT_LIMIT:.1f}, right={RIGHT_LIMIT:.1f}, "
-        f"step={STEP:.1f}, remote_hold_last={REMOTE_SERVO_HOLD_LAST}"
+        f"step={STEP:.1f}, deadband={STEER_DEADBAND_DEG:.1f}"
     )
-    if not REMOTE_SERVO_HOLD_LAST:
-        print(f"Remote timeout={REMOTE_SERVO_TIMEOUT:.2f}s")
+    print(
+        f"Remote hold last={REMOTE_SERVO_HOLD_LAST}, timeout={REMOTE_SERVO_TIMEOUT:.2f}s, "
+        f"release_idle={SERVO_RELEASE_IDLE}"
+    )
     print(
         f"Servo pulse range={SERVO_MIN_PULSE_US}..{SERVO_MAX_PULSE_US} us"
     )
@@ -543,18 +612,27 @@ def main() -> None:
     print("Remote payload accepts plain float or JSON payload with type/angle.")
     print("")
 
-    steer_center("BOOT")
+    if servo_output is None:
+        raise RuntimeError("AngularServo output is not initialized.")
+
+    apply_boot_servo_behavior(
+        servo_output,
+        release_idle=SERVO_RELEASE_IDLE,
+        center_angle=CENTER_ANGLE,
+    )
     stop_base()
 
     try:
-        keyboard.grab()
+        if keyboard is not None:
+            keyboard.grab()
 
         while running:
-            try:
-                for event in keyboard.read():
-                    update_key_state(event)
-            except (BlockingIOError, OSError):
-                pass
+            if keyboard is not None:
+                try:
+                    for event in keyboard.read():
+                        update_key_state(event)
+                except (BlockingIOError, OSError):
+                    pass
 
             process_controls()
             time.sleep(LOOP_DELAY)
