@@ -19,4 +19,5 @@ services:
       - /dev/input:/dev/input:ro
     command:
       - python
-      - scripts/rpi_mqtt_bridge.py
+      - -m
+      - scripts.rpi.bridge

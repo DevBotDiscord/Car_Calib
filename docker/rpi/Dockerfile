@@ -73,4 +73,4 @@ ENV PIGPIO_HOST=127.0.0.1 \
     PIGPIOD_STARTUP_DELAY_S=1
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["python", "scripts/rpi_mqtt_bridge.py"]
+CMD ["python", "-m", "scripts.rpi.bridge"]
