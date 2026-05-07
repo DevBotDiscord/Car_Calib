@@ -164,13 +164,14 @@ SERVO_RELEASE_IDLE = os.getenv("SERVO_RELEASE_IDLE", "true").strip().lower() in 
 
 CRUISE_DURATION_S = float(os.getenv("CRUISE_DURATION_S", "30"))
 CRUISE_KEY = os.getenv("CRUISE_KEY", "KEY_ENTER")
+CRUISE_STRAIGHT_FRAMES = int(os.getenv("CRUISE_STRAIGHT_FRAMES", "5"))
 
 # IMU / heading-hold config
 IMU_ENABLED = os.getenv("IMU_ENABLED", "true").strip().lower() in {
     "1", "true", "t", "yes", "y", "on",
 }
 IMU_STRAIGHT_THRESHOLD_DEG = float(os.getenv("IMU_STRAIGHT_THRESHOLD_DEG", "3.0"))
-IMU_KP = float(os.getenv("IMU_KP", "0.8"))
+IMU_KP = float(os.getenv("IMU_KP", "0.12"))
 IMU_GYRO_BIAS_SAMPLES = int(os.getenv("IMU_GYRO_BIAS_SAMPLES", "500"))
 
 def _angle_to_pulse_us(angle: float) -> int:
@@ -298,6 +299,8 @@ manual_override_source: str | None = None
 controller_remote_steer_only = False
 last_controller_remote_steer_only = False
 cruise_active = False
+cruise_phase = "vision"  # "vision" | "imu"
+cruise_straight_count = 0
 cruise_start_time = 0.0
 cruise_prev_remote_steer_only = False
 imu: Any = None
@@ -488,11 +491,11 @@ def steer_center(source: str) -> None:
 
 
 def steer_right_step(source: str) -> None:
-    apply_steering(steer_angle - STEP, source)
+    apply_steering(steer_angle + STEP, source)  # +angle = RIGHT
 
 
 def steer_left_step(source: str) -> None:
-    apply_steering(steer_angle + STEP, source)
+    apply_steering(steer_angle - STEP, source)  # -angle = LEFT
 
 
 def steer_from_gamepad_axis(axis_value: float, source: str) -> bool:
@@ -602,11 +605,6 @@ def handle_mqtt_servo_message(payload_text: str) -> None:
 
     remote_servo_angle = resolve_remote_servo_angle(payload_text)
     remote_servo_updated_at = time.monotonic()
-
-    # Vision detected straight → lock IMU heading home
-    if imu_active and cruise_active and remote_servo_angle is not None:
-        if abs(remote_servo_angle - CENTER_ANGLE) <= IMU_STRAIGHT_THRESHOLD_DEG:
-            set_home()
 
 
 def on_mqtt_connect(client, userdata, flags, rc, properties=None) -> None:
@@ -809,19 +807,20 @@ def update_gamepad_axis_state(device: InputDevice, event) -> None:
 
 
 def start_cruise(now: float) -> None:
-    global cruise_active, cruise_start_time, cruise_prev_remote_steer_only, controller_remote_steer_only
+    global cruise_active, cruise_phase, cruise_straight_count, cruise_start_time, cruise_prev_remote_steer_only, controller_remote_steer_only
 
     if cruise_active:
         return
 
     cruise_active = True
+    cruise_phase = "vision"
+    cruise_straight_count = 0
     cruise_start_time = now
     cruise_prev_remote_steer_only = controller_remote_steer_only
     controller_remote_steer_only = True
     forward()
 
-    mode = "IMU+MQTT" if imu_active else "MQTT"
-    log(f"CRUISE: started ({CRUISE_DURATION_S:.0f}s forward + {mode} steer)")
+    log(f"CRUISE: started (phase=vision, {CRUISE_STRAIGHT_FRAMES}f settle → calib → IMU heading-hold)")
 
 
 def _imu_steer_correction() -> float:
@@ -831,50 +830,76 @@ def _imu_steer_correction() -> float:
 
     _, error_deg = poll_imu()
     correction = error_deg * IMU_KP
-    correction = clamp(correction, LEFT_LIMIT * 0.3, RIGHT_LIMIT * 0.3)
+    max_correction = SERVO_MAX_ANGLE_DEG * 0.25
+    correction = clamp(correction, -max_correction, max_correction)
     return correction
 
 
 def cancel_cruise() -> None:
-    global cruise_active, controller_remote_steer_only
+    global cruise_active, cruise_phase, controller_remote_steer_only
 
     if not cruise_active:
         return
 
     cruise_active = False
+    cruise_phase = "vision"
     controller_remote_steer_only = cruise_prev_remote_steer_only
     stop_base()
     log("CRUISE: cancelled")
 
 
 def process_controls() -> None:
-    global manual_override_source, cruise_active
+    global manual_override_source, cruise_active, cruise_phase, cruise_straight_count, controller_remote_steer_only
 
     now = time.monotonic()
 
     # --- cruise timeout check ---
     if cruise_active and (now - cruise_start_time) >= CRUISE_DURATION_S:
         cruise_active = False
+        cruise_phase = "vision"
         controller_remote_steer_only = cruise_prev_remote_steer_only
         stop_base()
         log("CRUISE: finished (30s elapsed)")
 
-    # --- cruise mode: IMU heading-hold + fallback to MQTT steer ---
+    # --- cruise mode ---
     if cruise_active:
-        if imu_active:
-            imu_correction = _imu_steer_correction()
+        # Phase 1: Vision steer until settled straight, then calib IMU
+        if cruise_phase == "vision":
             if remote_control_active(now) and remote_servo_angle is not None:
-                # Vision is publishing straight indicator → set home
-                target = remote_servo_angle + imu_correction
+                apply_steering(remote_servo_angle, "REMOTE")
+                if imu_active and abs(remote_servo_angle - CENTER_ANGLE) <= IMU_STRAIGHT_THRESHOLD_DEG:
+                    cruise_straight_count += 1
+                    if cruise_straight_count >= CRUISE_STRAIGHT_FRAMES:
+                        cruise_phase = "imu"
+                        stop_base()
+                        set_home()
+                        log("CRUISE: phase=imu (vision straight for {} frames, stop → set_home → IMU heading-hold)".format(
+                            cruise_straight_count))
+                        forward()
+                else:
+                    cruise_straight_count = 0
             else:
-                target = CENTER_ANGLE + imu_correction
+                cruise_straight_count = 0
+                apply_steering(CENTER_ANGLE, "CRUISE-IDLE")
+            return
+
+        # Phase 2: IMU heading-hold (vision is advisory only)
+        if cruise_phase == "imu" and imu_active:
+            imu_correction = _imu_steer_correction()  # steering correction opposite to drift
+            if remote_control_active(now) and remote_servo_angle is not None:
+                target = remote_servo_angle - imu_correction
+            else:
+                target = CENTER_ANGLE - imu_correction
             _, error_deg = poll_imu()
             if abs(error_deg) <= IMU_STRAIGHT_THRESHOLD_DEG:
                 apply_steering(target, "IMU-STRAIGHT")
             else:
                 state = "RIGHT" if error_deg > 0 else "LEFT"
                 apply_steering(target, f"IMU-{state}")
-        elif remote_control_active(now):
+            return
+
+        # Fallback: pure MQTT steer
+        if remote_control_active(now):
             apply_steering(remote_servo_angle if remote_servo_angle is not None else CENTER_ANGLE, "REMOTE")
         else:
             apply_steering(CENTER_ANGLE, "CRUISE-IDLE")
