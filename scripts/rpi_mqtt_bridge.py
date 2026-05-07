@@ -102,7 +102,7 @@ STEER_AXIS = ecodes.ABS_RX
 DRIVE_AXIS = ecodes.ABS_Y
 HAT_Y_AXIS = ecodes.ABS_HAT0Y
 BUTTON_STOP = ecodes.BTN_SOUTH
-BUTTON_CENTER = ecodes.BTN_EAST
+BUTTON_IMU_MODE = ecodes.BTN_EAST
 BUTTON_LOCK = ecodes.BTN_TL
 BUTTON_UNLOCK = ecodes.BTN_TR
 BUTTON_REMOTE_STEER_ONLY = ecodes.BTN_NORTH
@@ -237,14 +237,39 @@ def setup_imu() -> None:
     log(f"IMU: ready (gyro_z_bias={imu_gyro_z_bias:.4f} deg/s)")
 
 
+def imu_reset_for_cruise() -> None:
+    """Quick gyro bias refresh + yaw reset at start of each cruise."""
+    global imu_yaw, imu_home_yaw, imu_gyro_z_bias, imu_last_time
+
+    if not imu_active or imu is None:
+        log("IMU: reset skipped (not active)")
+        return
+
+    log("IMU: quick recalibrate + yaw reset for cruise...")
+    total_z = 0.0
+    samples = 200
+    for _ in range(samples):
+        gyro = imu.get_gyro_data()
+        total_z += gyro["z"]
+        time.sleep(0.005)
+    imu_gyro_z_bias = total_z / samples
+    imu_yaw = 0.0
+    imu_home_yaw = 0.0
+    imu_home_steer_angle = steer_angle
+    imu_last_time = time.monotonic()
+    log(f"IMU: cruise reset OK (bias={imu_gyro_z_bias:.4f} deg/s)")
+
+
 def set_home() -> None:
     global imu_home_yaw, imu_yaw
 
     if not imu_active or imu is None:
         return
 
+    global imu_home_steer_angle
     imu_home_yaw = imu_yaw
-    log(f"IMU: HOME SET (current yaw={imu_yaw:.1f} deg = new 0.0)")
+    imu_home_steer_angle = steer_angle
+    log(f"IMU: HOME SET (yaw={imu_yaw:.1f} deg, steer={imu_home_steer_angle:.1f} deg)")
 
 
 def poll_imu() -> tuple[float, float]:
@@ -303,9 +328,11 @@ cruise_phase = "vision"  # "vision" | "imu"
 cruise_straight_count = 0
 cruise_start_time = 0.0
 cruise_prev_remote_steer_only = False
+imu_steer_active = False
 imu: Any = None
 imu_yaw = 0.0
 imu_home_yaw = 0.0
+imu_home_steer_angle = CENTER_ANGLE
 imu_gyro_z_bias = 0.0
 imu_last_time = 0.0
 imu_active = False
@@ -317,7 +344,7 @@ gamepad: InputDevice | None = None
 
 
 def clamp(value: float, low: float, high: float) -> float:
-    return clamp_angle(value, low, high)
+    return clamp_angle(value, high, low)
 
 
 def log(message: str) -> None:
@@ -491,11 +518,11 @@ def steer_center(source: str) -> None:
 
 
 def steer_right_step(source: str) -> None:
-    apply_steering(steer_angle + STEP, source)  # +angle = RIGHT
+    apply_steering(steer_angle - STEP, source)  # -angle = RIGHT (servo đảo)
 
 
 def steer_left_step(source: str) -> None:
-    apply_steering(steer_angle - STEP, source)  # -angle = LEFT
+    apply_steering(steer_angle + STEP, source)  # +angle = LEFT (servo đảo)
 
 
 def steer_from_gamepad_axis(axis_value: float, source: str) -> bool:
@@ -507,9 +534,9 @@ def steer_from_gamepad_axis(axis_value: float, source: str) -> bool:
         return False
 
     if axis_value < 0:
-        target_angle = CENTER_ANGLE + axis_value * (CENTER_ANGLE - LEFT_LIMIT)
+        target_angle = CENTER_ANGLE - axis_value * (RIGHT_LIMIT - CENTER_ANGLE)  # stick left → RIGHT
     else:
-        target_angle = CENTER_ANGLE + axis_value * (RIGHT_LIMIT - CENTER_ANGLE)
+        target_angle = CENTER_ANGLE - axis_value * (CENTER_ANGLE - LEFT_LIMIT)  # stick right → LEFT
 
     apply_steering(target_angle, source)
     return True
@@ -789,6 +816,16 @@ def update_gamepad_button_state(event) -> None:
     elif event.value == 0:
         pressed_buttons.discard(code)
 
+    if event.type == ecodes.EV_KEY and event.value == 1 and code == BUTTON_IMU_MODE:
+        global imu_steer_active
+        imu_steer_active = not imu_steer_active
+        if imu_steer_active:
+            imu_reset_for_cruise()
+            set_home()
+            log("IMU-MODE: ON (heading-hold active, steer from IMU)")
+        else:
+            log("IMU-MODE: OFF (back to normal steer)")
+
 
 def update_gamepad_axis_state(device: InputDevice, event) -> None:
     if event.type != ecodes.EV_ABS:
@@ -856,51 +893,22 @@ def process_controls() -> None:
     # --- cruise timeout check ---
     if cruise_active and (now - cruise_start_time) >= CRUISE_DURATION_S:
         cruise_active = False
-        cruise_phase = "vision"
         controller_remote_steer_only = cruise_prev_remote_steer_only
         stop_base()
         log("CRUISE: finished (30s elapsed)")
 
-    # --- cruise mode ---
+    # --- IMU heading-hold mode (toggle: B on gamepad) ---
+    if imu_steer_active and imu_active:
+        _, error_deg = poll_imu()
+        target = clamp(imu_home_steer_angle + error_deg, LEFT_LIMIT, RIGHT_LIMIT)
+        state = "STRAIGHT" if abs(error_deg) <= 1.0 else ("RIGHT" if error_deg > 0 else "LEFT")
+        apply_steering(target, f"IMU-{state}")
+        return
+
+    # --- cruise mode: pure vision/MQTT steer, no IMU ---
     if cruise_active:
-        # Phase 1: Vision steer until settled straight, then calib IMU
-        if cruise_phase == "vision":
-            if remote_control_active(now) and remote_servo_angle is not None:
-                apply_steering(remote_servo_angle, "REMOTE")
-                if imu_active and abs(remote_servo_angle - CENTER_ANGLE) <= IMU_STRAIGHT_THRESHOLD_DEG:
-                    cruise_straight_count += 1
-                    if cruise_straight_count >= CRUISE_STRAIGHT_FRAMES:
-                        cruise_phase = "imu"
-                        stop_base()
-                        set_home()
-                        log("CRUISE: phase=imu (vision straight for {} frames, stop → set_home → IMU heading-hold)".format(
-                            cruise_straight_count))
-                        forward()
-                else:
-                    cruise_straight_count = 0
-            else:
-                cruise_straight_count = 0
-                apply_steering(CENTER_ANGLE, "CRUISE-IDLE")
-            return
-
-        # Phase 2: IMU heading-hold (vision is advisory only)
-        if cruise_phase == "imu" and imu_active:
-            imu_correction = _imu_steer_correction()  # steering correction opposite to drift
-            if remote_control_active(now) and remote_servo_angle is not None:
-                target = remote_servo_angle - imu_correction
-            else:
-                target = CENTER_ANGLE - imu_correction
-            _, error_deg = poll_imu()
-            if abs(error_deg) <= IMU_STRAIGHT_THRESHOLD_DEG:
-                apply_steering(target, "IMU-STRAIGHT")
-            else:
-                state = "RIGHT" if error_deg > 0 else "LEFT"
-                apply_steering(target, f"IMU-{state}")
-            return
-
-        # Fallback: pure MQTT steer
-        if remote_control_active(now):
-            apply_steering(remote_servo_angle if remote_servo_angle is not None else CENTER_ANGLE, "REMOTE")
+        if remote_control_active(now) and remote_servo_angle is not None:
+            apply_steering(remote_servo_angle, "REMOTE")
         else:
             apply_steering(CENTER_ANGLE, "CRUISE-IDLE")
         return
@@ -977,11 +985,6 @@ def process_controls() -> None:
         return
 
     if not gamepad_remote_steer_only:
-        if BUTTON_CENTER in pressed_buttons:
-            activate_manual_override("GAMEPAD", now)
-            steer_center("GAMEPAD")
-            return
-
         if steer_from_gamepad_axis(axis_state[STEER_AXIS], "GAMEPAD"):
             activate_manual_override("GAMEPAD", now)
             return

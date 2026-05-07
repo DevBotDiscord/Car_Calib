@@ -17,18 +17,3 @@ def angle_within_limits(value: float, left_limit: float, right_limit: float) -> 
     return lower <= value <= upper
 
 
-def angle_to_pulse_us(
-    angle: float,
-    left_limit: float,
-    right_limit: float,
-    servo_min_pulse_us: int,
-    servo_max_pulse_us: int,
-) -> int:
-    clamped_angle = clamp_angle(angle, left_limit, right_limit)
-    angle_span = right_limit - left_limit
-    if angle_span == 0:
-        return servo_min_pulse_us
-
-    ratio = (clamped_angle - left_limit) / angle_span
-    pulse_span = servo_max_pulse_us - servo_min_pulse_us
-    return int(round(servo_min_pulse_us + ratio * pulse_span))
