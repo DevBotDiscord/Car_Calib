@@ -238,21 +238,28 @@ deploy_target() {
     local password="$5"
     local dest_dir="$6"
     local compose_file="$7"
-    local use_sudo_docker="$8"
-    local use_sudo_remote="$9"
-    local host_key="${10}"
-    local sudo_password="${11}"
+    local compose_project_name="$8"
+    local use_sudo_docker="$9"
+    local use_sudo_remote="${10}"
+    local host_key="${11}"
+    local sudo_password="${12}"
 
     local remote_archive="/tmp/${PROJECT_NAME}-${VERSION}-${label}.tar.gz"
     local remote_env="/tmp/${PROJECT_NAME}-${VERSION}-${label}.env"
+    local compose_cmd=()
+    local compose_project_name_safe=""
     local remote_bootstrap=""
     local ssh_check_output=""
 
     validate_password_auth_support "$label" "$password"
     host_key="$(trim_whitespace "$host_key")"
     sudo_password="$(trim_whitespace "$sudo_password")"
+    compose_project_name_safe="$(trim_whitespace "$compose_project_name")"
     if [[ -z "$sudo_password" ]]; then
         sudo_password="$password"
+    fi
+    if [[ -z "$compose_project_name_safe" ]]; then
+        compose_project_name_safe="${PROJECT_NAME}-${label}"
     fi
 
     log_step "[${label}] Checking SSH connectivity..."
@@ -284,6 +291,7 @@ deploy_target() {
         printf '%s' \
             "DEST_DIR=$(shell_quote "$dest_dir") " \
             "COMPOSE_FILE=$(shell_quote "$compose_file") " \
+            "COMPOSE_PROJECT_NAME=$(shell_quote "$compose_project_name_safe") " \
             "VERSION=$(shell_quote "$VERSION") " \
             "USE_SUDO_DOCKER=$(shell_quote "$use_sudo_docker") " \
             "USE_SUDO_REMOTE=$(shell_quote "$use_sudo_remote") " \
@@ -336,8 +344,16 @@ else
 fi
 
 cd "${current_dir}"
-"${docker_cmd[@]}" compose -f "${COMPOSE_FILE}" up --build -d
-"${docker_cmd[@]}" compose -f "${COMPOSE_FILE}" ps
+compose_cmd=("${docker_cmd[@]}" compose -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}")
+mapfile -t legacy_projects < <("${docker_cmd[@]}" ps --format '{{.Names}}' | sed -n "s/^\([0-9]\{8\}-[0-9]\{6\}-[0-9a-f]\{7\}\)-.*$/\1/p" | sort -u)
+for legacy in "${legacy_projects[@]}"; do
+    if [[ -z "${legacy}" || "${legacy}" == "${COMPOSE_PROJECT_NAME}" ]]; then
+        continue
+    fi
+    "${docker_cmd[@]}" compose -p "${legacy}" -f "${COMPOSE_FILE}" down --remove-orphans || true
+done
+"${compose_cmd[@]}" up --build -d --remove-orphans
+"${compose_cmd[@]}" ps
 
 if [[ "${KEEP_RELEASES}" =~ ^[0-9]+$ ]] && (( KEEP_RELEASES > 0 )); then
     cd "${root_dir}/releases"
@@ -413,12 +429,14 @@ MINIPC_DEST_DIR="${MINIPC_DEST_DIR:-/opt/${PROJECT_NAME}/vision}"
 RPI_DEST_DIR="${RPI_DEST_DIR:-/opt/${PROJECT_NAME}/rpi}"
 MINIPC_COMPOSE_FILE="${MINIPC_COMPOSE_FILE:-docker-compose.vision.yml}"
 RPI_COMPOSE_FILE="${RPI_COMPOSE_FILE:-docker-compose.rpi.yml}"
+MINIPC_COMPOSE_PROJECT_NAME="${MINIPC_COMPOSE_PROJECT_NAME:-${PROJECT_NAME}-minipc}"
+RPI_COMPOSE_PROJECT_NAME="${RPI_COMPOSE_PROJECT_NAME:-${PROJECT_NAME}-ras}"
 MINIPC_USE_SUDO_DOCKER="${MINIPC_USE_SUDO_DOCKER:-false}"
 RPI_USE_SUDO_DOCKER="${RPI_USE_SUDO_DOCKER:-true}"
 MINIPC_USE_SUDO_REMOTE="${MINIPC_USE_SUDO_REMOTE:-true}"
 RPI_USE_SUDO_REMOTE="${RPI_USE_SUDO_REMOTE:-true}"
-MINIPC_DOCKER_LOG_CMD="docker compose -f ${MINIPC_COMPOSE_FILE} logs -f"
-RPI_DOCKER_LOG_CMD="docker compose -f ${RPI_COMPOSE_FILE} logs -f"
+MINIPC_DOCKER_LOG_CMD="docker compose -p ${MINIPC_COMPOSE_PROJECT_NAME} -f ${MINIPC_COMPOSE_FILE} logs -f"
+RPI_DOCKER_LOG_CMD="docker compose -p ${RPI_COMPOSE_PROJECT_NAME} -f ${RPI_COMPOSE_FILE} logs -f"
 if [[ "${MINIPC_USE_SUDO_DOCKER}" == "true" ]]; then
     MINIPC_DOCKER_LOG_CMD="sudo ${MINIPC_DOCKER_LOG_CMD}"
 fi
@@ -501,6 +519,7 @@ if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
         "${MINIPC_PASSWORD:-}" \
         "$MINIPC_DEST_DIR" \
         "$MINIPC_COMPOSE_FILE" \
+        "$MINIPC_COMPOSE_PROJECT_NAME" \
         "$MINIPC_USE_SUDO_DOCKER" \
         "$MINIPC_USE_SUDO_REMOTE" \
         "${MINIPC_SSH_HOST_KEY:-}" \
@@ -517,6 +536,7 @@ if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
         "${RPI_PASSWORD:-}" \
         "$RPI_DEST_DIR" \
         "$RPI_COMPOSE_FILE" \
+        "$RPI_COMPOSE_PROJECT_NAME" \
         "$RPI_USE_SUDO_DOCKER" \
         "$RPI_USE_SUDO_REMOTE" \
         "${RPI_SSH_HOST_KEY:-}" \

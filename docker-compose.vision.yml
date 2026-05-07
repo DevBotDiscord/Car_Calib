@@ -8,6 +8,8 @@ services:
     image: ${VISION_IMAGE_NAME:-car-calib-vision:latest}
     restart: unless-stopped
     network_mode: host
+    depends_on:
+      - mqtt
     env_file:
       - .env
     environment:
@@ -20,5 +22,16 @@ services:
     volumes:
       - vision-data:/data
 
+  mqtt:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+
 volumes:
   vision-data:
+  mosquitto-data:
+  mosquitto-log:

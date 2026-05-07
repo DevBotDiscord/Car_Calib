@@ -77,8 +77,9 @@ OUT2 = int(os.getenv("BASE_OUT2", "27"))
 OUT3 = int(os.getenv("BASE_OUT3", "22"))
 
 CENTER_ANGLE = float(os.getenv("SERVO_CENTER_ANGLE", "-8"))
-LEFT_LIMIT = float(os.getenv("SERVO_LEFT_LIMIT", "-65"))
-RIGHT_LIMIT = float(os.getenv("SERVO_RIGHT_LIMIT", "60"))
+SERVO_MAX_ANGLE_DEG = float(os.getenv("SERVO_MAX_ANGLE_DEG", "45"))
+LEFT_LIMIT = CENTER_ANGLE - SERVO_MAX_ANGLE_DEG
+RIGHT_LIMIT = CENTER_ANGLE + SERVO_MAX_ANGLE_DEG
 STEP = float(os.getenv("SERVO_STEP", "20"))
 
 REMOTE_INPUT_MIN_ANGLE = float(os.getenv("REMOTE_INPUT_MIN_ANGLE", "60"))

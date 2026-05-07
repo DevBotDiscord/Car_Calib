@@ -12,6 +12,7 @@ import json
 import os
 import signal
 import time
+from typing import Any
 
 try:
     from .servo_bridge_common import (
@@ -22,11 +23,6 @@ try:
         find_optional_abs_input_device,
         open_optional_input_device,
     )
-    from .angular_servo_output import (
-        AngularServoOutput,
-        apply_boot_servo_behavior,
-        apply_idle_servo_behavior,
-    )
 except ImportError:  # pragma: no cover - direct script execution on Raspberry Pi
     from servo_bridge_common import (  # type: ignore
         angle_within_limits,
@@ -35,11 +31,6 @@ except ImportError:  # pragma: no cover - direct script execution on Raspberry P
     from input_device_helpers import (  # type: ignore
         find_optional_abs_input_device,
         open_optional_input_device,
-    )
-    from angular_servo_output import (  # type: ignore
-        AngularServoOutput,
-        apply_boot_servo_behavior,
-        apply_idle_servo_behavior,
     )
 
 try:
@@ -62,6 +53,11 @@ except ImportError as exc:  # pragma: no cover - runtime dependency on Raspberry
     raise RuntimeError(
         "pigpio is required for scripts/rpi_mqtt_bridge.py. Install pigpio and start pigpiod."
     ) from exc
+
+try:
+    from mpu6050 import mpu6050 as _mpu6050_class
+except ImportError:  # pragma: no cover - IMU is optional
+    _mpu6050_class = None
 
 if load_dotenv is not None:
     load_dotenv()
@@ -113,10 +109,12 @@ BUTTON_REMOTE_STEER_ONLY = ecodes.BTN_NORTH
 BUTTON_QUIT = ecodes.BTN_START
 BUTTON_CENTER_PLUS = None
 BUTTON_CENTER_MINUS = ecodes.BTN_WEST
+BUTTON_CRUISE = ecodes.BTN_SELECT
 
 CENTER_ANGLE = float(os.getenv("SERVO_CENTER_ANGLE", "-8"))
-LEFT_LIMIT = float(os.getenv("SERVO_LEFT_LIMIT", "-65"))
-RIGHT_LIMIT = float(os.getenv("SERVO_RIGHT_LIMIT", "60"))
+SERVO_MAX_ANGLE_DEG = float(os.getenv("SERVO_MAX_ANGLE_DEG", "45"))
+LEFT_LIMIT = CENTER_ANGLE - SERVO_MAX_ANGLE_DEG
+RIGHT_LIMIT = CENTER_ANGLE + SERVO_MAX_ANGLE_DEG
 STEP = float(os.getenv("SERVO_STEP", "20"))
 REMOTE_INPUT_MIN_ANGLE = float(os.getenv("REMOTE_INPUT_MIN_ANGLE", "60"))
 REMOTE_INPUT_CENTER_ANGLE = float(os.getenv("REMOTE_INPUT_CENTER_ANGLE", "90"))
@@ -164,6 +162,117 @@ SERVO_RELEASE_IDLE = os.getenv("SERVO_RELEASE_IDLE", "true").strip().lower() in 
     "on",
 }
 
+CRUISE_DURATION_S = float(os.getenv("CRUISE_DURATION_S", "30"))
+CRUISE_KEY = os.getenv("CRUISE_KEY", "KEY_ENTER")
+
+# IMU / heading-hold config
+IMU_ENABLED = os.getenv("IMU_ENABLED", "true").strip().lower() in {
+    "1", "true", "t", "yes", "y", "on",
+}
+IMU_STRAIGHT_THRESHOLD_DEG = float(os.getenv("IMU_STRAIGHT_THRESHOLD_DEG", "3.0"))
+IMU_KP = float(os.getenv("IMU_KP", "0.8"))
+IMU_GYRO_BIAS_SAMPLES = int(os.getenv("IMU_GYRO_BIAS_SAMPLES", "500"))
+
+def _angle_to_pulse_us(angle: float) -> int:
+    """Map steering angle within [LEFT_LIMIT, RIGHT_LIMIT] to full pulse range."""
+    clamped = clamp_angle(angle, LEFT_LIMIT, RIGHT_LIMIT)
+    span = RIGHT_LIMIT - LEFT_LIMIT
+    if span == 0:
+        return SERVO_MIN_PULSE_US
+    ratio = (clamped - LEFT_LIMIT) / span
+    return int(SERVO_MIN_PULSE_US + ratio * (SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US))
+
+
+def _write_servo(angle: float) -> None:
+    """Send pulse directly via pigpio — no caching, no skipped writes."""
+    if gpio is None:
+        raise RuntimeError("pigpio is not initialized.")
+    pulse_us = _angle_to_pulse_us(angle)
+    gpio.set_servo_pulsewidth(SERVO_PIN, pulse_us)
+
+
+def _servo_off() -> None:
+    """Stop PWM pulses to servo (relaxes it)."""
+    if gpio is not None:
+        gpio.set_servo_pulsewidth(SERVO_PIN, 0)
+
+
+# ---------------------------------------------------------------------------
+# IMU / heading-hold
+# ---------------------------------------------------------------------------
+def _normalize_angle(angle: float) -> float:
+    while angle > 180:
+        angle -= 360
+    while angle < -180:
+        angle += 360
+    return angle
+
+
+def setup_imu() -> None:
+    global imu, imu_gyro_z_bias, imu_last_time, imu_active
+
+    if not IMU_ENABLED or _mpu6050_class is None:
+        log("IMU: disabled (IMU_ENABLED=false or mpu6050 not installed)")
+        return
+
+    try:
+        imu = _mpu6050_class(0x68)
+        # quick communication check
+        _ = imu.get_gyro_data()
+    except Exception as exc:
+        imu = None
+        log(f"IMU: not found, falling back to MQTT-only steer ({exc})")
+        return
+
+    log("IMU: calibrating gyro (keep IMU still)...")
+    total_z = 0.0
+    for _ in range(IMU_GYRO_BIAS_SAMPLES):
+        gyro = imu.get_gyro_data()
+        total_z += gyro["z"]
+        time.sleep(0.005)
+    imu_gyro_z_bias = total_z / IMU_GYRO_BIAS_SAMPLES
+    imu_last_time = time.monotonic()
+    imu_active = True
+    log(f"IMU: ready (gyro_z_bias={imu_gyro_z_bias:.4f} deg/s)")
+
+
+def set_home() -> None:
+    global imu_home_yaw, imu_yaw
+
+    if not imu_active or imu is None:
+        return
+
+    imu_home_yaw = imu_yaw
+    log(f"IMU: HOME SET (current yaw={imu_yaw:.1f} deg = new 0.0)")
+
+
+def poll_imu() -> tuple[float, float]:
+    """Poll IMU, return (yaw_deg, error_from_home_deg).
+    Returns (0.0, 0.0) when IMU is inactive.
+    """
+    global imu_yaw, imu_last_time, imu_active
+
+    if not imu_active or imu is None:
+        return 0.0, 0.0
+
+    try:
+        gyro = imu.get_gyro_data()
+    except Exception:
+        imu_active = False
+        log("IMU: read error, disabling heading-hold")
+        return 0.0, 0.0
+
+    now = time.monotonic()
+    dt = now - imu_last_time
+    imu_last_time = now
+
+    gz = gyro["z"] - imu_gyro_z_bias
+    imu_yaw += gz * dt
+    imu_yaw = _normalize_angle(imu_yaw)
+
+    error_deg = _normalize_angle(imu_yaw - imu_home_yaw)
+    return imu_yaw, error_deg
+
 
 # =========================================================
 # GLOBAL STATE
@@ -188,10 +297,18 @@ manual_override_until = 0.0
 manual_override_source: str | None = None
 controller_remote_steer_only = False
 last_controller_remote_steer_only = False
+cruise_active = False
+cruise_start_time = 0.0
+cruise_prev_remote_steer_only = False
+imu: Any = None
+imu_yaw = 0.0
+imu_home_yaw = 0.0
+imu_gyro_z_bias = 0.0
+imu_last_time = 0.0
+imu_active = False
 mqtt_client: mqtt.Client | None = None
 mqtt_connected = False
 gpio: pigpio.pi | None = None
-servo_output: AngularServoOutput | None = None
 keyboard: InputDevice | None = None
 gamepad: InputDevice | None = None
 
@@ -275,19 +392,7 @@ def setup_gpio() -> None:
 
 
 def setup_servo_output() -> None:
-    global servo_output
-
-    servo_output = AngularServoOutput(
-        servo_pin=SERVO_PIN,
-        left_limit=LEFT_LIMIT,
-        right_limit=RIGHT_LIMIT,
-        servo_min_pulse_us=SERVO_MIN_PULSE_US,
-        servo_max_pulse_us=SERVO_MAX_PULSE_US,
-        pigpio_host=PIGPIO_HOST,
-        pigpio_port=PIGPIO_PORT,
-        center_angle=CENTER_ANGLE,
-        log=log,
-    )
+    pass  # servo is driven directly via pigpio (_write_servo / _servo_off)
 
 
 def setup_keyboard() -> None:
@@ -339,11 +444,11 @@ def stop_base() -> None:
 
 
 def forward() -> None:
-    set_base(0, 0, 1, "FORWARD")
+    set_base(0, 1, 0, "FORWARD")
 
 
 def backward() -> None:
-    set_base(0, 1, 0, "BACKWARD")
+    set_base(0, 0, 1, "BACKWARD")
 
 
 def lock_base() -> None:
@@ -363,26 +468,19 @@ def apply_steering(target_angle: float, source: str) -> None:
         last_steer_angle is not None
         and abs(target - last_steer_angle) < STEER_DEADBAND_DEG
         and source == last_steer_source
-        and servo_output is not None
-        and servo_output.attached
     ):
         return
 
     steer_angle = target
-
-    if servo_output is None:
-        raise RuntimeError("AngularServo output is not initialized.")
-
-    steer_angle = servo_output.set_servo(steer_angle, source)
+    _write_servo(steer_angle)
+    log(f"STEER[{source}]: {steer_angle:.1f} deg | CENTER: {CENTER_ANGLE:.1f} deg")
     last_steer_angle = steer_angle
     last_steer_source = source
 
 
 def release_servo(reason: str = "IDLE") -> None:
-    if servo_output is None:
-        raise RuntimeError("AngularServo output is not initialized.")
-
-    servo_output.detach_servo(reason)
+    _servo_off()
+    log(f"STEER[RELEASE]: servo PWM off ({reason})")
 
 
 def steer_center(source: str) -> None:
@@ -418,8 +516,6 @@ def adjust_center(delta: float, source: str) -> None:
     global CENTER_ANGLE
 
     CENTER_ANGLE = clamp(CENTER_ANGLE + delta, LEFT_LIMIT, RIGHT_LIMIT)
-    if servo_output is not None:
-        servo_output.set_center_angle(CENTER_ANGLE)
     log(f"CENTER_ANGLE: {CENTER_ANGLE}")
 
     if source == "GAMEPAD":
@@ -506,6 +602,11 @@ def handle_mqtt_servo_message(payload_text: str) -> None:
 
     remote_servo_angle = resolve_remote_servo_angle(payload_text)
     remote_servo_updated_at = time.monotonic()
+
+    # Vision detected straight → lock IMU heading home
+    if imu_active and cruise_active and remote_servo_angle is not None:
+        if abs(remote_servo_angle - CENTER_ANGLE) <= IMU_STRAIGHT_THRESHOLD_DEG:
+            set_home()
 
 
 def on_mqtt_connect(client, userdata, flags, rc, properties=None) -> None:
@@ -617,12 +718,6 @@ def cleanup() -> None:
     close_mqtt()
 
     try:
-        if servo_output is not None:
-            servo_output.close()
-    except Exception:
-        pass
-
-    try:
         if gpio is not None:
             gpio.stop()
     except Exception:
@@ -661,6 +756,11 @@ def update_key_state(event) -> None:
                     adjust_center(-1, "KEYBOARD")
                 elif key == "KEY_Q":
                     running = False
+                elif key == CRUISE_KEY:
+                    if cruise_active:
+                        cancel_cruise()
+                    else:
+                        start_cruise(time.monotonic())
     elif event.value == 0:
         for key in keys:
             pressed_keys.discard(key)
@@ -677,6 +777,11 @@ def update_gamepad_button_state(event) -> None:
         pressed_buttons.add(code)
         if code == BUTTON_REMOTE_STEER_ONLY:
             controller_remote_steer_only = not controller_remote_steer_only
+        elif code == BUTTON_CRUISE:
+            if cruise_active:
+                cancel_cruise()
+            else:
+                start_cruise(time.monotonic())
         elif BUTTON_CENTER_PLUS is not None and code == BUTTON_CENTER_PLUS:
             adjust_center(1, "GAMEPAD")
         elif code == BUTTON_CENTER_MINUS:
@@ -703,10 +808,77 @@ def update_gamepad_axis_state(device: InputDevice, event) -> None:
             adjust_center(-1, "GAMEPAD")
 
 
+def start_cruise(now: float) -> None:
+    global cruise_active, cruise_start_time, cruise_prev_remote_steer_only, controller_remote_steer_only
+
+    if cruise_active:
+        return
+
+    cruise_active = True
+    cruise_start_time = now
+    cruise_prev_remote_steer_only = controller_remote_steer_only
+    controller_remote_steer_only = True
+    forward()
+
+    mode = "IMU+MQTT" if imu_active else "MQTT"
+    log(f"CRUISE: started ({CRUISE_DURATION_S:.0f}s forward + {mode} steer)")
+
+
+def _imu_steer_correction() -> float:
+    """Return servo correction angle from IMU heading error (P-controller)."""
+    if not imu_active:
+        return 0.0
+
+    _, error_deg = poll_imu()
+    correction = error_deg * IMU_KP
+    correction = clamp(correction, LEFT_LIMIT * 0.3, RIGHT_LIMIT * 0.3)
+    return correction
+
+
+def cancel_cruise() -> None:
+    global cruise_active, controller_remote_steer_only
+
+    if not cruise_active:
+        return
+
+    cruise_active = False
+    controller_remote_steer_only = cruise_prev_remote_steer_only
+    stop_base()
+    log("CRUISE: cancelled")
+
+
 def process_controls() -> None:
-    global manual_override_source
+    global manual_override_source, cruise_active
 
     now = time.monotonic()
+
+    # --- cruise timeout check ---
+    if cruise_active and (now - cruise_start_time) >= CRUISE_DURATION_S:
+        cruise_active = False
+        controller_remote_steer_only = cruise_prev_remote_steer_only
+        stop_base()
+        log("CRUISE: finished (30s elapsed)")
+
+    # --- cruise mode: IMU heading-hold + fallback to MQTT steer ---
+    if cruise_active:
+        if imu_active:
+            imu_correction = _imu_steer_correction()
+            if remote_control_active(now) and remote_servo_angle is not None:
+                # Vision is publishing straight indicator → set home
+                target = remote_servo_angle + imu_correction
+            else:
+                target = CENTER_ANGLE + imu_correction
+            _, error_deg = poll_imu()
+            if abs(error_deg) <= IMU_STRAIGHT_THRESHOLD_DEG:
+                apply_steering(target, "IMU-STRAIGHT")
+            else:
+                state = "RIGHT" if error_deg > 0 else "LEFT"
+                apply_steering(target, f"IMU-{state}")
+        elif remote_control_active(now):
+            apply_steering(remote_servo_angle if remote_servo_angle is not None else CENTER_ANGLE, "REMOTE")
+        else:
+            apply_steering(CENTER_ANGLE, "CRUISE-IDLE")
+        return
 
     if "KEY_L" in pressed_keys:
         lock_base()
@@ -724,9 +896,9 @@ def process_controls() -> None:
     if has_x or (has_w and has_s):
         stop_base()
     elif has_w:
-        backward()
-    elif has_s:
         forward()
+    elif has_s:
+        backward()
     else:
         drive_value = axis_state[DRIVE_AXIS]
         if INVERT_DRIVE_AXIS:
@@ -789,17 +961,17 @@ def process_controls() -> None:
             activate_manual_override("GAMEPAD", now)
             return
 
-    if remote_control_active(now):
-        apply_steering(remote_servo_angle if remote_servo_angle is not None else CENTER_ANGLE, "REMOTE")
+    if gamepad_remote_steer_only:
+        if remote_control_active(now):
+            apply_steering(remote_servo_angle if remote_servo_angle is not None else CENTER_ANGLE, "REMOTE")
+        elif SERVO_RELEASE_IDLE:
+            release_servo("IDLE")
+        else:
+            apply_steering(CENTER_ANGLE, "IDLE")
+    elif SERVO_RELEASE_IDLE:
+        release_servo("IDLE")
     else:
-        if servo_output is None:
-            raise RuntimeError("AngularServo output is not initialized.")
-
-        apply_idle_servo_behavior(
-            servo_output,
-            release_idle=SERVO_RELEASE_IDLE,
-            center_angle=CENTER_ANGLE,
-        )
+        apply_steering(CENTER_ANGLE, "IDLE")
 
 
 def main() -> None:
@@ -810,6 +982,7 @@ def main() -> None:
     setup_keyboard()
     setup_gamepad()
     setup_mqtt()
+    setup_imu()
 
     print("=== RPI KEYBOARD + MQTT SERVO BRIDGE MODE ===")
     if keyboard is not None:
@@ -840,6 +1013,7 @@ def main() -> None:
     print("Y = toggle drive local + steering from MQTT")
     print("A = stop | B = center steering | LB = lock | RB = unlock")
     print("X or D-pad down = center angle -1 | D-pad up = center angle +1 | START = quit")
+    print(f"SELECT/BACK or {CRUISE_KEY} = cruise ({CRUISE_DURATION_S:.0f}s forward + IMU heading-hold)")
     print("Ctrl+C = emergency exit")
     print("")
     print(
@@ -861,14 +1035,10 @@ def main() -> None:
     print("Remote payload accepts plain float or JSON payload with type/angle.")
     print("")
 
-    if servo_output is None:
-        raise RuntimeError("AngularServo output is not initialized.")
-
-    apply_boot_servo_behavior(
-        servo_output,
-        release_idle=SERVO_RELEASE_IDLE,
-        center_angle=CENTER_ANGLE,
-    )
+    if SERVO_RELEASE_IDLE:
+        release_servo("BOOT")
+    else:
+        apply_steering(CENTER_ANGLE, "BOOT")
     stop_base()
 
     try:

@@ -37,6 +37,8 @@ Notes:
 - The compose file assumes a V4L2 camera such as `/dev/video0`
 - Output files such as `run_log.csv` and generated HTTPS certs are stored in
   the Docker volume mounted at `/data`
+- The stack now includes a local Mosquitto broker service (`mqtt`) on MiniPC
+  with config at `docker/mosquitto/mosquitto.conf`
 - `network_mode: host` is used so the container can expose the MJPEG stream
   directly and reach the MQTT broker without extra port mapping
 - `MAIN_SHOW_PREVIEW=false` is the safe default for container use

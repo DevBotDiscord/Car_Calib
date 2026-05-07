@@ -181,6 +181,7 @@ def main() -> None:
     consecutive_hw_errors = 0
     consecutive_video_errors = 0
     stream_host = ""
+    preview_available = args.show_preview
 
     if args.stream_enabled:
         stream_host = "0.0.0.0" if args.stream_public else args.host
@@ -413,11 +414,15 @@ def main() -> None:
                 }
                 frame_store.set_frame(output_frame, telemetry)
 
-            if args.show_preview:
-                cv2.imshow("main_debug", output_frame)
-                if (cv2.waitKey(1) & 0xFF) == ord("q"):
-                    logger.info("Quit requested from preview window.")
-                    break
+            if preview_available:
+                try:
+                    cv2.imshow("main_debug", output_frame)
+                    if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                        logger.info("Quit requested from preview window.")
+                        break
+                except cv2.error as preview_exc:
+                    preview_available = False
+                    logger.warning("Preview disabled: %s", preview_exc)
 
             sleep_remainder(loop_start, _LOOP_PERIOD, logger)
 
@@ -439,8 +444,11 @@ def main() -> None:
             video_writer.release()
         if stream_server is not None:
             stream_server.stop()
-        if args.show_preview:
-            cv2.destroyAllWindows()
+        if preview_available:
+            try:
+                cv2.destroyAllWindows()
+            except cv2.error as close_preview_exc:
+                logger.debug("Preview window cleanup skipped: %s", close_preview_exc)
         csv_file.close()
         logger.info("Resources released. Goodbye.")
 
