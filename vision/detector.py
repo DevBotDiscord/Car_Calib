@@ -48,6 +48,11 @@ from config.settings import (
     VISION_ROI_EDGE_MARGIN_PX,
     VISION_SANITY_MAX_DELTA_DEG,
     VISION_MIN_GROUP_TOTAL_LENGTH_PX,
+    VISION_LATERAL_PROBE_Y_PCT,
+    VISION_VERTICAL_GROUP_MIN_ANGLE_DEG,
+    VISION_VERTICAL_GROUP_MAX_ANGLE_DEG,
+    VISION_LATERAL_MIN_TILE_WIDTH_PCT,
+    VISION_LATERAL_MAX_TILE_WIDTH_PCT,
 )
 
 logger = logging.getLogger(__name__)
@@ -103,6 +108,11 @@ _ROI_BOTTOM_CLEAR_ROWS: int = VISION_ROI_BOTTOM_CLEAR_ROWS
 
 # Debug output filename
 _DEBUG_MASK_FILE = VISION_DEBUG_MASK_FILE
+_LATERAL_PROBE_Y_PCT = VISION_LATERAL_PROBE_Y_PCT
+_VERTICAL_GROUP_MIN_ANGLE_DEG = VISION_VERTICAL_GROUP_MIN_ANGLE_DEG
+_VERTICAL_GROUP_MAX_ANGLE_DEG = VISION_VERTICAL_GROUP_MAX_ANGLE_DEG
+_LATERAL_MIN_TILE_WIDTH_PCT = VISION_LATERAL_MIN_TILE_WIDTH_PCT
+_LATERAL_MAX_TILE_WIDTH_PCT = VISION_LATERAL_MAX_TILE_WIDTH_PCT
 
 
 def _angle_diff(a: float, b: float) -> float:
@@ -137,6 +147,8 @@ class LineDetector:
             tileGridSize=_CLAHE_TILE_GRID,
         )
         self._last_angle: Optional[float] = None
+        self._last_lateral_offset_px: Optional[float] = None
+        self._last_lateral_offset_norm: Optional[float] = None
         self._debug_saved: bool = False
 
     # ---------------------------------------------------------------------- #
@@ -460,6 +472,119 @@ class LineDetector:
         return _angle_diff(angle, 0.0)
 
     @staticmethod
+    def _group_points(
+        group: list[tuple[int, int, int, int, float, float, float, float]],
+    ) -> np.ndarray:
+        pts: list[tuple[float, float]] = []
+        for seg in group:
+            pts.append((float(seg[0]), float(seg[1])))
+            pts.append((float(seg[2]), float(seg[3])))
+        return np.array(pts, dtype=np.float32).reshape((-1, 1, 2))
+
+    @staticmethod
+    def _fit_group_line(
+        group: list[tuple[int, int, int, int, float, float, float, float]],
+    ) -> tuple[float, float, float, float] | None:
+        if not group:
+            return None
+        pts = LineDetector._group_points(group)
+        if pts.shape[0] < 2:
+            return None
+        line = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01)
+        vx = float(line[0][0])
+        vy = float(line[1][0])
+        x0 = float(line[2][0])
+        y0 = float(line[3][0])
+        if abs(vx) < 1e-9 and abs(vy) < 1e-9:
+            return None
+        return vx, vy, x0, y0
+
+    @staticmethod
+    def _line_x_at_y(
+        line_params: tuple[float, float, float, float],
+        y_query: float,
+    ) -> float | None:
+        vx, vy, x0, y0 = line_params
+        if abs(vy) < 1e-9:
+            return None
+        t = (y_query - y0) / vy
+        return x0 + (t * vx)
+
+    @staticmethod
+    def _is_vertical_candidate(angle: float) -> bool:
+        return _VERTICAL_GROUP_MIN_ANGLE_DEG <= angle <= _VERTICAL_GROUP_MAX_ANGLE_DEG
+
+    def _estimate_lateral_offset(
+        self,
+        groups: list[list[tuple[int, int, int, int, float, float, float, float]]],
+        frame_width: int,
+        frame_height: int,
+    ) -> dict[str, float | int | str | None]:
+        probe_y = float(max(0, min(frame_height - 1, int(frame_height * _LATERAL_PROBE_Y_PCT))))
+        frame_center_x = frame_width / 2.0
+        min_tile_width = frame_width * _LATERAL_MIN_TILE_WIDTH_PCT
+        max_tile_width = frame_width * _LATERAL_MAX_TILE_WIDTH_PCT
+
+        left_x: float | None = None
+        right_x: float | None = None
+        left_idx: int | None = None
+        right_idx: int | None = None
+
+        for idx, group in enumerate(groups):
+            angle = self._group_fit_angle(group)
+            if not self._is_vertical_candidate(angle):
+                continue
+            line_params = self._fit_group_line(group)
+            if line_params is None:
+                continue
+            x_probe = self._line_x_at_y(line_params, probe_y)
+            if x_probe is None or x_probe < 0.0 or x_probe > float(frame_width):
+                continue
+
+            if x_probe < frame_center_x and (left_x is None or x_probe > left_x):
+                left_x = x_probe
+                left_idx = idx
+            if x_probe > frame_center_x and (right_x is None or x_probe < right_x):
+                right_x = x_probe
+                right_idx = idx
+
+        tile_center_x: float | None = None
+        offset_px: float | None = None
+        offset_norm: float | None = None
+        tile_width_px: float | None = None
+        status = "unknown"
+
+        if left_x is not None and right_x is not None:
+            tile_width_px = right_x - left_x
+            if min_tile_width <= tile_width_px <= max_tile_width:
+                tile_center_x = (left_x + right_x) / 2.0
+                offset_px = frame_center_x - tile_center_x
+                half_width = max(1.0, tile_width_px / 2.0)
+                offset_norm = max(-2.0, min(2.0, offset_px / half_width))
+                abs_norm = abs(offset_norm)
+                if abs_norm < 0.25:
+                    status = "centered"
+                elif abs_norm < 0.60:
+                    status = "drift_left" if offset_norm > 0.0 else "drift_right"
+                else:
+                    status = "out_left" if offset_norm > 0.0 else "out_right"
+            else:
+                status = "invalid_tile_width"
+
+        return {
+            "lateral_probe_y": probe_y,
+            "lateral_left_x": left_x,
+            "lateral_right_x": right_x,
+            "lateral_left_group_index": left_idx,
+            "lateral_right_group_index": right_idx,
+            "lateral_tile_width_px": tile_width_px,
+            "lateral_tile_center_x": tile_center_x,
+            "lateral_offset_px": offset_px,
+            "lateral_offset_norm": offset_norm,
+            "lateral_status": status,
+        }
+
+    @staticmethod
     def _is_horizontal_candidate(angle: float) -> bool:
         """Return True when *angle* is within the horizontal acceptance cap."""
         return _angle_diff(angle, 0.0) <= _HORIZONTAL_MAX_ERROR_DEG
@@ -612,13 +737,21 @@ class LineDetector:
         lines = self._detect_lines(edges)
 
         if lines is None:
+            self._last_lateral_offset_px = None
+            self._last_lateral_offset_norm = None
             logger.debug("No lines detected in frame.")
             return None
 
         groups = self._group_lines(lines)
         if not groups:
+            self._last_lateral_offset_px = None
+            self._last_lateral_offset_norm = None
             logger.debug("No line groups formed.")
             return None
+
+        lateral_info = self._estimate_lateral_offset(groups, gray.shape[1], gray.shape[0])
+        self._last_lateral_offset_px = lateral_info["lateral_offset_px"]
+        self._last_lateral_offset_norm = lateral_info["lateral_offset_norm"]
 
         horizontal_groups = [
             group
@@ -688,8 +821,24 @@ class LineDetector:
         stale_output = False
         theta_out: Optional[float] = None
 
+        lateral_info: dict[str, float | int | str | None] = {
+            "lateral_probe_y": None,
+            "lateral_left_x": None,
+            "lateral_right_x": None,
+            "lateral_left_group_index": None,
+            "lateral_right_group_index": None,
+            "lateral_tile_width_px": None,
+            "lateral_tile_center_x": None,
+            "lateral_offset_px": None,
+            "lateral_offset_norm": None,
+            "lateral_status": "unknown",
+        }
+
         if lines is not None:
             groups = self._group_lines(lines)
+            lateral_info = self._estimate_lateral_offset(groups, gray.shape[1], gray.shape[0])
+            self._last_lateral_offset_px = lateral_info["lateral_offset_px"]
+            self._last_lateral_offset_norm = lateral_info["lateral_offset_norm"]
             if groups:
                 horizontal_candidate_indices = [
                     idx
@@ -720,6 +869,9 @@ class LineDetector:
                 stale_output = self._last_angle is not None
         elif self._last_angle is not None:
             stale_output = True
+        else:
+            self._last_lateral_offset_px = None
+            self._last_lateral_offset_norm = None
 
         selected_group_bbox: Optional[tuple[int, int, int, int]] = None
         if reference_idx is not None:
@@ -750,6 +902,23 @@ class LineDetector:
                 2,
             )
 
+        probe_y = lateral_info["lateral_probe_y"]
+        if probe_y is not None:
+            y_probe_i = int(probe_y)
+            cv2.line(grouped_vis, (0, y_probe_i), (grouped_vis.shape[1] - 1, y_probe_i), (80, 80, 80), 1)
+        left_x = lateral_info["lateral_left_x"]
+        right_x = lateral_info["lateral_right_x"]
+        tile_center_x = lateral_info["lateral_tile_center_x"]
+        if left_x is not None:
+            x_i = int(left_x)
+            cv2.line(grouped_vis, (x_i, 0), (x_i, grouped_vis.shape[0] - 1), (0, 160, 255), 1)
+        if right_x is not None:
+            x_i = int(right_x)
+            cv2.line(grouped_vis, (x_i, 0), (x_i, grouped_vis.shape[0] - 1), (0, 160, 255), 1)
+        if tile_center_x is not None:
+            cx_i = int(tile_center_x)
+            cv2.line(grouped_vis, (cx_i, 0), (cx_i, grouped_vis.shape[0] - 1), (80, 255, 120), 1)
+
         debug_data: dict[str, Any] = {
             "gray": gray,
             "roi": roi,
@@ -777,5 +946,14 @@ class LineDetector:
             "hough_threshold": _HOUGH_THRESHOLD,
             "hough_min_line_len": _HOUGH_MIN_LINE_LEN,
             "hough_max_line_gap": _HOUGH_MAX_LINE_GAP,
+            **lateral_info,
         }
         return theta_out, debug_data
+
+    @property
+    def last_lateral_offset_px(self) -> Optional[float]:
+        return self._last_lateral_offset_px
+
+    @property
+    def last_lateral_offset_norm(self) -> Optional[float]:
+        return self._last_lateral_offset_norm

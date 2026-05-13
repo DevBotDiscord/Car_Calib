@@ -23,6 +23,8 @@ import time
 from typing import Optional
 
 from config.settings import (
+    CTRL_LATERAL_ENABLED,
+    CTRL_LATERAL_KP,
     CTRL_HYSTERESIS_HIGH,
     CTRL_HYSTERESIS_LOW,
     CTRL_RELOCK_VALID_FRAMES,
@@ -44,6 +46,8 @@ class ServoPID:
         stop_calib_threshold_deg: float = CTRL_HYSTERESIS_LOW,
         servo_output_deadband_deg: float = CTRL_SERVO_OUTPUT_DEADBAND_DEG,
         servo_output_slew_rate_deg_per_s: float = CTRL_SERVO_OUTPUT_SLEW_RATE_DEG_PER_S,
+        lateral_enabled: bool = CTRL_LATERAL_ENABLED,
+        lateral_kp: float = CTRL_LATERAL_KP,
     ) -> None:
         if start_calib_threshold_deg <= 0 or stop_calib_threshold_deg <= 0:
             raise ValueError("Calibration thresholds must be positive.")
@@ -63,6 +67,8 @@ class ServoPID:
         self._servo_output_slew_rate_deg_per_s = servo_output_slew_rate_deg_per_s
         self._relock_valid_frames_required = max(1, int(CTRL_RELOCK_VALID_FRAMES))
         self._relock_valid_count = 0
+        self._lateral_enabled = lateral_enabled
+        self._lateral_kp = lateral_kp
         now = time.monotonic()
         self._last_time: float = now
         self._last_output_time: float = now
@@ -119,7 +125,7 @@ class ServoPID:
         self._last_output_time = now
         return target_angle
 
-    def update(self, theta: Optional[float]) -> float:
+    def update(self, theta: Optional[float], lateral_offset_norm: Optional[float] = None) -> float:
         """Compute and return the servo angle command for this control cycle."""
         state = self._state
         now = time.monotonic()
@@ -158,7 +164,11 @@ class ServoPID:
 
         state.transition_to(FSMState.LOCKED)
 
-        error = theta - 90.0
+        heading_error = theta - 90.0
+        lateral_error = 0.0
+        if self._lateral_enabled and lateral_offset_norm is not None:
+            lateral_error = self._lateral_kp * lateral_offset_norm
+        error = heading_error + lateral_error
         abs_error = abs(error)
 
         if (not state.calibration_active) and (abs_error >= self._start_calib_threshold_deg):
@@ -186,10 +196,12 @@ class ServoPID:
             servo_angle = self._shape_servo_output(target_angle, now)
             state.last_valid_servo_angle = servo_angle
             logger.info(
-                "state=%s theta=%.2f deg error=%.2f deg calibration=inactive "
+                "state=%s theta=%.2f deg heading=%.2f deg lateral=%.2f deg error=%.2f deg calibration=inactive "
                 "(start=+-%.2f deg, stop=+-%.2f deg) target=%.2f deg servo=%.2f deg",
                 state.fsm_state.name,
                 theta,
+                heading_error,
+                lateral_error,
                 error,
                 self._start_calib_threshold_deg,
                 self._stop_calib_threshold_deg,
@@ -207,10 +219,12 @@ class ServoPID:
         state.last_valid_servo_angle = servo_angle
 
         logger.info(
-            "state=%s theta=%.2f deg error=%.2f deg "
+            "state=%s theta=%.2f deg heading=%.2f deg lateral=%.2f deg error=%.2f deg "
             "P=%.4f I=%.4f D=%.4f offset=%.2f deg target=%.2f deg servo=%.2f deg",
             state.fsm_state.name,
             theta,
+            heading_error,
+            lateral_error,
             error,
             p_term,
             i_term,

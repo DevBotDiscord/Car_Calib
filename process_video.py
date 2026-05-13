@@ -49,7 +49,18 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 # Constants
 # --------------------------------------------------------------------------- #
-_CSV_FIELDNAMES = ["frame_num", "timestamp", "fsm_state", "theta", "servo_angle", "pid_integral", "pid_last_error"]
+_CSV_FIELDNAMES = [
+    "frame_num",
+    "timestamp",
+    "fsm_state",
+    "theta",
+    "servo_angle",
+    "pid_integral",
+    "pid_last_error",
+    "lateral_offset_px",
+    "lateral_offset_norm",
+    "lateral_status",
+]
 
 
 
@@ -133,6 +144,8 @@ def process_video(
                 theta, detector_debug = detector.get_reference_angle_debug(frame)
             else:
                 theta = detector.get_reference_angle(frame)
+            lateral_offset_px = detector.last_lateral_offset_px
+            lateral_offset_norm = detector.last_lateral_offset_norm
 
             if theta is not None:
                 last_known_theta = theta
@@ -145,7 +158,7 @@ def process_video(
             )
 
             try:
-                servo_angle = controller.update(theta)
+                servo_angle = controller.update(theta, lateral_offset_norm=lateral_offset_norm)
             except Exception as ctrl_exc:  # noqa: BLE001
                 logger.error("Controller error on frame %d: %s - stopping.", frame_num, ctrl_exc)
                 break
@@ -166,6 +179,9 @@ def process_video(
                     "servo_angle": f"{servo_angle:.4f}",
                     "pid_integral": f"{state.pid_integral:.6f}",
                     "pid_last_error": f"{state.pid_last_error:.6f}",
+                    "lateral_offset_px": f"{lateral_offset_px:.4f}" if lateral_offset_px is not None else "",
+                    "lateral_offset_norm": f"{lateral_offset_norm:.6f}" if lateral_offset_norm is not None else "",
+                    "lateral_status": detector_debug.get("lateral_status", "") if detector_debug else "",
                 }
             )
             csv_file.flush()
@@ -181,6 +197,8 @@ def process_video(
                 show_guidance_overlay=show_guidance_overlay,
                 start_calib_threshold_deg=start_calib_threshold_deg,
                 stop_calib_threshold_deg=stop_calib_threshold_deg,
+                lateral_offset_norm=lateral_offset_norm,
+                lateral_status=(detector_debug.get("lateral_status") if detector_debug else None),
             )
 
             top_frame = annotated
