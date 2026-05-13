@@ -214,3 +214,6 @@ notebooks/
 videos/
 logs/
 temp/
+
+# Codex local worktrees
+.claude/worktrees/
