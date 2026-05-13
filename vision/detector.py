@@ -113,6 +113,7 @@ _VERTICAL_GROUP_MIN_ANGLE_DEG = VISION_VERTICAL_GROUP_MIN_ANGLE_DEG
 _VERTICAL_GROUP_MAX_ANGLE_DEG = VISION_VERTICAL_GROUP_MAX_ANGLE_DEG
 _LATERAL_MIN_TILE_WIDTH_PCT = VISION_LATERAL_MIN_TILE_WIDTH_PCT
 _LATERAL_MAX_TILE_WIDTH_PCT = VISION_LATERAL_MAX_TILE_WIDTH_PCT
+_LATERAL_MAX_STALE_WIDTH_FRAMES = 30
 
 
 def _angle_diff(a: float, b: float) -> float:
@@ -149,6 +150,8 @@ class LineDetector:
         self._last_angle: Optional[float] = None
         self._last_lateral_offset_px: Optional[float] = None
         self._last_lateral_offset_norm: Optional[float] = None
+        self._last_tile_width_px: Optional[float] = None
+        self._last_tile_width_age: int = 0
         self._debug_saved: bool = False
 
     # ---------------------------------------------------------------------- #
@@ -565,11 +568,43 @@ class LineDetector:
                 if abs_norm < 0.25:
                     status = "centered"
                 elif abs_norm < 0.60:
-                    status = "drift_left" if offset_norm > 0.0 else "drift_right"
+                    status = "drift_right" if offset_norm > 0.0 else "drift_left"
                 else:
-                    status = "out_left" if offset_norm > 0.0 else "out_right"
+                    status = "out_right" if offset_norm > 0.0 else "out_left"
+                self._last_tile_width_px = tile_width_px
+                self._last_tile_width_age = 0
             else:
                 status = "invalid_tile_width"
+        else:
+            self._last_tile_width_age += 1
+
+        can_use_stale_width = (
+            self._last_tile_width_px is not None
+            and self._last_tile_width_age <= _LATERAL_MAX_STALE_WIDTH_FRAMES
+        )
+        if status == "unknown" and can_use_stale_width:
+            stale_width = float(self._last_tile_width_px)
+            if left_x is not None and right_x is None:
+                right_x = left_x + stale_width
+                right_idx = -1
+            elif right_x is not None and left_x is None:
+                left_x = right_x - stale_width
+                left_idx = -1
+
+            if left_x is not None and right_x is not None:
+                tile_width_px = right_x - left_x
+                if tile_width_px > 1.0:
+                    tile_center_x = (left_x + right_x) / 2.0
+                    offset_px = frame_center_x - tile_center_x
+                    half_width = max(1.0, tile_width_px / 2.0)
+                    offset_norm = max(-2.0, min(2.0, offset_px / half_width))
+                    abs_norm = abs(offset_norm)
+                    if abs_norm < 0.25:
+                        status = "centered_inferred"
+                    elif abs_norm < 0.60:
+                        status = "drift_right_inferred" if offset_norm > 0.0 else "drift_left_inferred"
+                    else:
+                        status = "out_right_inferred" if offset_norm > 0.0 else "out_left_inferred"
 
         return {
             "lateral_probe_y": probe_y,
