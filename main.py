@@ -63,6 +63,7 @@ from drivers.relay_driver import RelayDriver
 from drivers.servo_driver import ServoDriver
 from models.robot_state import RobotState
 from runtime.https_stream import HttpsMjpegServer, SharedFrameStore, ensure_self_signed_cert
+from runtime.route_logging import RouteSession
 from runtime.video_runtime_helpers import (
     build_detector_debug_panel,
     build_main_arg_parser,
@@ -106,6 +107,7 @@ _CAMERA_INDEX: int = MAIN_CAMERA_INDEX
 _CSV_LOG_FILE: str = MAIN_CSV_LOG_FILE
 _FLIP_FRAME: bool = MAIN_FLIP_FRAME
 _CSV_FIELDNAMES = [
+    "route_id",
     "frame_num",
     "mono_timestamp",
     "utc_timestamp",
@@ -136,6 +138,9 @@ _CSV_FIELDNAMES = [
     "servo_center_angle",
     "servo_offset",
     "pid_error",
+    "angle_diff",
+    "calib_status",
+    "direction",
     "pid_p_term",
     "pid_i_term",
     "pid_d_term",
@@ -225,6 +230,9 @@ def main() -> None:
     consecutive_video_errors = 0
     stream_host = ""
     preview_available = args.show_preview
+    route_session = RouteSession()
+    final_status = "COMPLETED"
+    rejection_reason = ""
 
     if args.stream_enabled:
         stream_host = "0.0.0.0" if args.stream_public else args.host
@@ -301,6 +309,12 @@ def main() -> None:
             pid_p_term = state.pid.kp * pid_error
             pid_i_term = state.pid.ki * state.pid_integral
             pid_d_term = 0.0 if theta is None else state.pid.kd * ((pid_error - state.pid_last_error) / dt_est)
+            angle_diff, calib_status, direction = route_session.update_frame(
+                mono_now=loop_start,
+                theta=theta,
+                fsm_state=state.fsm_state.name,
+                calibration_active=state.calibration_active,
+            )
 
             try:
                 servo_angle = controller.update(theta, lateral_offset_norm=lateral_offset_norm)
@@ -309,6 +323,8 @@ def main() -> None:
                     "Controller error: %s - centering servo and stopping.",
                     ctrl_exc,
                 )
+                final_status = "FAILED_CONTROL"
+                rejection_reason = f"controller_error:{type(ctrl_exc).__name__}"
                 servo.center()
                 break
 
@@ -358,8 +374,11 @@ def main() -> None:
                     max(1, args.hardware_retry_limit),
                     hw_exc,
                 )
+                route_session.record_hw_error()
                 if consecutive_hw_errors >= max(1, args.hardware_retry_limit):
                     logger.error("Hardware retry limit reached. Abandoning session.")
+                    final_status = "INTERRUPTED_HARDWARE"
+                    rejection_reason = "critical_hardware_error"
                     servo.center()
                     break
                 sleep_remainder(loop_start, _LOOP_PERIOD, logger)
@@ -374,6 +393,7 @@ def main() -> None:
 
             csv_writer.writerow(
                 {
+                    "route_id": route_session.route_id,
                     "frame_num": frame_num,
                     "mono_timestamp": f"{loop_start:.6f}",
                     "utc_timestamp": utc_timestamp,
@@ -418,6 +438,9 @@ def main() -> None:
                     "servo_center_angle": f"{state.servo_center_angle:.4f}",
                     "servo_offset": f"{(servo_angle - state.servo_center_angle):.4f}",
                     "pid_error": f"{pid_error:.6f}",
+                    "angle_diff": f"{angle_diff:.6f}" if angle_diff is not None else "",
+                    "calib_status": calib_status,
+                    "direction": direction,
                     "pid_p_term": f"{pid_p_term:.6f}",
                     "pid_i_term": f"{pid_i_term:.6f}",
                     "pid_d_term": f"{pid_d_term:.6f}",
@@ -495,6 +518,8 @@ def main() -> None:
                     )
                     if consecutive_video_errors >= max(1, args.video_retry_limit):
                         logger.error("Video writer retry limit reached. Abandoning session.")
+                        final_status = "FAILED_VIDEO_OUTPUT"
+                        rejection_reason = "video_writer_retry_limit"
                         break
 
             if args.stream_enabled:
@@ -516,6 +541,8 @@ def main() -> None:
                     cv2.imshow("main_debug", output_frame)
                     if (cv2.waitKey(1) & 0xFF) == ord("q"):
                         logger.info("Quit requested from preview window.")
+                        final_status = "INTERRUPTED_MANUAL"
+                        rejection_reason = "preview_quit"
                         break
                 except cv2.error as preview_exc:
                     preview_available = False
@@ -525,8 +552,12 @@ def main() -> None:
 
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received - shutting down.")
+        final_status = "INTERRUPTED_MANUAL"
+        rejection_reason = "manual_interrupt"
     except Exception as fatal_exc:  # noqa: BLE001
         logger.critical("Fatal error: %s - centering servo and stopping.", fatal_exc)
+        final_status = "FAILED"
+        rejection_reason = f"fatal_error:{type(fatal_exc).__name__}"
         try:
             servo.center()
         except Exception as center_exc:  # noqa: BLE001
@@ -562,6 +593,19 @@ def main() -> None:
             except cv2.error as close_preview_exc:
                 logger.debug("Preview window cleanup skipped: %s", close_preview_exc)
         csv_file.close()
+        summary = route_session.finalize(
+            mono_now=time.monotonic(),
+            status=final_status,
+            explicit_rejection_reason=rejection_reason,
+        )
+        logger.info(
+            "Route summary saved: id=%s status=%s accepted=%s reason=%s path=%s",
+            summary.route_id,
+            final_status,
+            summary.accepted,
+            summary.rejection_reason or "-",
+            summary.summary_path,
+        )
         logger.info("Resources released. Goodbye.")
 
 
