@@ -35,6 +35,7 @@ class RouteFinalizeResult:
     accepted: bool
     rejection_reason: str
     summary_path: str
+    route_dir: str
 
 
 class RouteSession:
@@ -56,6 +57,9 @@ class RouteSession:
         self._pending_count = 0
         self._stable_direction: str | None = None
         self._recent_directions: deque[str] = deque(maxlen=5)
+        self._root_dir = self._resolve_root_dir()
+        self._route_dir = self._root_dir / self.route_id
+        self._route_dir.mkdir(parents=True, exist_ok=True)
 
     def start(self, mono_now: float) -> None:
         self._start_monotonic = mono_now
@@ -118,13 +122,7 @@ class RouteSession:
             "route_direction_eps_deg": ROUTE_DIRECTION_EPS_DEG,
         }
 
-        root = Path(ROUTE_LOG_ROOT)
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            root = Path("logs/routes")
-            root.mkdir(parents=True, exist_ok=True)
-        summary_path = root / f"{self.route_id}.summary.json"
+        summary_path = self._route_dir / "route_summary.json"
         summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
         return RouteFinalizeResult(
@@ -132,7 +130,23 @@ class RouteSession:
             accepted=accepted,
             rejection_reason=rejection_reason,
             summary_path=str(summary_path),
+            route_dir=str(self._route_dir),
         )
+
+    @property
+    def route_dir(self) -> Path:
+        return self._route_dir
+
+    @staticmethod
+    def _resolve_root_dir() -> Path:
+        root = Path(ROUTE_LOG_ROOT)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            return root
+        except OSError:
+            fallback = Path("logs/routes")
+            fallback.mkdir(parents=True, exist_ok=True)
+            return fallback
 
     def _direction_from_theta(self, theta: Optional[float]) -> str:
         if theta is None:
