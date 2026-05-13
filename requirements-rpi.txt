@@ -1,6 +1,4 @@
-evdev>=1.6.1
 gpiozero>=2.0.1
-mpu6050-raspberrypi>=1.1
 paho-mqtt>=2.1.0
 pigpio>=1.78
 python-dotenv>=1.0.0

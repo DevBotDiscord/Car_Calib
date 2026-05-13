@@ -20,6 +20,7 @@ services:
     devices:
       - ${VISION_CAMERA_DEVICE:-/dev/video0}:${VISION_CAMERA_DEVICE:-/dev/video0}
     volumes:
+      - /dev/input:/dev/input:ro
       - vision-data:/data
 
   mqtt:

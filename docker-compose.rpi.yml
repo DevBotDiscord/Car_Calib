@@ -15,8 +15,6 @@ services:
       START_PIGPIOD: ${START_PIGPIOD:-true}
       PIGPIO_HOST: 127.0.0.1
       PIGPIO_PORT: 8888
-    volumes:
-      - /dev/input:/dev/input:ro
     command:
       - python
       - -m

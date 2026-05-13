@@ -14,12 +14,14 @@ RUN apt-get update \
         libgl1 \
         libglib2.0-0 \
         libgomp1 \
+        build-essential \
+        linux-libc-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /tmp/requirements.txt
 
 RUN python -m pip install --upgrade pip \
-    && python -m pip install -r /tmp/requirements.txt
+    && python -m pip install --retries 5 --timeout 120 -r /tmp/requirements.txt
 
 COPY . /app
 

@@ -15,7 +15,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         gcc \
-        libevdev-dev \
         make \
         python3-dev \
         wget \
@@ -43,9 +42,7 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        i2c-tools \
-        libevdev2 \
-        python3-smbus \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-rpi.txt /tmp/requirements-rpi.txt

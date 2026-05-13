@@ -1,4 +1,4 @@
-"""MQTT client setup, callbacks, and status publishing."""
+"""MQTT client setup, callbacks, and status publishing (RPi actuator side)."""
 
 from __future__ import annotations
 
@@ -6,8 +6,13 @@ import json
 import time
 
 from . import config
-from .steering import resolve_remote_servo_angle
+from .base import set_base
+from .steering import apply_steering, resolve_remote_servo_angle
 
+
+# ---------------------------------------------------------------------------
+# publish status heartbeat
+# ---------------------------------------------------------------------------
 
 def publish_status(state: str) -> None:
     if config.mqtt_client is None or not config.mqtt_connected:
@@ -24,10 +29,48 @@ def publish_status(state: str) -> None:
     config.mqtt_client.publish(config.MQTT_STATUS_TOPIC, payload, retain=False)
 
 
-def handle_mqtt_servo_message(payload_text: str) -> None:
-    config.remote_servo_angle = resolve_remote_servo_angle(payload_text)
-    config.remote_servo_updated_at = time.monotonic()
+# ---------------------------------------------------------------------------
+# message handlers (one per topic)
+# ---------------------------------------------------------------------------
 
+def handle_servo_message(payload_text: str) -> None:
+    angle = resolve_remote_servo_angle(payload_text)
+    apply_steering(angle, "MQTT")
+
+
+def handle_base_message(payload_text: str) -> None:
+    cmd = payload_text.strip().upper()
+    if cmd == "FORWARD":
+        set_base(0, 1, 0, "MQTT-FORWARD")
+    elif cmd == "BACKWARD":
+        set_base(0, 0, 1, "MQTT-BACKWARD")
+    elif cmd == "STOP":
+        set_base(0, 0, 0, "MQTT-STOP")
+    elif cmd == "LOCK":
+        set_base(1, 0, 1, "MQTT-LOCK")
+    elif cmd == "UNLOCK":
+        set_base(1, 1, 0, "MQTT-UNLOCK")
+    else:
+        print(f"MQTT: unknown base command: {cmd}")
+
+
+def handle_relay_message(payload_text: str) -> None:
+    cmd = payload_text.strip().upper()
+    if cmd == "ON":
+        config.gpio.write(config.RELAY_PIN, 1)
+        config.relay_on = True
+        print("RELAY: ON (MQTT)")
+    elif cmd == "OFF":
+        config.gpio.write(config.RELAY_PIN, 0)
+        config.relay_on = False
+        print("RELAY: OFF (MQTT)")
+    else:
+        print(f"MQTT: unknown relay command: {cmd}")
+
+
+# ---------------------------------------------------------------------------
+# MQTT callbacks
+# ---------------------------------------------------------------------------
 
 def on_mqtt_connect(client, userdata, flags, rc, properties=None) -> None:
     del userdata, flags, properties
@@ -37,7 +80,10 @@ def on_mqtt_connect(client, userdata, flags, rc, properties=None) -> None:
         return
     config.mqtt_connected = True
     client.subscribe(config.MQTT_SERVO_TOPIC)
-    print(f"MQTT: connected to {config.MQTT_BROKER_HOST}:{config.MQTT_BROKER_PORT} topic={config.MQTT_SERVO_TOPIC}")
+    client.subscribe(config.MQTT_BASE_COMMAND_TOPIC)
+    client.subscribe(config.MQTT_RELAY_TOPIC)
+    print(f"MQTT: connected to {config.MQTT_BROKER_HOST}:{config.MQTT_BROKER_PORT}")
+    print(f"  topics: {config.MQTT_SERVO_TOPIC}, {config.MQTT_BASE_COMMAND_TOPIC}, {config.MQTT_RELAY_TOPIC}")
     publish_status("online")
 
 
@@ -52,10 +98,27 @@ def on_mqtt_message(client, userdata, message) -> None:
     del client, userdata
     try:
         payload_text = message.payload.decode("utf-8")
-        handle_mqtt_servo_message(payload_text)
-    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
-        print(f"MQTT: invalid payload on {message.topic}: {exc}")
+    except UnicodeDecodeError as exc:
+        print(f"MQTT: invalid payload encoding on {message.topic}: {exc}")
+        return
 
+    topic = message.topic
+    try:
+        if topic == config.MQTT_SERVO_TOPIC:
+            handle_servo_message(payload_text)
+        elif topic == config.MQTT_BASE_COMMAND_TOPIC:
+            handle_base_message(payload_text)
+        elif topic == config.MQTT_RELAY_TOPIC:
+            handle_relay_message(payload_text)
+        else:
+            print(f"MQTT: unhandled topic: {topic}")
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(f"MQTT: invalid payload on {topic}: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# setup / teardown
+# ---------------------------------------------------------------------------
 
 def setup_mqtt() -> None:
     mqtt = config.mqtt

@@ -47,3 +47,11 @@ def lock_base() -> None:
 
 def unlock_base() -> None:
     set_base(*UNLOCK_STATE, "UNLOCK")
+
+
+def toggle_relay() -> None:
+    if config.gpio is None:
+        raise RuntimeError("pigpio is not initialized.")
+    config.relay_on = not config.relay_on
+    config.gpio.write(config.RELAY_PIN, 1 if config.relay_on else 0)
+    print(f"RELAY: {'ON' if config.relay_on else 'OFF'} (pin {config.RELAY_PIN})")
