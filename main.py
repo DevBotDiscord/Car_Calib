@@ -214,7 +214,12 @@ def main() -> None:
             gamepad_name_hints=tuple(GAMEPAD_NAME_HINTS.split(",")),
         )
         input_handler.setup()
-        if InputController is not None and input_handler.has_gamepad or input_handler.has_keyboard:
+        logger.info(
+            "INPUT: devices detected gamepad=%s keyboard=%s",
+            input_handler.has_gamepad,
+            input_handler.has_keyboard,
+        )
+        if InputController is not None and (input_handler.has_gamepad or input_handler.has_keyboard):
             input_controller = InputController(input_handler)
             logger.info("INPUT: controller online")
         else:
