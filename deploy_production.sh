@@ -11,16 +11,21 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/.env.production}"
 TARGET="${1:-all}"
+AUTO_CONFIRM=false
 
 usage() {
     cat <<'EOF'
 Usage:
-  ./deploy_production.sh [all|minipc|ras]
+  ./deploy_production.sh [all|minipc|ras] [--yes] [--env <path>]
 
 Targets:
   all     Deploy both vision (MiniPC) and Raspberry Pi bridge
   minipc  Deploy only the vision stack
   ras     Deploy only the Raspberry Pi MQTT bridge
+
+Options:
+  --yes         Skip interactive confirmation prompt
+  --env <path>  Use custom environment file (default: .env.production)
 EOF
 }
 
@@ -211,23 +216,28 @@ scp_base_cmd() {
 
 create_archive() {
     local archive_path="$1"
+    local gzip_bin=""
+    local common_args=(
+        --exclude='.git'
+        --exclude='.pytest_cache'
+        --exclude='__pycache__'
+        --exclude='.venv'
+        --exclude='venv'
+        --exclude='.env'
+        --exclude='.env.production'
+        --exclude='.env.backup'
+        --exclude='*.pyc'
+        --exclude='*.pyo'
+        --exclude='*.log'
+        --exclude='.last_production_version'
+        --exclude='.last_production_deploy'
+    )
 
-    tar \
-        --exclude='.git' \
-        --exclude='.pytest_cache' \
-        --exclude='__pycache__' \
-        --exclude='.venv' \
-        --exclude='venv' \
-        --exclude='.env' \
-        --exclude='.env.production' \
-        --exclude='.env.backup' \
-        --exclude='*.pyc' \
-        --exclude='*.pyo' \
-        --exclude='*.log' \
-        --exclude='.last_production_version' \
-        --exclude='.last_production_deploy' \
-        -czf "$archive_path" \
-        -C "$SCRIPT_DIR" .
+    if gzip_bin="$(find_command pigz)"; then
+        tar "${common_args[@]}" -I "$gzip_bin" -cf "$archive_path" -C "$SCRIPT_DIR" .
+    else
+        tar "${common_args[@]}" -czf "$archive_path" -C "$SCRIPT_DIR" .
+    fi
 }
 
 deploy_target() {
@@ -359,7 +369,7 @@ if [[ "${KEEP_RELEASES}" =~ ^[0-9]+$ ]] && (( KEEP_RELEASES > 0 )); then
     cd "${root_dir}/releases"
     mapfile -t old_releases < <(ls -1dt */ 2>/dev/null | tail -n +$((KEEP_RELEASES + 1)) || true)
     if (( ${#old_releases[@]} > 0 )); then
-        rm -rf -- "${old_releases[@]}"
+        "${file_cmd[@]}" rm -rf -- "${old_releases[@]}"
     fi
 fi
 EOF
@@ -387,9 +397,38 @@ print_summary() {
     echo ""
 }
 
+while (( "$#" > 0 )); do
+    case "$1" in
+        all|minipc|ras)
+            TARGET="$1"
+            shift
+            ;;
+        --yes)
+            AUTO_CONFIRM=true
+            shift
+            ;;
+        --env)
+            if [[ -z "${2:-}" ]]; then
+                log_err "--env requires a file path"
+                exit 1
+            fi
+            ENV_FILE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            log_err "Unknown argument: $1"
+            usage
+            exit 1
+            ;;
+    esac
+done
+
 case "$TARGET" in
-    all|minipc|ras)
-        ;;
+    all|minipc|ras) ;;
     *)
         usage
         exit 1
@@ -402,10 +441,14 @@ require_file "$ENV_FILE"
 echo -e "${YELLOW}WARNING: this will deploy to production targets${NC}"
 echo -e "${YELLOW}Config file: ${ENV_FILE}${NC}"
 echo ""
-read -r -p "Continue with production deployment? [y/N]: " confirm
-if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    log_warn "Deployment cancelled"
-    exit 0
+if [[ "$AUTO_CONFIRM" != "true" ]]; then
+    read -r -p "Continue with production deployment? [y/N]: " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        log_warn "Deployment cancelled"
+        exit 0
+    fi
+else
+    log_warn "Auto-confirm enabled (--yes), continuing without prompt."
 fi
 
 set -a
@@ -509,9 +552,18 @@ if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
 fi
 echo ""
 
-step_index=2
+deploy_steps=0
 if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
-    log_step "[${step_index}/4] Deploying vision stack to MiniPC..."
+    deploy_steps=$((deploy_steps + 1))
+fi
+if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
+    deploy_steps=$((deploy_steps + 1))
+fi
+
+step_index=2
+total_steps=$((deploy_steps + 2))
+if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
+    log_step "[${step_index}/${total_steps}] Deploying vision stack to MiniPC..."
     deploy_target "minipc" \
         "$MINIPC_HOST" \
         "$MINIPC_USER" \
@@ -528,7 +580,7 @@ if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
 fi
 
 if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
-    log_step "[${step_index}/4] Deploying MQTT bridge to Raspberry Pi..."
+    log_step "[${step_index}/${total_steps}] Deploying MQTT bridge to Raspberry Pi..."
     deploy_target "ras" \
         "$RPI_HOST" \
         "$RPI_USER" \
