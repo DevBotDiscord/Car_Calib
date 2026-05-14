@@ -158,6 +158,8 @@ class InputController:
     def process(self, now: float) -> ControlDecision:
         """Run control logic and return a ControlDecision."""
         self._process_edge_triggers(now)
+        base_decision = self._keyboard_base()
+        base_command = base_decision.base_command if base_decision is not None else None
 
         # --- cruise timeout ---
         if self.cruise_active and (now - self.cruise_start_time) >= self._cruise_duration_s:
@@ -185,28 +187,25 @@ class InputController:
         if self.cruise_active:
             return self._cruise_steer(now)
 
-        # --- keyboard base ---
-        kb = self._keyboard_base()
-        if kb is not None:
-            return kb
-
         # --- keyboard steer ---
         ks = self._keyboard_steer(now)
         if ks is not None:
+            ks.base_command = base_command
             return ks
 
         # --- manual override hold ---
         if now < self.manual_override_until:
-            return ControlDecision(steer_angle=self._steer_angle, steer_source="HOLD")
+            return ControlDecision(base_command=base_command, steer_angle=self._steer_angle, steer_source="HOLD")
 
         # --- gamepad steer ---
         if not self.controller_remote_steer_only:
             gs = self._gamepad_steer(now)
             if gs is not None:
+                gs.base_command = base_command
                 return gs
 
         # --- remote / idle ---
-        return ControlDecision(steer_angle=None, steer_source="VISION")
+        return ControlDecision(base_command=base_command, steer_angle=None, steer_source="VISION")
 
     # ------------------------------------------------------------------
     # square pattern state machine
