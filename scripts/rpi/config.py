@@ -16,7 +16,7 @@ except ImportError:
     load_dotenv = None
 
 try:
-    import paho.mqtt as mqtt
+    import paho.mqtt.client as mqtt
 except ImportError:
     mqtt = None  # type: ignore[assignment]
 

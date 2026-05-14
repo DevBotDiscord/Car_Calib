@@ -122,6 +122,10 @@ def on_mqtt_message(client, userdata, message) -> None:
 
 def setup_mqtt() -> None:
     mqtt = config.mqtt
+    if mqtt is None:
+        raise RuntimeError(
+            "paho-mqtt is not available. Install requirements-rpi.txt in the runtime image/environment."
+        )
     callback_api_version = getattr(mqtt, "CallbackAPIVersion", None)
     if callback_api_version is not None:
         client = mqtt.Client(callback_api_version=callback_api_version.VERSION1, client_id=config.MQTT_CLIENT_ID)
