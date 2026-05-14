@@ -114,6 +114,7 @@ last_steer_source: str | None = None
 
 # Relay state
 relay_on = False
+last_base_state: tuple[int, int, int] | None = None
 
 # MQTT state
 mqtt_client: Any = None
