@@ -220,7 +220,6 @@ def build_detector_debug_panel(
         f"theta_candidate={detector_debug['theta_candidate']}",
         f"horizontal_ok={detector_debug['horizontal_ok']} sanity_ok={detector_debug['sanity_ok']}",
         f"theta_out={detector_debug['theta_output']}",
-        f"lateral_norm={detector_debug.get('lateral_offset_norm')} status={detector_debug.get('lateral_status')}",
         f"stale_output={detector_debug.get('stale_output', False)}",
         f"min_group_len_px={detector_debug.get('min_group_total_length_px')}",
     ]
@@ -242,8 +241,6 @@ def draw_overlay(
     show_guidance_overlay: bool,
     start_calib_threshold_deg: float,
     stop_calib_threshold_deg: float,
-    lateral_offset_norm: float | None = None,
-    lateral_status: str | None = None,
     overlay_scale: float = 1.0,
 ) -> np.ndarray:
     """Render pipeline values onto a frame before writing to output video."""
@@ -299,23 +296,10 @@ def draw_overlay(
             (180, 220, 255),
             2,
         )
-        if lateral_offset_norm is not None:
-            drift_text = f"Lateral: {lateral_offset_norm:+.3f}"
-            if lateral_status:
-                drift_text = f"{drift_text} ({lateral_status})"
-            cv2.putText(
-                frame,
-                drift_text,
-                (base_x, direction_y + int(23 * s)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.56 * s,
-                (255, 220, 140),
-                2,
-            )
         cv2.putText(
             frame,
             f"Start calibrating threshold: +/-{start_calib_threshold_deg:.1f} deg",
-            (base_x, direction_y + int(48 * s)),
+            (base_x, direction_y + int(25 * s)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.56 * s,
             (120, 230, 255),
@@ -324,7 +308,7 @@ def draw_overlay(
         cv2.putText(
             frame,
             f"Stop calibrating threshold: +/-{stop_calib_threshold_deg:.1f} deg",
-            (base_x, direction_y + int(70 * s)),
+            (base_x, direction_y + int(47 * s)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.56 * s,
             (120, 255, 150),
@@ -333,7 +317,7 @@ def draw_overlay(
 
         gauge_x0 = base_x
         gauge_x1 = int(640 * s)
-        gauge_y0 = direction_y + int(84 * s)
+        gauge_y0 = direction_y + int(60 * s)
         gauge_y1 = gauge_y0 + int(23 * s)
         gauge_w = gauge_x1 - gauge_x0
 

@@ -179,28 +179,3 @@ class TestHorizontalCapIntegration:
 
         frame = np.zeros((200, 200, 3), dtype=np.uint8)
         assert detector.get_reference_angle(frame) is None
-
-
-class TestLateralOffset:
-    def test_estimate_lateral_offset_centered(self, detector):
-        left_group = [
-            (60, 40, 62, 180, 89.0, 140.0, 61.0, 110.0),
-        ]
-        right_group = [
-            (140, 40, 138, 180, 91.0, 140.0, 139.0, 110.0),
-        ]
-        info = detector._estimate_lateral_offset([left_group, right_group], 200, 200)
-        assert info["lateral_status"] == "centered"
-        assert info["lateral_offset_norm"] == pytest.approx(0.0, abs=0.1)
-
-    def test_estimate_lateral_offset_drift_left(self, detector):
-        left_group = [
-            (30, 40, 32, 180, 89.0, 140.0, 31.0, 110.0),
-        ]
-        right_group = [
-            (130, 40, 128, 180, 91.0, 140.0, 129.0, 110.0),
-        ]
-        info = detector._estimate_lateral_offset([left_group, right_group], 200, 200)
-        assert info["lateral_status"] in {"drift_left", "out_left"}
-        assert info["lateral_offset_norm"] is not None
-        assert float(info["lateral_offset_norm"]) > 0.0

@@ -119,14 +119,6 @@ _CSV_FIELDNAMES = [
     "theta_horizontal",
     "reference_group_index",
     "selected_group_bbox",
-    "lateral_probe_y",
-    "lateral_left_x",
-    "lateral_right_x",
-    "lateral_tile_center_x",
-    "lateral_tile_width_px",
-    "lateral_offset_px",
-    "lateral_offset_norm",
-    "lateral_status",
     "lines_count",
     "groups_count",
     "horizontal_ok",
@@ -299,8 +291,6 @@ def main() -> None:
                 theta, detector_debug = detector.get_reference_angle_debug(frame)
             else:
                 theta = detector.get_reference_angle(frame)
-            lateral_offset_norm = detector.last_lateral_offset_norm
-            lateral_offset_px = detector.last_lateral_offset_px
 
             theta_source = "live" if theta is not None else "none"
             if theta is not None:
@@ -323,7 +313,7 @@ def main() -> None:
             pid_d_term = 0.0 if theta is None else state.pid.kd * ((pid_error - state.pid_last_error) / dt_est)
 
             try:
-                servo_angle = controller.update(theta, lateral_offset_norm=lateral_offset_norm)
+                servo_angle = controller.update(theta)
             except Exception as ctrl_exc:  # noqa: BLE001
                 logger.error(
                     "Controller error: %s - centering servo and stopping.",
@@ -413,22 +403,6 @@ def main() -> None:
                         detector_debug.get("reference_group_index", "") if detector_debug else ""
                     ),
                     "selected_group_bbox": _format_bbox(selected_group_bbox),
-                    "lateral_probe_y": detector_debug.get("lateral_probe_y", "") if detector_debug else "",
-                    "lateral_left_x": detector_debug.get("lateral_left_x", "") if detector_debug else "",
-                    "lateral_right_x": detector_debug.get("lateral_right_x", "") if detector_debug else "",
-                    "lateral_tile_center_x": detector_debug.get("lateral_tile_center_x", "") if detector_debug else "",
-                    "lateral_tile_width_px": detector_debug.get("lateral_tile_width_px", "") if detector_debug else "",
-                    "lateral_offset_px": (
-                        detector_debug.get("lateral_offset_px", "")
-                        if detector_debug
-                        else (f"{lateral_offset_px:.4f}" if lateral_offset_px is not None else "")
-                    ),
-                    "lateral_offset_norm": (
-                        detector_debug.get("lateral_offset_norm", "")
-                        if detector_debug
-                        else (f"{lateral_offset_norm:.6f}" if lateral_offset_norm is not None else "")
-                    ),
-                    "lateral_status": detector_debug.get("lateral_status", "") if detector_debug else "",
                     "lines_count": detector_debug.get("lines_count", "") if detector_debug else "",
                     "groups_count": detector_debug.get("groups_count", "") if detector_debug else "",
                     "horizontal_ok": detector_debug.get("horizontal_ok", "") if detector_debug else "",
@@ -464,8 +438,6 @@ def main() -> None:
                     show_guidance_overlay=args.show_guidance_overlay,
                     start_calib_threshold_deg=CTRL_HYSTERESIS_HIGH,
                     stop_calib_threshold_deg=CTRL_HYSTERESIS_LOW,
-                    lateral_offset_norm=lateral_offset_norm,
-                    lateral_status=(detector_debug.get("lateral_status") if detector_debug else None),
                     overlay_scale=args.overlay_scale,
                 )
                 if args.show_detector_debug and detector_debug is not None:
@@ -526,8 +498,6 @@ def main() -> None:
                     "servo_angle": servo_angle,
                     "reference_group_index": detector_debug.get("reference_group_index") if detector_debug else None,
                     "selected_group_bbox": selected_group_bbox,
-                    "lateral_offset_norm": lateral_offset_norm,
-                    "lateral_status": detector_debug.get("lateral_status") if detector_debug else None,
                 }
                 frame_store.set_frame(output_frame, telemetry)
 
