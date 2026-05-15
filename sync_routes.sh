@@ -199,7 +199,7 @@ sync_remote_route() {
     if [[ "${MINIPC_USE_SUDO_DOCKER}" == "true" ]]; then
         docker_prefix="sudo -n docker"
     fi
-    remote_cmd "${docker_prefix} cp '${REMOTE_CONTAINER}:${ROUTE_ROOT}/${route_name}' -" | tar -x -C "$DEST"
+    remote_cmd "${docker_prefix} exec '${REMOTE_CONTAINER}' sh -lc \"tar -C '$ROUTE_ROOT' -cf - '$route_name'\"" | tar -x -C "$DEST"
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
