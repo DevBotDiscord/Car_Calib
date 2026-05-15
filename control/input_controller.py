@@ -203,6 +203,9 @@ class InputController:
             if gs is not None:
                 gs.base_command = base_command
                 return gs
+            # Manual steering mode: keep local steering authority even when
+            # stick returns to neutral, so vision cannot re-take steer.
+            return ControlDecision(base_command=base_command, steer_angle=self._steer_angle, steer_source="MANUAL")
 
         # --- remote / idle ---
         return ControlDecision(base_command=base_command, steer_angle=None, steer_source="VISION")
