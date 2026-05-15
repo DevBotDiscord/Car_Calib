@@ -307,17 +307,32 @@ def main() -> None:
         stream_server.start()
         logger.info("HTTPS MJPEG stream online: %s", stream_server.stream_url())
 
-    try:
-        cap = init_camera_with_retries(
-            _CAMERA_INDEX,
-            retries=max(0, args.camera_retry_limit),
-            logger=logger,
-        )
-        logger.info("Camera initialised (index=%d).", _CAMERA_INDEX)
-    except RuntimeError as exc:
-        logger.critical("Camera initialisation failed: %s", exc)
+    camera_candidates: list[int] = []
+    for idx in [_CAMERA_INDEX, 0, 1, 2, 3, 4, 5]:
+        if idx not in camera_candidates:
+            camera_candidates.append(idx)
+
+    opened_index: int | None = None
+    last_camera_error: RuntimeError | None = None
+    for candidate in camera_candidates:
+        try:
+            cap = init_camera_with_retries(
+                candidate,
+                retries=max(0, args.camera_retry_limit),
+                logger=logger,
+            )
+            opened_index = candidate
+            break
+        except RuntimeError as exc:
+            last_camera_error = exc
+            logger.warning("Camera probe failed at index=%d: %s", candidate, exc)
+
+    if cap is None or opened_index is None:
+        logger.critical("Camera auto-probe failed. Last error: %s", last_camera_error)
         servo.center()
         sys.exit(1)
+
+    logger.info("Camera initialised (index=%d).", opened_index)
 
     logger.info("Starting heading-hold control loop at %.0f Hz.", _TARGET_HZ)
     try:
