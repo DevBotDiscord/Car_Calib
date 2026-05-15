@@ -27,8 +27,8 @@ Examples:
 
 Behavior:
   - List routes from MiniPC Docker container over SSH
-  - Arrow-key select one route
-  - Pull selected route from container to local machine
+  - Arrow-key select one route (shows route duration)
+  - Action per route: sync / delete single / delete all
 EOF
 }
 
@@ -192,6 +192,31 @@ list_remote_routes() {
     remote_cmd "${docker_prefix} exec '${REMOTE_CONTAINER}' sh -lc \"if [ -d '$ROUTE_ROOT' ]; then find '$ROUTE_ROOT' -mindepth 1 -maxdepth 1 -type d -name 'route-*' -printf '%f\\n' | sort -r; fi\""
 }
 
+list_remote_route_rows() {
+    local docker_prefix="docker"
+    if [[ "${MINIPC_USE_SUDO_DOCKER}" == "true" ]]; then
+        docker_prefix="sudo -n docker"
+    fi
+    remote_cmd "${docker_prefix} exec '${REMOTE_CONTAINER}' sh -lc \"python3 - <<'PY'
+import json, os, glob
+root = '${ROUTE_ROOT}'
+for route in sorted(glob.glob(os.path.join(root, 'route-*')), reverse=True):
+    name = os.path.basename(route)
+    seconds = ''
+    summary = os.path.join(route, 'route_summary.json')
+    if os.path.isfile(summary):
+        try:
+            with open(summary, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+            total = payload.get('total_elapsed_seconds')
+            if isinstance(total, (int, float)):
+                seconds = f'{float(total):.1f}'
+        except Exception:
+            pass
+    print(f'{name}|{seconds}')
+PY\""
+}
+
 sync_remote_route() {
     local route_name="$1"
     mkdir -p "$DEST"
@@ -200,6 +225,40 @@ sync_remote_route() {
         docker_prefix="sudo -n docker"
     fi
     remote_cmd "${docker_prefix} exec '${REMOTE_CONTAINER}' sh -lc \"set -e; snap_root=/tmp/route-sync-snapshots; snap_dir=\\\"\\\${snap_root}/${route_name}\\\"; rm -rf \\\"\\\${snap_dir}\\\"; mkdir -p \\\"\\\${snap_root}\\\"; cp -a '$ROUTE_ROOT/${route_name}' \\\"\\\${snap_dir}\\\"; tar -C \\\"\\\${snap_root}\\\" -cf - '${route_name}'; rm -rf \\\"\\\${snap_dir}\\\"\"" | tar -x -C "$DEST"
+}
+
+delete_remote_route() {
+    local route_name="$1"
+    local docker_prefix="docker"
+    if [[ "${MINIPC_USE_SUDO_DOCKER}" == "true" ]]; then
+        docker_prefix="sudo -n docker"
+    fi
+    remote_cmd "${docker_prefix} exec '${REMOTE_CONTAINER}' sh -lc \"rm -rf '$ROUTE_ROOT/$route_name'\""
+}
+
+delete_all_remote_routes() {
+    local docker_prefix="docker"
+    if [[ "${MINIPC_USE_SUDO_DOCKER}" == "true" ]]; then
+        docker_prefix="sudo -n docker"
+    fi
+    remote_cmd "${docker_prefix} exec '${REMOTE_CONTAINER}' sh -lc \"find '$ROUTE_ROOT' -mindepth 1 -maxdepth 1 -type d -name 'route-*' -exec rm -rf {} +\""
+}
+
+format_duration() {
+    local seconds="$1"
+    if [[ -z "$seconds" ]]; then
+        printf '%s' "n/a"
+        return
+    fi
+    awk -v s="$seconds" 'BEGIN {
+        sec = int(s + 0.5);
+        h = int(sec / 3600);
+        m = int((sec % 3600) / 60);
+        r = sec % 60;
+        if (h > 0) printf "%dh%02dm%02ds", h, m, r;
+        else if (m > 0) printf "%dm%02ds", m, r;
+        else printf "%ds", r;
+    }'
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -249,25 +308,89 @@ if ! list_remote_routes >/dev/null 2>&1; then
     exit 1
 fi
 
-mapfile -t ROUTES < <(list_remote_routes)
-if (( ${#ROUTES[@]} == 0 )); then
+mapfile -t ROUTE_ROWS < <(list_remote_route_rows)
+if (( ${#ROUTE_ROWS[@]} == 0 )); then
     log_warn "No route directories found on MiniPC in: $ROUTE_ROOT"
     exit 0
 fi
 
-if ! SELECTED_ROUTE="$(select_route_with_arrows "${ROUTES[@]}")"; then
+ROUTES=()
+ROUTE_DURATIONS=()
+ROUTE_MENU_ITEMS=()
+for row in "${ROUTE_ROWS[@]}"; do
+    route_name="${row%%|*}"
+    route_seconds="${row#*|}"
+    route_duration="$(format_duration "$route_seconds")"
+    ROUTES+=("$route_name")
+    ROUTE_DURATIONS+=("$route_duration")
+    ROUTE_MENU_ITEMS+=("${route_name}  [duration: ${route_duration}]")
+done
+
+if ! SELECTED_LABEL="$(select_route_with_arrows "${ROUTE_MENU_ITEMS[@]}")"; then
     log_warn "Selection cancelled."
     exit 0
 fi
 
-echo ""
-echo -e "${BLUE}Selected route:${NC} ${SELECTED_ROUTE}"
-read -r -p "Pull this route from MiniPC to '${DEST}'? [y/N]: " confirm
-if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    log_warn "Sync cancelled."
-    exit 0
+SELECTED_INDEX=-1
+for i in "${!ROUTE_MENU_ITEMS[@]}"; do
+    if [[ "${ROUTE_MENU_ITEMS[$i]}" == "$SELECTED_LABEL" ]]; then
+        SELECTED_INDEX="$i"
+        break
+    fi
+done
+if (( SELECTED_INDEX < 0 )); then
+    log_err "Failed to resolve selected route index."
+    exit 1
 fi
+SELECTED_ROUTE="${ROUTES[$SELECTED_INDEX]}"
+SELECTED_DURATION="${ROUTE_DURATIONS[$SELECTED_INDEX]}"
 
-log_step "Pulling route ${SELECTED_ROUTE} from MiniPC..."
-sync_remote_route "$SELECTED_ROUTE"
-log_ok "Done: ${DEST}/${SELECTED_ROUTE}"
+echo "" >&2
+echo -e "${BLUE}Selected route:${NC} ${SELECTED_ROUTE} (duration=${SELECTED_DURATION})" >&2
+echo "Choose action:" >&2
+echo "  1) Sync route to local destination" >&2
+echo "  2) Delete this route on MiniPC container" >&2
+echo "  3) Delete ALL routes on MiniPC container" >&2
+echo "  q) Cancel" >&2
+read -r -p "Action [1/2/3/q]: " action
+
+case "$action" in
+    1)
+        read -r -p "Pull this route from MiniPC to '${DEST}'? [y/N]: " confirm_sync
+        if [[ ! "$confirm_sync" =~ ^[Yy]$ ]]; then
+            log_warn "Sync cancelled."
+            exit 0
+        fi
+        log_step "Pulling route ${SELECTED_ROUTE} from MiniPC..."
+        sync_remote_route "$SELECTED_ROUTE"
+        log_ok "Done: ${DEST}/${SELECTED_ROUTE}"
+        ;;
+    2)
+        read -r -p "Delete route '${SELECTED_ROUTE}' on MiniPC? [y/N]: " confirm_del
+        if [[ ! "$confirm_del" =~ ^[Yy]$ ]]; then
+            log_warn "Delete cancelled."
+            exit 0
+        fi
+        log_step "Deleting route ${SELECTED_ROUTE} on MiniPC..."
+        delete_remote_route "$SELECTED_ROUTE"
+        log_ok "Deleted: ${SELECTED_ROUTE}"
+        ;;
+    3)
+        read -r -p "Delete ALL route-* under '${ROUTE_ROOT}' on MiniPC? [y/N]: " confirm_all
+        if [[ ! "$confirm_all" =~ ^[Yy]$ ]]; then
+            log_warn "Delete-all cancelled."
+            exit 0
+        fi
+        log_step "Deleting all routes on MiniPC..."
+        delete_all_remote_routes
+        log_ok "Deleted all route-* in ${ROUTE_ROOT}"
+        ;;
+    q|Q)
+        log_warn "Cancelled."
+        exit 0
+        ;;
+    *)
+        log_warn "Unknown action, cancelled."
+        exit 0
+        ;;
+esac
