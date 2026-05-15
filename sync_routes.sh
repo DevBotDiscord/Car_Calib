@@ -113,6 +113,28 @@ resolve_route_root() {
     printf '%s' "$ROUTE_ROOT_DEFAULT"
 }
 
+resolve_existing_route_root() {
+    local preferred_root="$1"
+    local candidate=""
+    local candidates=()
+
+    if [[ -n "$preferred_root" ]]; then
+        candidates+=("$preferred_root")
+    fi
+    candidates+=("$ROUTE_ROOT_RUNTIME_DEFAULT")
+    candidates+=("$ROUTE_ROOT_DEFAULT")
+    candidates+=("${SCRIPT_DIR}/route")
+    candidates+=("${SCRIPT_DIR}/logs/routes")
+
+    for candidate in "${candidates[@]}"; do
+        if [[ -d "$candidate" ]]; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 list_routes() {
     local route_root="$1"
     find "$route_root" -mindepth 1 -maxdepth 1 -type d -name 'route-*' -printf '%P\n' | sort -r
@@ -232,10 +254,16 @@ if [[ -z "$DEST" ]]; then
 fi
 
 ROUTE_ROOT="$(resolve_route_root)"
-
 if [[ ! -d "$ROUTE_ROOT" ]]; then
-    log_err "Route root not found: $ROUTE_ROOT"
-    exit 1
+    original_root="$ROUTE_ROOT"
+    if ROUTE_ROOT="$(resolve_existing_route_root "$ROUTE_ROOT")"; then
+        log_warn "Route root not found: $original_root"
+        log_warn "Falling back to existing route root: $ROUTE_ROOT"
+    else
+        log_err "Route root not found: $original_root"
+        log_err "No fallback route root exists. Checked: /data/routes, ./logs/routes, ./route"
+        exit 1
+    fi
 fi
 
 mapfile -t ROUTES < <(list_routes "$ROUTE_ROOT")
