@@ -71,7 +71,7 @@ from runtime.video_runtime_helpers import (
     draw_overlay,
     init_camera_with_retries,
     init_csv_logger,
-    init_video_writer,
+    init_live_video_writer,
     maybe_flip_frame,
     resolve_show_preview,
     sleep_remainder,
@@ -237,7 +237,6 @@ def main() -> None:
     preview_available = args.show_preview
     route_session = RouteSession()
     route_csv_path = route_session.route_dir / "route_frames.csv"
-    route_video_path = route_session.route_dir / "route_video.mp4"
     route_csv_writer, route_csv_file = init_csv_logger(str(route_csv_path), _CSV_FIELDNAMES)
     final_status = "COMPLETED"
     rejection_reason = ""
@@ -582,13 +581,13 @@ def main() -> None:
             if args.write_debug_video:
                 if video_writer is None:
                     h, w = output_frame.shape[:2]
-                    video_writer = init_video_writer(
-                        str(route_video_path),
+                    video_writer, resolved_output_path = init_live_video_writer(
+                        args.video_output,
                         MAIN_VIDEO_OUTPUT_FPS,
                         w,
                         h,
                     )
-                    logger.info("Route video writer active: %s", route_video_path)
+                    logger.info("Debug video writer active: %s", resolved_output_path)
 
                 try:
                     video_writer.write(output_frame)
@@ -693,8 +692,6 @@ def main() -> None:
             summary.summary_path,
         )
         logger.info("Route frame CSV saved: %s", route_csv_path)
-        if args.write_debug_video:
-            logger.info("Route video saved: %s", route_video_path)
         logger.info("Resources released. Goodbye.")
 
 
