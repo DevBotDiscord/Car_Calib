@@ -32,10 +32,10 @@ Behavior:
 EOF
 }
 
-log_step() { echo -e "${BLUE}$1${NC}"; }
-log_ok() { echo -e "${GREEN}$1${NC}"; }
-log_warn() { echo -e "${YELLOW}$1${NC}"; }
-log_err() { echo -e "${RED}$1${NC}"; }
+log_step() { echo -e "${BLUE}$1${NC}" >&2; }
+log_ok() { echo -e "${GREEN}$1${NC}" >&2; }
+log_warn() { echo -e "${YELLOW}$1${NC}" >&2; }
+log_err() { echo -e "${RED}$1${NC}" >&2; }
 
 trim_whitespace() {
     local value="$1"
@@ -130,28 +130,28 @@ draw_menu() {
     local items=("$@")
     local i
 
-    printf '\033[H\033[2J'
-    echo -e "${BLUE}========================================${NC}"
-    echo -e "${BLUE}   Route Pull From MiniPC (Arrow)${NC}"
-    echo -e "${BLUE}========================================${NC}"
-    echo ""
-    echo -e "MiniPC:     ${YELLOW}${MINIPC_USER}@${MINIPC_HOST}:${MINIPC_SSH_PORT}${NC}"
-    echo -e "Remote root:${YELLOW}${ROUTE_ROOT}${NC}"
-    echo -e "Local dest: ${YELLOW}${DEST}${NC}"
-    echo ""
-    echo "Select one route:"
-    echo ""
+    printf '\033[H\033[2J' >&2
+    echo -e "${BLUE}========================================${NC}" >&2
+    echo -e "${BLUE}   Route Pull From MiniPC (Arrow)${NC}" >&2
+    echo -e "${BLUE}========================================${NC}" >&2
+    echo "" >&2
+    echo -e "MiniPC:     ${YELLOW}${MINIPC_USER}@${MINIPC_HOST}:${MINIPC_SSH_PORT}${NC}" >&2
+    echo -e "Remote root:${YELLOW}${ROUTE_ROOT}${NC}" >&2
+    echo -e "Local dest: ${YELLOW}${DEST}${NC}" >&2
+    echo "" >&2
+    echo "Select one route:" >&2
+    echo "" >&2
 
     for i in "${!items[@]}"; do
         if [[ "$i" -eq "$selected" ]]; then
-            echo -e "  ${GREEN}> ${items[$i]}${NC}"
+            echo -e "  ${GREEN}> ${items[$i]}${NC}" >&2
         else
-            echo "    ${items[$i]}"
+            echo "    ${items[$i]}" >&2
         fi
     done
 
-    echo ""
-    echo "Up/Down: move  Enter: select  q: quit"
+    echo "" >&2
+    echo "Up/Down: move  Enter: select  q: quit" >&2
 }
 
 select_route_with_arrows() {
