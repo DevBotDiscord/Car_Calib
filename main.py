@@ -386,7 +386,17 @@ def main() -> None:
                 direction = "STRAIGHT"
             calib_status = "MANUAL_OR_IDLE"
 
-            steer_from_manual = False
+            try:
+                servo_angle = controller.update(theta, lateral_offset_norm=lateral_offset_norm)
+            except Exception as ctrl_exc:  # noqa: BLE001
+                logger.error(
+                    "Controller error: %s - centering servo and stopping.",
+                    ctrl_exc,
+                )
+                final_status = "FAILED_CONTROL"
+                rejection_reason = f"controller_error:{type(ctrl_exc).__name__}"
+                servo.center()
+                break
 
             # --- input controller override ---
             if input_controller is not None:
@@ -418,7 +428,6 @@ def main() -> None:
 
                 # manual steer override
                 if decision.steer_angle is not None:
-                    steer_from_manual = True
                     servo_angle = decision.steer_angle
 
                 auto_route_active = bool(
@@ -430,26 +439,6 @@ def main() -> None:
                     start_route_session()
                 if (not auto_route_active) and route_session is not None:
                     finalize_route_session(status="COMPLETED")
-
-            if not steer_from_manual:
-                try:
-                    servo_angle = controller.update(
-                        theta,
-                        lateral_offset_norm=lateral_offset_norm,
-                        lateral_status=(detector_debug.get("lateral_status") if detector_debug else None),
-                    )
-                except Exception as ctrl_exc:  # noqa: BLE001
-                    logger.error(
-                        "Controller error: %s - centering servo and stopping.",
-                        ctrl_exc,
-                    )
-                    final_status = "FAILED_CONTROL"
-                    rejection_reason = f"controller_error:{type(ctrl_exc).__name__}"
-                    servo.center()
-                    break
-            else:
-                # Manual steering active: do not update PID state this cycle.
-                state.calibration_active = False
 
             if route_session is not None:
                 angle_diff, calib_status, direction = route_session.update_frame(

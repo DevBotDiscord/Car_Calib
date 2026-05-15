@@ -128,12 +128,7 @@ class ServoPID:
         self._last_output_time = now
         return target_angle
 
-    def update(
-        self,
-        theta: Optional[float],
-        lateral_offset_norm: Optional[float] = None,
-        lateral_status: Optional[str] = None,
-    ) -> float:
+    def update(self, theta: Optional[float], lateral_offset_norm: Optional[float] = None) -> float:
         """Compute and return the servo angle command for this control cycle."""
         state = self._state
         now = time.monotonic()
@@ -174,9 +169,7 @@ class ServoPID:
 
         heading_error = theta - 90.0
         lateral_error = 0.0
-        lateral_status_norm = (lateral_status or "").strip().lower()
-        lateral_status_ok = lateral_status_norm in {"centered", "drift_left", "drift_right", "out_left", "out_right"}
-        if self._lateral_enabled and lateral_offset_norm is not None and lateral_status_ok:
+        if self._lateral_enabled and lateral_offset_norm is not None:
             lateral_error = self._lateral_kp * lateral_offset_norm
             max_lat = self._lateral_max_correction_deg
             lateral_error = max(-max_lat, min(max_lat, lateral_error))
