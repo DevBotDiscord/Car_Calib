@@ -12,6 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/.env.production}"
 DEST="${1:-}"
 ROUTE_ROOT_OVERRIDE="${2:-}"
+CONTAINER_NAME_OVERRIDE="${3:-}"
 
 usage() {
     cat <<'EOF'
@@ -25,9 +26,9 @@ Examples:
   ./sync_routes.sh   # read defaults from .env.production
 
 Behavior:
-  - List routes from MiniPC over SSH
+  - List routes from MiniPC Docker container over SSH
   - Arrow-key select one route
-  - Pull selected route from MiniPC to local machine
+  - Pull selected route from container to local machine
 EOF
 }
 
@@ -96,6 +97,33 @@ load_dest_from_env() {
     printf '%s' "${SCRIPT_DIR}/route"
 }
 
+remote_cmd() {
+    ssh_base_cmd "$MINIPC_PASSWORD" "$MINIPC_SSH_PORT" "${MINIPC_USER}@${MINIPC_HOST}" "$1"
+}
+
+resolve_remote_container() {
+    local container="${CONTAINER_NAME_OVERRIDE:-}"
+    local project="$MINIPC_COMPOSE_PROJECT_NAME"
+    local docker_prefix="docker"
+    if [[ "${MINIPC_USE_SUDO_DOCKER}" == "true" ]]; then
+        docker_prefix="sudo -n docker"
+    fi
+
+    if [[ -n "$container" ]]; then
+        printf '%s' "$container"
+        return
+    fi
+
+    container="$(remote_cmd "${docker_prefix} ps --format '{{.Names}}' | sed -n '1p'")"
+    if [[ -n "$project" ]]; then
+        container="$(remote_cmd "${docker_prefix} ps --format '{{.Names}}' | grep -E '^${project}-vision-[0-9]+\$' | head -n 1 || true")"
+    fi
+    if [[ -z "$container" ]]; then
+        container="$(remote_cmd "${docker_prefix} ps --format '{{.Names}}' | grep -E 'vision' | head -n 1 || true")"
+    fi
+    printf '%s' "$container"
+}
+
 draw_menu() {
     local selected="$1"
     shift
@@ -157,25 +185,21 @@ select_route_with_arrows() {
 }
 
 list_remote_routes() {
-    ssh_base_cmd "$MINIPC_PASSWORD" "$MINIPC_SSH_PORT" "${MINIPC_USER}@${MINIPC_HOST}" \
-        "if [ -d '$ROUTE_ROOT' ]; then find '$ROUTE_ROOT' -mindepth 1 -maxdepth 1 -type d -name 'route-*' -printf '%f\n' | sort -r; fi"
+    local docker_prefix="docker"
+    if [[ "${MINIPC_USE_SUDO_DOCKER}" == "true" ]]; then
+        docker_prefix="sudo -n docker"
+    fi
+    remote_cmd "${docker_prefix} exec '${REMOTE_CONTAINER}' sh -lc \"if [ -d '$ROUTE_ROOT' ]; then find '$ROUTE_ROOT' -mindepth 1 -maxdepth 1 -type d -name 'route-*' -printf '%f\\n' | sort -r; fi\""
 }
 
 sync_remote_route() {
     local route_name="$1"
-    local remote_src="${MINIPC_USER}@${MINIPC_HOST}:${ROUTE_ROOT}/${route_name}/"
-    local local_dst="${DEST}/${route_name}/"
-
     mkdir -p "$DEST"
-    if command -v rsync >/dev/null 2>&1; then
-        if [[ -n "$MINIPC_PASSWORD" ]] && command -v sshpass >/dev/null 2>&1; then
-            sshpass -p "$MINIPC_PASSWORD" rsync -az --progress -e "ssh -p ${MINIPC_SSH_PORT} -o StrictHostKeyChecking=accept-new" "$remote_src" "$local_dst"
-        else
-            rsync -az --progress -e "ssh -p ${MINIPC_SSH_PORT} -o StrictHostKeyChecking=accept-new" "$remote_src" "$local_dst"
-        fi
-    else
-        scp -r -P "$MINIPC_SSH_PORT" "$remote_src" "$local_dst"
+    local docker_prefix="docker"
+    if [[ "${MINIPC_USE_SUDO_DOCKER}" == "true" ]]; then
+        docker_prefix="sudo -n docker"
     fi
+    remote_cmd "${docker_prefix} cp '${REMOTE_CONTAINER}:${ROUTE_ROOT}/${route_name}' -" | tar -x -C "$DEST"
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -187,8 +211,11 @@ MINIPC_HOST="$(load_env_var_from_file "MINIPC_HOST")"
 MINIPC_USER="$(load_env_var_from_file "MINIPC_USER")"
 MINIPC_SSH_PORT="$(load_env_var_from_file "MINIPC_SSH_PORT")"
 MINIPC_PASSWORD="$(load_env_var_from_file "MINIPC_PASSWORD")"
+MINIPC_COMPOSE_PROJECT_NAME="$(load_env_var_from_file "MINIPC_COMPOSE_PROJECT_NAME")"
+MINIPC_USE_SUDO_DOCKER="$(load_env_var_from_file "MINIPC_USE_SUDO_DOCKER")"
 
 if [[ -z "$MINIPC_SSH_PORT" ]]; then MINIPC_SSH_PORT=22; fi
+if [[ -z "$MINIPC_USE_SUDO_DOCKER" ]]; then MINIPC_USE_SUDO_DOCKER=false; fi
 if [[ -z "$MINIPC_HOST" || -z "$MINIPC_USER" ]]; then
     log_err "Missing MINIPC_HOST or MINIPC_USER in ${ENV_FILE}."
     exit 1
@@ -211,8 +238,14 @@ if [[ -z "$ROUTE_ROOT" ]]; then
 fi
 
 log_step "Checking MiniPC route root..."
-if ! ssh_base_cmd "$MINIPC_PASSWORD" "$MINIPC_SSH_PORT" "${MINIPC_USER}@${MINIPC_HOST}" "test -d '$ROUTE_ROOT'"; then
-    log_err "Remote route root not found on MiniPC: $ROUTE_ROOT"
+REMOTE_CONTAINER="$(resolve_remote_container)"
+if [[ -z "$REMOTE_CONTAINER" ]]; then
+    log_err "No running container found on MiniPC (expected vision container)."
+    exit 1
+fi
+
+if ! list_remote_routes >/dev/null 2>&1; then
+    log_err "Cannot access route root in container '${REMOTE_CONTAINER}': $ROUTE_ROOT"
     exit 1
 fi
 
