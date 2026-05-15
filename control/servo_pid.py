@@ -25,7 +25,6 @@ from typing import Optional
 from config.settings import (
     CTRL_LATERAL_ENABLED,
     CTRL_LATERAL_KP,
-    CTRL_LATERAL_MAX_CORRECTION_DEG,
     CTRL_HYSTERESIS_HIGH,
     CTRL_HYSTERESIS_LOW,
     CTRL_RELOCK_VALID_FRAMES,
@@ -49,7 +48,6 @@ class ServoPID:
         servo_output_slew_rate_deg_per_s: float = CTRL_SERVO_OUTPUT_SLEW_RATE_DEG_PER_S,
         lateral_enabled: bool = CTRL_LATERAL_ENABLED,
         lateral_kp: float = CTRL_LATERAL_KP,
-        lateral_max_correction_deg: float = CTRL_LATERAL_MAX_CORRECTION_DEG,
     ) -> None:
         if start_calib_threshold_deg <= 0 or stop_calib_threshold_deg <= 0:
             raise ValueError("Calibration thresholds must be positive.")
@@ -71,7 +69,6 @@ class ServoPID:
         self._relock_valid_count = 0
         self._lateral_enabled = lateral_enabled
         self._lateral_kp = lateral_kp
-        self._lateral_max_correction_deg = max(0.0, lateral_max_correction_deg)
         now = time.monotonic()
         self._last_time: float = now
         self._last_output_time: float = now
@@ -171,8 +168,6 @@ class ServoPID:
         lateral_error = 0.0
         if self._lateral_enabled and lateral_offset_norm is not None:
             lateral_error = self._lateral_kp * lateral_offset_norm
-            max_lat = self._lateral_max_correction_deg
-            lateral_error = max(-max_lat, min(max_lat, lateral_error))
         error = heading_error + lateral_error
         abs_error = abs(error)
 
