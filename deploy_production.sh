@@ -231,6 +231,8 @@ create_archive() {
         --exclude='*.log'
         --exclude='.last_production_version'
         --exclude='.last_production_deploy'
+        --exclude='videos'
+        --exclude='videos/*'
     )
 
     if gzip_bin="$(find_command pigz)"; then
