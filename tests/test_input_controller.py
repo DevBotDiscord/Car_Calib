@@ -12,7 +12,7 @@ class _FakeHandler:
         self.pressed_keys: set[str] = set()
 
 
-def test_manual_mode_keeps_local_steer_when_stick_neutral() -> None:
+def test_manual_mode_auto_centers_when_stick_neutral() -> None:
     handler = _FakeHandler()
     controller = InputController(handler)
     controller.controller_remote_steer_only = False
@@ -21,8 +21,8 @@ def test_manual_mode_keeps_local_steer_when_stick_neutral() -> None:
     controller._steer_angle = controller.right_limit  # type: ignore[attr-defined]
     decision = controller.process(now=1.0)
 
-    assert decision.steer_source == "MANUAL"
-    assert decision.steer_angle == controller.right_limit
+    assert decision.steer_source == "MANUAL-CENTER"
+    assert decision.steer_angle == controller._center_angle  # type: ignore[attr-defined]
 
 
 def test_remote_mode_allows_vision_steer() -> None:
@@ -34,4 +34,3 @@ def test_remote_mode_allows_vision_steer() -> None:
 
     assert decision.steer_source == "VISION"
     assert decision.steer_angle is None
-
