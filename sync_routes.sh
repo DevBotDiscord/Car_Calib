@@ -199,7 +199,7 @@ sync_remote_route() {
     if [[ "${MINIPC_USE_SUDO_DOCKER}" == "true" ]]; then
         docker_prefix="sudo -n docker"
     fi
-    remote_cmd "${docker_prefix} exec '${REMOTE_CONTAINER}' sh -lc \"tar -C '$ROUTE_ROOT' -cf - '$route_name'\"" | tar -x -C "$DEST"
+    remote_cmd "${docker_prefix} exec '${REMOTE_CONTAINER}' sh -lc \"set -e; snap_root=/tmp/route-sync-snapshots; snap_dir=\\\"\\${snap_root}/${route_name}\\\"; rm -rf \\\"\\${snap_dir}\\\"; mkdir -p \\\"\\${snap_root}\\\"; cp -a '$ROUTE_ROOT/${route_name}' \\\"\\${snap_dir}\\\"; tar -C \\\"\\${snap_root}\\\" -cf - '${route_name}'; rm -rf \\\"\\${snap_dir}\\\"\"" | tar -x -C "$DEST"
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
