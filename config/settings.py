@@ -153,6 +153,7 @@ CTRL_SERVO_OUTPUT_DEADBAND_DEG = _get_float("CTRL_SERVO_OUTPUT_DEADBAND_DEG", 0.
 CTRL_SERVO_OUTPUT_SLEW_RATE_DEG_PER_S = _get_float("CTRL_SERVO_OUTPUT_SLEW_RATE_DEG_PER_S", 180.0)
 CTRL_LATERAL_ENABLED = _get_bool("CTRL_LATERAL_ENABLED", True)
 CTRL_LATERAL_KP = _get_float("CTRL_LATERAL_KP", 12.0)
+CTRL_LATERAL_MAX_CORRECTION_DEG = _get_float("CTRL_LATERAL_MAX_CORRECTION_DEG", 4.0)
 
 # --------------------------------------------------------------------------- #
 # Driver defaults
