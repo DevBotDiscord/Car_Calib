@@ -95,4 +95,15 @@ def resolve_remote_servo_angle(payload_text: str) -> float:
     if _angle_within_limits(raw_angle, config.LEFT_LIMIT, config.RIGHT_LIMIT):
         return _clamp_angle(raw_angle, config.LEFT_LIMIT, config.RIGHT_LIMIT)
 
-    return _clamp_angle(map_remote_angle(raw_angle), config.LEFT_LIMIT, config.RIGHT_LIMIT)
+    # Backward-compatible mapping path: only apply when payload is in the
+    # legacy remote-input range (typically 60..120 around 90 center).
+    if _angle_within_limits(
+        raw_angle,
+        config.REMOTE_INPUT_MIN_ANGLE,
+        config.REMOTE_INPUT_MAX_ANGLE,
+    ):
+        return _clamp_angle(map_remote_angle(raw_angle), config.LEFT_LIMIT, config.RIGHT_LIMIT)
+
+    # For signed-angle publishers, prefer direct clamp to physical range
+    # instead of forcing legacy map that can bias toward one side.
+    return _clamp_angle(raw_angle, config.LEFT_LIMIT, config.RIGHT_LIMIT)
