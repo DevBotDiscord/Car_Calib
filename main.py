@@ -236,8 +236,6 @@ def main() -> None:
     stream_host = ""
     preview_available = args.show_preview
     route_session = RouteSession()
-    route_csv_path = route_session.route_dir / "route_frames.csv"
-    route_csv_writer, route_csv_file = init_csv_logger(str(route_csv_path), _CSV_FIELDNAMES)
     final_status = "COMPLETED"
     rejection_reason = ""
 
@@ -474,69 +472,7 @@ def main() -> None:
                     "stream_port": args.port if args.stream_enabled else "",
                 }
             )
-            route_csv_writer.writerow(
-                {
-                    "route_id": route_session.route_id,
-                    "frame_num": frame_num,
-                    "mono_timestamp": f"{loop_start:.6f}",
-                    "utc_timestamp": utc_timestamp,
-                    "loop_ms": f"{elapsed_ms:.4f}",
-                    "loop_overrun_ms": f"{overrun_ms:.4f}",
-                    "fsm_state": state.fsm_state.name,
-                    "calibration_active": int(state.calibration_active),
-                    "theta": f"{theta:.4f}" if theta is not None else "",
-                    "theta_source": theta_source,
-                    "theta_for_overlay": f"{last_known_theta:.4f}" if last_known_theta is not None else "",
-                    "theta_horizontal": (
-                        f"{detector_debug.get('theta_horizontal'):.4f}"
-                        if detector_debug and detector_debug.get("theta_horizontal") is not None
-                        else ""
-                    ),
-                    "reference_group_index": (
-                        detector_debug.get("reference_group_index", "") if detector_debug else ""
-                    ),
-                    "selected_group_bbox": _format_bbox(selected_group_bbox),
-                    "lateral_probe_y": detector_debug.get("lateral_probe_y", "") if detector_debug else "",
-                    "lateral_left_x": detector_debug.get("lateral_left_x", "") if detector_debug else "",
-                    "lateral_right_x": detector_debug.get("lateral_right_x", "") if detector_debug else "",
-                    "lateral_tile_center_x": detector_debug.get("lateral_tile_center_x", "") if detector_debug else "",
-                    "lateral_tile_width_px": detector_debug.get("lateral_tile_width_px", "") if detector_debug else "",
-                    "lateral_offset_px": (
-                        detector_debug.get("lateral_offset_px", "")
-                        if detector_debug
-                        else (f"{lateral_offset_px:.4f}" if lateral_offset_px is not None else "")
-                    ),
-                    "lateral_offset_norm": (
-                        detector_debug.get("lateral_offset_norm", "")
-                        if detector_debug
-                        else (f"{lateral_offset_norm:.6f}" if lateral_offset_norm is not None else "")
-                    ),
-                    "lateral_status": detector_debug.get("lateral_status", "") if detector_debug else "",
-                    "lines_count": detector_debug.get("lines_count", "") if detector_debug else "",
-                    "groups_count": detector_debug.get("groups_count", "") if detector_debug else "",
-                    "horizontal_ok": detector_debug.get("horizontal_ok", "") if detector_debug else "",
-                    "sanity_ok": detector_debug.get("sanity_ok", "") if detector_debug else "",
-                    "stale_output": detector_debug.get("stale_output", "") if detector_debug else "",
-                    "servo_angle": f"{servo_angle:.4f}",
-                    "servo_center_angle": f"{state.servo_center_angle:.4f}",
-                    "servo_offset": f"{(servo_angle - state.servo_center_angle):.4f}",
-                    "pid_error": f"{pid_error:.6f}",
-                    "angle_diff": f"{angle_diff:.6f}" if angle_diff is not None else "",
-                    "calib_status": calib_status,
-                    "direction": direction,
-                    "pid_p_term": f"{pid_p_term:.6f}",
-                    "pid_i_term": f"{pid_i_term:.6f}",
-                    "pid_d_term": f"{pid_d_term:.6f}",
-                    "pid_integral": f"{state.pid_integral:.6f}",
-                    "pid_last_error": f"{state.pid_last_error:.6f}",
-                    "hardware_send_latency_ms": f"{hardware_send_latency_ms:.4f}",
-                    "stream_enabled": int(args.stream_enabled),
-                    "stream_host": stream_host,
-                    "stream_port": args.port if args.stream_enabled else "",
-                }
-            )
             csv_file.flush()
-            route_csv_file.flush()
 
             output_frame = frame
             if args.debug_mode:
@@ -677,7 +613,6 @@ def main() -> None:
             except cv2.error as close_preview_exc:
                 logger.debug("Preview window cleanup skipped: %s", close_preview_exc)
         csv_file.close()
-        route_csv_file.close()
         summary = route_session.finalize(
             mono_now=time.monotonic(),
             status=final_status,
@@ -691,7 +626,6 @@ def main() -> None:
             summary.rejection_reason or "-",
             summary.summary_path,
         )
-        logger.info("Route frame CSV saved: %s", route_csv_path)
         logger.info("Resources released. Goodbye.")
 
 
