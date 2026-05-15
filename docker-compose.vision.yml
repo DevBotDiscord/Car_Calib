@@ -17,11 +17,11 @@ services:
       MAIN_CSV_LOG_FILE: /data/run_log.csv
       MAIN_HTTPS_CERT_FILE: /data/certs/main_stream_cert.pem
       MAIN_HTTPS_KEY_FILE: /data/certs/main_stream_key.pem
-    devices:
-      - ${VISION_CAMERA_DEVICE:-/dev/video0}:${VISION_CAMERA_DEVICE:-/dev/video0}
     device_cgroup_rules:
+      - "c 81:* rmw"
       - "c 13:* rmw"
     volumes:
+      - /dev:/dev
       - /dev/input:/dev/input:ro
       - vision-data:/data
 
