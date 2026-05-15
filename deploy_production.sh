@@ -16,7 +16,7 @@ AUTO_CONFIRM=false
 usage() {
     cat <<'EOF'
 Usage:
-  ./deploy_production.sh [all|minipc|ras] [--yes] [--env <path>] [--no-build]
+  ./deploy_production.sh [all|minipc|ras] [--yes] [--env <path>] [--no-build] [--env-only]
 
 Targets:
   all     Deploy both vision (MiniPC) and Raspberry Pi bridge
@@ -27,6 +27,7 @@ Options:
   --yes         Skip interactive confirmation prompt
   --env <path>  Use custom environment file (default: .env.production)
   --no-build    Skip image build step and reuse existing local images on target
+  --env-only    Upload only env file and recreate containers from current release
 EOF
 }
 
@@ -257,6 +258,7 @@ deploy_target() {
     local host_key="${11}"
     local sudo_password="${12}"
     local skip_build="${13}"
+    local env_only="${14}"
 
     local remote_archive="/tmp/${PROJECT_NAME}-${VERSION}-${label}.tar.gz"
     local remote_env="/tmp/${PROJECT_NAME}-${VERSION}-${label}.env"
@@ -294,9 +296,13 @@ deploy_target() {
     fi
     log_ok "[${label}] SSH connection OK"
 
-    log_step "[${label}] Uploading release bundle..."
-    ssh_base_cmd "$password" "$port" "$host_key" "${user}@${host}" "mkdir -p '${dest_dir}/releases'"
-    scp_base_cmd "$password" "$port" "$host_key" "$ARCHIVE_PATH" "${user}@${host}:${remote_archive}"
+    if [[ "${env_only}" == "true" ]]; then
+        log_step "[${label}] Uploading env file only..."
+    else
+        log_step "[${label}] Uploading release bundle..."
+        ssh_base_cmd "$password" "$port" "$host_key" "${user}@${host}" "mkdir -p '${dest_dir}/releases'"
+        scp_base_cmd "$password" "$port" "$host_key" "$ARCHIVE_PATH" "${user}@${host}:${remote_archive}"
+    fi
     scp_base_cmd "$password" "$port" "$host_key" "$ENV_FILE" "${user}@${host}:${remote_env}"
     log_ok "[${label}] Upload complete"
 
@@ -314,6 +320,7 @@ deploy_target() {
             "REMOTE_ENV=$(shell_quote "$remote_env") " \
             "KEEP_RELEASES=$(shell_quote "$DEPLOY_KEEP_RELEASES") " \
             "SKIP_BUILD=$(shell_quote "$skip_build") " \
+            "ENV_ONLY=$(shell_quote "$env_only") " \
             "bash -s"
     )
     ssh_base_cmd "$password" "$port" "$host_key" "${user}@${host}" "$remote_bootstrap" <<'EOF'
@@ -343,14 +350,24 @@ else
     file_cmd=()
 fi
 
-"${file_cmd[@]}" mkdir -p "${root_dir}/releases"
-"${file_cmd[@]}" rm -rf "${release_dir}"
-"${file_cmd[@]}" mkdir -p "${release_dir}"
-"${file_cmd[@]}" tar -xzf "${REMOTE_ARCHIVE}" -C "${release_dir}"
-"${file_cmd[@]}" cp "${REMOTE_ENV}" "${release_dir}/.env"
-"${file_cmd[@]}" cp "${REMOTE_ENV}" "${release_dir}/.env.production"
-"${file_cmd[@]}" ln -sfn "${release_dir}" "${current_dir}"
-"${file_cmd[@]}" rm -f "${REMOTE_ARCHIVE}" "${REMOTE_ENV}"
+if [[ "${ENV_ONLY}" == "true" ]]; then
+    if [[ ! -d "${current_dir}" ]]; then
+        echo "Current release not found at ${current_dir}; cannot run --env-only." >&2
+        exit 1
+    fi
+    "${file_cmd[@]}" cp "${REMOTE_ENV}" "${current_dir}/.env"
+    "${file_cmd[@]}" cp "${REMOTE_ENV}" "${current_dir}/.env.production"
+    "${file_cmd[@]}" rm -f "${REMOTE_ENV}"
+else
+    "${file_cmd[@]}" mkdir -p "${root_dir}/releases"
+    "${file_cmd[@]}" rm -rf "${release_dir}"
+    "${file_cmd[@]}" mkdir -p "${release_dir}"
+    "${file_cmd[@]}" tar -xzf "${REMOTE_ARCHIVE}" -C "${release_dir}"
+    "${file_cmd[@]}" cp "${REMOTE_ENV}" "${release_dir}/.env"
+    "${file_cmd[@]}" cp "${REMOTE_ENV}" "${release_dir}/.env.production"
+    "${file_cmd[@]}" ln -sfn "${release_dir}" "${current_dir}"
+    "${file_cmd[@]}" rm -f "${REMOTE_ARCHIVE}" "${REMOTE_ENV}"
+fi
 
 if [[ "${USE_SUDO_DOCKER}" == "true" ]]; then
     docker_cmd=(sudo -n docker)
@@ -369,12 +386,17 @@ for legacy in "${legacy_projects[@]}"; do
 done
 if [[ "${SKIP_BUILD}" == "true" ]]; then
     "${compose_cmd[@]}" up -d --remove-orphans
+elif [[ "${ENV_ONLY}" == "true" ]]; then
+    "${compose_cmd[@]}" up -d --force-recreate --remove-orphans
 else
     "${compose_cmd[@]}" up --build -d --remove-orphans
 fi
 "${compose_cmd[@]}" ps
 
 if [[ "${KEEP_RELEASES}" =~ ^[0-9]+$ ]] && (( KEEP_RELEASES > 0 )); then
+    if [[ "${ENV_ONLY}" == "true" ]]; then
+        exit 0
+    fi
     cd "${root_dir}/releases"
     mapfile -t old_releases < <(ls -1dt */ 2>/dev/null | tail -n +$((KEEP_RELEASES + 1)) || true)
     if (( ${#old_releases[@]} > 0 )); then
@@ -425,6 +447,11 @@ while (( "$#" > 0 )); do
             shift 2
             ;;
         --no-build)
+            DEPLOY_SKIP_BUILD=true
+            shift
+            ;;
+        --env-only)
+            DEPLOY_ENV_ONLY=true
             DEPLOY_SKIP_BUILD=true
             shift
             ;;
@@ -480,6 +507,7 @@ PROJECT_NAME="${PROJECT_NAME:-car-calib}"
 SSH_CONNECT_TIMEOUT_S="${SSH_CONNECT_TIMEOUT_S:-10}"
 DEPLOY_KEEP_RELEASES="${DEPLOY_KEEP_RELEASES:-3}"
 DEPLOY_SKIP_BUILD="${DEPLOY_SKIP_BUILD:-false}"
+DEPLOY_ENV_ONLY="${DEPLOY_ENV_ONLY:-false}"
 MINIPC_SSH_PORT="${MINIPC_SSH_PORT:-22}"
 RPI_SSH_PORT="${RPI_SSH_PORT:-22}"
 MINIPC_DEST_DIR="${MINIPC_DEST_DIR:-/opt/${PROJECT_NAME}/vision}"
@@ -518,15 +546,20 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 ARCHIVE_PATH="${TMP_DIR}/${PROJECT_NAME}-${VERSION}.tar.gz"
 
-log_step "[1/4] Creating deployment archive..."
-create_archive "$ARCHIVE_PATH"
-log_ok "Archive ready: ${ARCHIVE_PATH}"
+if [[ "${DEPLOY_ENV_ONLY}" == "true" ]]; then
+    log_step "[1/3] Env-only mode: skipping release archive build."
+else
+    log_step "[1/4] Creating deployment archive..."
+    create_archive "$ARCHIVE_PATH"
+    log_ok "Archive ready: ${ARCHIVE_PATH}"
+fi
 
 echo ""
 echo -e "${BLUE}Production Configuration:${NC}"
 echo "  Version: ${VERSION}"
 echo "  Target: ${TARGET}"
 echo "  Build images: $([[ "${DEPLOY_SKIP_BUILD}" == "true" ]] && echo "no (reuse existing)" || echo "yes")"
+echo "  Env only: ${DEPLOY_ENV_ONLY}"
 if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
     echo "  MiniPC: ${MINIPC_USER}@${MINIPC_HOST}:${MINIPC_SSH_PORT} -> ${MINIPC_DEST_DIR}"
     if [[ -n "${MINIPC_PASSWORD}" ]]; then
@@ -576,7 +609,11 @@ if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
 fi
 
 step_index=2
-total_steps=$((deploy_steps + 2))
+if [[ "${DEPLOY_ENV_ONLY}" == "true" ]]; then
+    total_steps=$((deploy_steps + 1))
+else
+    total_steps=$((deploy_steps + 2))
+fi
 if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
     log_step "[${step_index}/${total_steps}] Deploying vision stack to MiniPC..."
     deploy_target "minipc" \
@@ -591,7 +628,8 @@ if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
         "$MINIPC_USE_SUDO_REMOTE" \
         "${MINIPC_SSH_HOST_KEY:-}" \
         "${MINIPC_SUDO_PASSWORD:-}" \
-        "$DEPLOY_SKIP_BUILD"
+        "$DEPLOY_SKIP_BUILD" \
+        "$DEPLOY_ENV_ONLY"
     step_index=$((step_index + 1))
 fi
 
@@ -609,7 +647,8 @@ if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
         "$RPI_USE_SUDO_REMOTE" \
         "${RPI_SSH_HOST_KEY:-}" \
         "${RPI_SUDO_PASSWORD:-}" \
-        "$DEPLOY_SKIP_BUILD"
+        "$DEPLOY_SKIP_BUILD" \
+        "$DEPLOY_ENV_ONLY"
 fi
 
 echo "${VERSION}" > "${SCRIPT_DIR}/.last_production_version"
