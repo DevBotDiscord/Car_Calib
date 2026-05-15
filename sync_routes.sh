@@ -10,44 +10,31 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/.env.production}"
-ROUTE_ROOT_DEFAULT="${SCRIPT_DIR}/logs/routes"
-ROUTE_ROOT_RUNTIME_DEFAULT="/data/routes"
 DEST="${1:-}"
 ROUTE_ROOT_OVERRIDE="${2:-}"
 
 usage() {
     cat <<'EOF'
 Usage:
-  ./sync_routes.sh [destination] [route_root]
+  ./sync_routes.sh [local_destination] [remote_route_root]
 
 Examples:
-  ./sync_routes.sh /mnt/usb/routes_export
-  ./sync_routes.sh user@10.0.0.20:/data/routes
-  ./sync_routes.sh /mnt/usb/routes_export /data/routes
-  ./sync_routes.sh                  # read destination from .env.production
+  ./sync_routes.sh ./route
+  ./sync_routes.sh /mnt/data/routes
+  ./sync_routes.sh ./route /data/routes
+  ./sync_routes.sh   # read defaults from .env.production
 
-Controls:
-  Arrow Up/Down: Move selection
-  Enter: Select route to sync
-  q: Quit
+Behavior:
+  - List routes from MiniPC over SSH
+  - Arrow-key select one route
+  - Pull selected route from MiniPC to local machine
 EOF
 }
 
-log_step() {
-    echo -e "${BLUE}$1${NC}"
-}
-
-log_ok() {
-    echo -e "${GREEN}$1${NC}"
-}
-
-log_warn() {
-    echo -e "${YELLOW}$1${NC}"
-}
-
-log_err() {
-    echo -e "${RED}$1${NC}"
-}
+log_step() { echo -e "${BLUE}$1${NC}"; }
+log_ok() { echo -e "${GREEN}$1${NC}"; }
+log_warn() { echo -e "${YELLOW}$1${NC}"; }
+log_err() { echo -e "${RED}$1${NC}"; }
 
 trim_whitespace() {
     local value="$1"
@@ -62,16 +49,36 @@ load_env_var_from_file() {
     if [[ -f "$ENV_FILE" ]]; then
         value="$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$ENV_FILE" | tail -n 1)"
         value="$(trim_whitespace "$value")"
-        value="${value%\"}"
-        value="${value#\"}"
-        value="${value%\'}"
-        value="${value#\'}"
+        value="${value%\"}"; value="${value#\"}"
+        value="${value%\'}"; value="${value#\'}"
     fi
     printf '%s' "$value"
 }
 
-load_route_root_from_env() {
-    load_env_var_from_file "ROUTE_LOG_ROOT"
+find_command() {
+    local candidate
+    for candidate in "$@"; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+ssh_base_cmd() {
+    local password="$1"
+    local port="$2"
+    shift 2
+
+    if [[ -n "$password" ]]; then
+        local sshpass_bin=""
+        if sshpass_bin="$(find_command sshpass)"; then
+            "$sshpass_bin" -p "$password" ssh -p "$port" -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$@"
+            return
+        fi
+    fi
+    ssh -p "$port" -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$@"
 }
 
 load_dest_from_env() {
@@ -82,81 +89,31 @@ load_dest_from_env() {
         return
     fi
     value="$(load_env_var_from_file "ROUTE_EXPORT_DEST")"
-    printf '%s' "$value"
-}
-
-resolve_route_root() {
-    local root=""
-
-    if [[ -n "$ROUTE_ROOT_OVERRIDE" ]]; then
-        root="$ROUTE_ROOT_OVERRIDE"
-    else
-        root="$(load_route_root_from_env)"
-    fi
-
-    if [[ -n "$root" ]]; then
-        if [[ "$root" != /* ]]; then
-            root="${SCRIPT_DIR}/${root}"
-        fi
-        printf '%s' "$root"
+    if [[ -n "$value" ]]; then
+        printf '%s' "$value"
         return
     fi
-
-    # Fallback order:
-    # 1) runtime default path used by main.py in container (/data/routes)
-    # 2) repo-local legacy path (./logs/routes)
-    if [[ -d "$ROUTE_ROOT_RUNTIME_DEFAULT" ]]; then
-        printf '%s' "$ROUTE_ROOT_RUNTIME_DEFAULT"
-        return
-    fi
-
-    printf '%s' "$ROUTE_ROOT_DEFAULT"
-}
-
-resolve_existing_route_root() {
-    local preferred_root="$1"
-    local candidate=""
-    local candidates=()
-
-    if [[ -n "$preferred_root" ]]; then
-        candidates+=("$preferred_root")
-    fi
-    candidates+=("$ROUTE_ROOT_RUNTIME_DEFAULT")
-    candidates+=("$ROUTE_ROOT_DEFAULT")
-    candidates+=("${SCRIPT_DIR}/route")
-    candidates+=("${SCRIPT_DIR}/logs/routes")
-
-    for candidate in "${candidates[@]}"; do
-        if [[ -d "$candidate" ]]; then
-            printf '%s' "$candidate"
-            return 0
-        fi
-    done
-    return 1
-}
-
-list_routes() {
-    local route_root="$1"
-    find "$route_root" -mindepth 1 -maxdepth 1 -type d -name 'route-*' -printf '%P\n' | sort -r
+    printf '%s' "${SCRIPT_DIR}/route"
 }
 
 draw_menu() {
     local selected="$1"
     shift
     local items=("$@")
+    local i
 
     printf '\033[H\033[2J'
     echo -e "${BLUE}========================================${NC}"
-    echo -e "${BLUE}      Route Sync Selector (Arrow)${NC}"
+    echo -e "${BLUE}   Route Pull From MiniPC (Arrow)${NC}"
     echo -e "${BLUE}========================================${NC}"
     echo ""
-    echo -e "Destination: ${YELLOW}${DEST}${NC}"
-    echo -e "Route root:  ${YELLOW}${ROUTE_ROOT}${NC}"
+    echo -e "MiniPC:     ${YELLOW}${MINIPC_USER}@${MINIPC_HOST}:${MINIPC_SSH_PORT}${NC}"
+    echo -e "Remote root:${YELLOW}${ROUTE_ROOT}${NC}"
+    echo -e "Local dest: ${YELLOW}${DEST}${NC}"
     echo ""
     echo "Select one route:"
     echo ""
 
-    local i
     for i in "${!items[@]}"; do
         if [[ "$i" -eq "$selected" ]]; then
             echo -e "  ${GREEN}> ${items[$i]}${NC}"
@@ -183,15 +140,11 @@ select_route_with_arrows() {
             case "$key" in
                 "[A")
                     ((selected--))
-                    if (( selected < 0 )); then
-                        selected=$((${#items[@]} - 1))
-                    fi
+                    if (( selected < 0 )); then selected=$((${#items[@]} - 1)); fi
                     ;;
                 "[B")
                     ((selected++))
-                    if (( selected >= ${#items[@]} )); then
-                        selected=0
-                    fi
+                    if (( selected >= ${#items[@]} )); then selected=0; fi
                     ;;
             esac
         elif [[ -z "$key" ]]; then
@@ -203,74 +156,69 @@ select_route_with_arrows() {
     done
 }
 
-sync_route() {
-    local route_root="$1"
-    local route_name="$2"
-    local src_dir="${route_root}/${route_name}"
-    local rsync_cmd=""
+list_remote_routes() {
+    ssh_base_cmd "$MINIPC_PASSWORD" "$MINIPC_SSH_PORT" "${MINIPC_USER}@${MINIPC_HOST}" \
+        "if [ -d '$ROUTE_ROOT' ]; then find '$ROUTE_ROOT' -mindepth 1 -maxdepth 1 -type d -name 'route-*' -printf '%f\n' | sort -r; fi"
+}
 
-    if ! command -v rsync >/dev/null 2>&1; then
-        if [[ "$DEST" == *:* ]]; then
-            log_err "rsync is required for remote destination sync."
-            exit 1
+sync_remote_route() {
+    local route_name="$1"
+    local remote_src="${MINIPC_USER}@${MINIPC_HOST}:${ROUTE_ROOT}/${route_name}/"
+    local local_dst="${DEST}/${route_name}/"
+
+    mkdir -p "$DEST"
+    if command -v rsync >/dev/null 2>&1; then
+        if [[ -n "$MINIPC_PASSWORD" ]] && command -v sshpass >/dev/null 2>&1; then
+            sshpass -p "$MINIPC_PASSWORD" rsync -az --progress -e "ssh -p ${MINIPC_SSH_PORT} -o StrictHostKeyChecking=accept-new" "$remote_src" "$local_dst"
+        else
+            rsync -az --progress -e "ssh -p ${MINIPC_SSH_PORT} -o StrictHostKeyChecking=accept-new" "$remote_src" "$local_dst"
         fi
-        log_warn "rsync not found. Falling back to cp -a for local destination."
-        mkdir -p "${DEST}/${route_name}"
-        cp -a "${src_dir}/." "${DEST}/${route_name}/"
-        log_ok "Route synced to ${DEST}/${route_name}"
-        return
-    fi
-
-    if [[ "$DEST" == *:* ]]; then
-        rsync_cmd="rsync -az --progress --mkpath"
-        log_step "Syncing remote route ${route_name} ..."
-        # shellcheck disable=SC2086
-        $rsync_cmd "${src_dir}/" "${DEST}/${route_name}/"
-        log_ok "Remote sync done: ${DEST}/${route_name}"
     else
-        mkdir -p "$DEST"
-        rsync_cmd="rsync -a --progress"
-        log_step "Syncing local route ${route_name} ..."
-        # shellcheck disable=SC2086
-        $rsync_cmd "${src_dir}/" "${DEST}/${route_name}/"
-        log_ok "Local sync done: ${DEST}/${route_name}"
+        scp -r -P "$MINIPC_SSH_PORT" "$remote_src" "$local_dst"
     fi
 }
 
-if [[ "$DEST" == "-h" || "$DEST" == "--help" ]]; then
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     usage
     exit 0
+fi
+
+MINIPC_HOST="$(load_env_var_from_file "MINIPC_HOST")"
+MINIPC_USER="$(load_env_var_from_file "MINIPC_USER")"
+MINIPC_SSH_PORT="$(load_env_var_from_file "MINIPC_SSH_PORT")"
+MINIPC_PASSWORD="$(load_env_var_from_file "MINIPC_PASSWORD")"
+
+if [[ -z "$MINIPC_SSH_PORT" ]]; then MINIPC_SSH_PORT=22; fi
+if [[ -z "$MINIPC_HOST" || -z "$MINIPC_USER" ]]; then
+    log_err "Missing MINIPC_HOST or MINIPC_USER in ${ENV_FILE}."
+    exit 1
 fi
 
 if [[ -z "$DEST" ]]; then
     DEST="$(load_dest_from_env)"
 fi
+if [[ "$DEST" != /* ]]; then
+    DEST="${SCRIPT_DIR}/${DEST}"
+fi
 
-if [[ -z "$DEST" ]]; then
-    log_err "Missing destination."
-    log_err "Provide destination as CLI arg or set ROUTE_SYNC_DEST in ${ENV_FILE}."
-    usage
+if [[ -n "$ROUTE_ROOT_OVERRIDE" ]]; then
+    ROUTE_ROOT="$ROUTE_ROOT_OVERRIDE"
+else
+    ROUTE_ROOT="$(load_env_var_from_file "ROUTE_LOG_ROOT")"
+fi
+if [[ -z "$ROUTE_ROOT" ]]; then
+    ROUTE_ROOT="/data/routes"
+fi
+
+log_step "Checking MiniPC route root..."
+if ! ssh_base_cmd "$MINIPC_PASSWORD" "$MINIPC_SSH_PORT" "${MINIPC_USER}@${MINIPC_HOST}" "test -d '$ROUTE_ROOT'"; then
+    log_err "Remote route root not found on MiniPC: $ROUTE_ROOT"
     exit 1
 fi
 
-ROUTE_ROOT="$(resolve_route_root)"
-if [[ ! -d "$ROUTE_ROOT" ]]; then
-    original_root="$ROUTE_ROOT"
-    if ROUTE_ROOT="$(resolve_existing_route_root "$ROUTE_ROOT")"; then
-        log_warn "Route root not found: $original_root"
-        log_warn "Falling back to existing route root: $ROUTE_ROOT"
-    else
-        log_err "Route root not found: $original_root"
-        log_err "No fallback route root exists. Checked: /data/routes, ./logs/routes, ./route"
-        exit 1
-    fi
-fi
-
-mapfile -t ROUTES < <(list_routes "$ROUTE_ROOT")
+mapfile -t ROUTES < <(list_remote_routes)
 if (( ${#ROUTES[@]} == 0 )); then
-    log_warn "No route directories found in: $ROUTE_ROOT"
-    log_warn "Tip: set ROUTE_LOG_ROOT in ${ENV_FILE} or pass route root explicitly:"
-    log_warn "  ./sync_routes.sh <dest> <route_root>"
+    log_warn "No route directories found on MiniPC in: $ROUTE_ROOT"
     exit 0
 fi
 
@@ -281,10 +229,12 @@ fi
 
 echo ""
 echo -e "${BLUE}Selected route:${NC} ${SELECTED_ROUTE}"
-read -r -p "Sync this route to '${DEST}'? [y/N]: " confirm
+read -r -p "Pull this route from MiniPC to '${DEST}'? [y/N]: " confirm
 if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
     log_warn "Sync cancelled."
     exit 0
 fi
 
-sync_route "$ROUTE_ROOT" "$SELECTED_ROUTE"
+log_step "Pulling route ${SELECTED_ROUTE} from MiniPC..."
+sync_remote_route "$SELECTED_ROUTE"
+log_ok "Done: ${DEST}/${SELECTED_ROUTE}"
