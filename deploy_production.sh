@@ -16,7 +16,7 @@ AUTO_CONFIRM=false
 usage() {
     cat <<'EOF'
 Usage:
-  ./deploy_production.sh [all|minipc|ras] [--yes] [--env <path>]
+  ./deploy_production.sh [all|minipc|ras] [--yes] [--env <path>] [--no-build]
 
 Targets:
   all     Deploy both vision (MiniPC) and Raspberry Pi bridge
@@ -26,6 +26,7 @@ Targets:
 Options:
   --yes         Skip interactive confirmation prompt
   --env <path>  Use custom environment file (default: .env.production)
+  --no-build    Skip image build step and reuse existing local images on target
 EOF
 }
 
@@ -255,6 +256,7 @@ deploy_target() {
     local use_sudo_remote="${10}"
     local host_key="${11}"
     local sudo_password="${12}"
+    local skip_build="${13}"
 
     local remote_archive="/tmp/${PROJECT_NAME}-${VERSION}-${label}.tar.gz"
     local remote_env="/tmp/${PROJECT_NAME}-${VERSION}-${label}.env"
@@ -311,6 +313,7 @@ deploy_target() {
             "REMOTE_ARCHIVE=$(shell_quote "$remote_archive") " \
             "REMOTE_ENV=$(shell_quote "$remote_env") " \
             "KEEP_RELEASES=$(shell_quote "$DEPLOY_KEEP_RELEASES") " \
+            "SKIP_BUILD=$(shell_quote "$skip_build") " \
             "bash -s"
     )
     ssh_base_cmd "$password" "$port" "$host_key" "${user}@${host}" "$remote_bootstrap" <<'EOF'
@@ -364,7 +367,11 @@ for legacy in "${legacy_projects[@]}"; do
     fi
     "${docker_cmd[@]}" compose -p "${legacy}" -f "${COMPOSE_FILE}" down --remove-orphans || true
 done
-"${compose_cmd[@]}" up --build -d --remove-orphans
+if [[ "${SKIP_BUILD}" == "true" ]]; then
+    "${compose_cmd[@]}" up -d --remove-orphans
+else
+    "${compose_cmd[@]}" up --build -d --remove-orphans
+fi
 "${compose_cmd[@]}" ps
 
 if [[ "${KEEP_RELEASES}" =~ ^[0-9]+$ ]] && (( KEEP_RELEASES > 0 )); then
@@ -417,6 +424,10 @@ while (( "$#" > 0 )); do
             ENV_FILE="$2"
             shift 2
             ;;
+        --no-build)
+            DEPLOY_SKIP_BUILD=true
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -468,6 +479,7 @@ RPI_SUDO_PASSWORD="$(trim_whitespace "${RPI_SUDO_PASSWORD:-}")"
 PROJECT_NAME="${PROJECT_NAME:-car-calib}"
 SSH_CONNECT_TIMEOUT_S="${SSH_CONNECT_TIMEOUT_S:-10}"
 DEPLOY_KEEP_RELEASES="${DEPLOY_KEEP_RELEASES:-3}"
+DEPLOY_SKIP_BUILD="${DEPLOY_SKIP_BUILD:-false}"
 MINIPC_SSH_PORT="${MINIPC_SSH_PORT:-22}"
 RPI_SSH_PORT="${RPI_SSH_PORT:-22}"
 MINIPC_DEST_DIR="${MINIPC_DEST_DIR:-/opt/${PROJECT_NAME}/vision}"
@@ -514,6 +526,7 @@ echo ""
 echo -e "${BLUE}Production Configuration:${NC}"
 echo "  Version: ${VERSION}"
 echo "  Target: ${TARGET}"
+echo "  Build images: $([[ "${DEPLOY_SKIP_BUILD}" == "true" ]] && echo "no (reuse existing)" || echo "yes")"
 if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
     echo "  MiniPC: ${MINIPC_USER}@${MINIPC_HOST}:${MINIPC_SSH_PORT} -> ${MINIPC_DEST_DIR}"
     if [[ -n "${MINIPC_PASSWORD}" ]]; then
@@ -577,7 +590,8 @@ if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
         "$MINIPC_USE_SUDO_DOCKER" \
         "$MINIPC_USE_SUDO_REMOTE" \
         "${MINIPC_SSH_HOST_KEY:-}" \
-        "${MINIPC_SUDO_PASSWORD:-}"
+        "${MINIPC_SUDO_PASSWORD:-}" \
+        "$DEPLOY_SKIP_BUILD"
     step_index=$((step_index + 1))
 fi
 
@@ -594,7 +608,8 @@ if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
         "$RPI_USE_SUDO_DOCKER" \
         "$RPI_USE_SUDO_REMOTE" \
         "${RPI_SSH_HOST_KEY:-}" \
-        "${RPI_SUDO_PASSWORD:-}"
+        "${RPI_SUDO_PASSWORD:-}" \
+        "$DEPLOY_SKIP_BUILD"
 fi
 
 echo "${VERSION}" > "${SCRIPT_DIR}/.last_production_version"
