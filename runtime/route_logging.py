@@ -32,6 +32,7 @@ def _safe_float(value: Optional[float]) -> Optional[float]:
 @dataclass
 class RouteFinalizeResult:
     route_id: str
+    route_mode: str
     accepted: bool
     rejection_reason: str
     summary_path: str
@@ -41,8 +42,9 @@ class RouteFinalizeResult:
 class RouteSession:
     """Collects route-level metadata and writes a summary JSON on finalize."""
 
-    def __init__(self) -> None:
+    def __init__(self, route_mode: str = "AUTO") -> None:
         self.route_id = f"route-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:8]}"
+        self.route_mode = route_mode
         self.started_at_utc = _utc_now_iso()
         self._start_monotonic: float | None = None
         self._end_monotonic: float | None = None
@@ -108,6 +110,7 @@ class RouteSession:
 
         payload = {
             "route_id": self.route_id,
+            "route_mode": self.route_mode,
             "start_timestamp_utc": self.started_at_utc,
             "end_timestamp_utc": self._ended_at_utc,
             "abstract_steps": self.abstract_steps,
@@ -127,6 +130,7 @@ class RouteSession:
 
         return RouteFinalizeResult(
             route_id=self.route_id,
+            route_mode=self.route_mode,
             accepted=accepted,
             rejection_reason=rejection_reason,
             summary_path=str(summary_path),

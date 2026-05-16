@@ -108,6 +108,7 @@ _CSV_LOG_FILE: str = MAIN_CSV_LOG_FILE
 _FLIP_FRAME: bool = MAIN_FLIP_FRAME
 _CSV_FIELDNAMES = [
     "route_id",
+    "route_mode",
     "frame_num",
     "mono_timestamp",
     "utc_timestamp",
@@ -242,16 +243,29 @@ def main() -> None:
     route_csv_file = None
     final_status = "COMPLETED"
     rejection_reason = ""
+    current_route_mode = "AUTO"
+
+    def _detect_route_mode() -> str:
+        if input_controller is None:
+            return "AUTO"
+        if input_controller.cruise_active:
+            return "CRUISE"
+        if input_controller.square_pattern_active:
+            return "SQUARE"
+        if input_controller.controller_remote_steer_only:
+            return "REMOTE_STEER"
+        return "AUTO"
 
     def start_route_session() -> None:
-        nonlocal route_session, route_csv_path, route_video_path, route_csv_writer, route_csv_file
+        nonlocal route_session, route_csv_path, route_video_path, route_csv_writer, route_csv_file, current_route_mode
         if route_session is not None:
             return
-        route_session = RouteSession()
+        current_route_mode = _detect_route_mode()
+        route_session = RouteSession(route_mode=current_route_mode)
         route_csv_path = route_session.route_dir / "route_frames.csv"
         route_video_path = route_session.route_dir / "route_video.mp4"
         route_csv_writer, route_csv_file = init_csv_logger(str(route_csv_path), _CSV_FIELDNAMES)
-        logger.info("Route session started: id=%s dir=%s", route_session.route_id, route_session.route_dir)
+        logger.info("Route session started: id=%s mode=%s dir=%s", route_session.route_id, route_session.route_mode, route_session.route_dir)
 
     def finalize_route_session(status: str, reason: str = "") -> None:
         nonlocal route_session, route_csv_writer, route_csv_file, route_csv_path, route_video_path, video_writer
@@ -268,8 +282,9 @@ def main() -> None:
             explicit_rejection_reason=reason,
         )
         logger.info(
-            "Route summary saved: id=%s status=%s accepted=%s reason=%s path=%s",
+            "Route summary saved: id=%s mode=%s status=%s accepted=%s reason=%s path=%s",
             summary.route_id,
+            summary.route_mode,
             status,
             summary.accepted,
             summary.rejection_reason or "-",
@@ -483,6 +498,7 @@ def main() -> None:
             csv_writer.writerow(
                 {
                     "route_id": route_session.route_id if route_session is not None else "",
+                    "route_mode": route_session.route_mode if route_session is not None else "",
                     "frame_num": frame_num,
                     "mono_timestamp": f"{loop_start:.6f}",
                     "utc_timestamp": utc_timestamp,
@@ -545,6 +561,7 @@ def main() -> None:
                 route_csv_writer.writerow(
                     {
                         "route_id": route_session.route_id,
+                        "route_mode": route_session.route_mode,
                         "frame_num": frame_num,
                         "mono_timestamp": f"{loop_start:.6f}",
                         "utc_timestamp": utc_timestamp,
