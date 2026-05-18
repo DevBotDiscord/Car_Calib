@@ -245,6 +245,7 @@ class InputController:
     def _process_button_edges(self, now: float) -> None:
         current = self._h.pressed_buttons
         for code in current - self._prev_pressed_buttons:
+            print(f"BTN_DEBUG: pressed code={code}")
             if code == config.BUTTON_REMOTE_STEER:
                 if self.cruise_active:
                     logger.info("REMOTE_STEER toggle ignored during CRUISE")
