@@ -17,16 +17,18 @@ def set_base(b1: int, b2: int, b3: int, label: str | None = None) -> None:
     if config.gpio is None:
         raise RuntimeError("pigpio is not initialized.")
 
+    if state == config.last_base_state:
+        return
+
     config.gpio.write(config.OUT1, 1 if b1 else 0)
     config.gpio.write(config.OUT2, 1 if b2 else 0)
     config.gpio.write(config.OUT3, 1 if b3 else 0)
 
-    if state != config.last_base_state:
-        if label:
-            print(f"BASE: {label} -> {state}")
-        else:
-            print(f"BASE: {state}")
-        config.last_base_state = state
+    if label:
+        print(f"BASE: {label} -> {state}")
+    else:
+        print(f"BASE: {state}")
+    config.last_base_state = state
 
 
 def stop_base() -> None:

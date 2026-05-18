@@ -29,11 +29,30 @@ def publish_status(state: str) -> None:
     config.mqtt_client.publish(config.MQTT_STATUS_TOPIC, payload, retain=False)
 
 
+def publish_route_control(command: str) -> None:
+    """Publish route control command (START/STOP) to MiniPC."""
+    if config.mqtt_client is None or not config.mqtt_connected:
+        return
+    config.mqtt_client.publish("car/control/route", command, qos=1)
+    print(f"MQTT: published route control: {command}")
+
+
+def publish_mode(mode: str) -> None:
+    """Publish control mode (AUTO/CRUISE/SQUARE/REMOTE_STEER) to MiniPC."""
+    if config.mqtt_client is None or not config.mqtt_connected:
+        return
+    config.mqtt_client.publish("car/control/mode", mode, qos=1, retain=True)
+    config.current_route_mode = mode
+    print(f"MQTT: published mode: {mode}")
+
+
 # ---------------------------------------------------------------------------
 # message handlers (one per topic)
 # ---------------------------------------------------------------------------
 
 def handle_servo_message(payload_text: str) -> None:
+    if config.manual_override_active:
+        return  # Gamepad has priority
     angle = resolve_remote_servo_angle(payload_text)
     apply_steering(angle, "MQTT")
 

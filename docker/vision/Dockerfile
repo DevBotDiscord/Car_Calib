@@ -16,7 +16,10 @@ RUN apt-get update \
         libgomp1 \
         build-essential \
         linux-libc-dev \
-    && rm -rf /var/lib/apt/lists/*
+        libnss-mdns \
+        avahi-utils \
+    && rm -rf /var/lib/apt/lists/* \
+    && sed -i 's/^hosts:.*/hosts:          files mdns4_minimal [NOTFOUND=return] dns/' /etc/nsswitch.conf
 
 COPY requirements.txt /tmp/requirements.txt
 

@@ -90,6 +90,48 @@ REMOTE_INPUT_CENTER_ANGLE = float(os.getenv("REMOTE_INPUT_CENTER_ANGLE", "90"))
 REMOTE_INPUT_MAX_ANGLE = float(os.getenv("REMOTE_INPUT_MAX_ANGLE", "120"))
 
 # ======================================================================
+# Input devices
+# ======================================================================
+KEYBOARD_DEVICE = os.getenv("KEYBOARD_DEVICE", "")
+GAMEPAD_DEVICE = os.getenv("GAMEPAD_DEVICE", "")
+GAMEPAD_NAME_HINTS = os.getenv("GAMEPAD_NAME_HINTS", "edra,joystick,gamepad,controller,pad")
+
+# Axis codes (evdev ecodes)
+STEER_AXIS = int(os.getenv("STEER_AXIS", "3"))  # ABS_RX
+DRIVE_AXIS = int(os.getenv("DRIVE_AXIS", "1"))  # ABS_Y
+HAT_Y_AXIS = int(os.getenv("HAT_Y_AXIS", "17"))  # ABS_HAT0Y
+
+# Button codes (evdev ecodes)
+BUTTON_STOP = int(os.getenv("BUTTON_STOP", "304"))  # BTN_SOUTH = A
+BUTTON_SQUARE = int(os.getenv("BUTTON_SQUARE", "305"))  # BTN_EAST = B
+BUTTON_LOCK = int(os.getenv("BUTTON_LOCK", "310"))  # BTN_TL = LB
+BUTTON_UNLOCK = int(os.getenv("BUTTON_UNLOCK", "311"))  # BTN_TR = RB
+BUTTON_REMOTE_STEER = int(os.getenv("BUTTON_REMOTE_STEER", "307"))  # BTN_NORTH = Y
+BUTTON_QUIT = int(os.getenv("BUTTON_QUIT", "315"))  # BTN_START
+BUTTON_CRUISE = int(os.getenv("BUTTON_CRUISE", "314"))  # BTN_SELECT
+BUTTON_CENTER_MINUS = int(os.getenv("BUTTON_CENTER_MINUS", "306"))  # BTN_WEST = X
+
+# Gamepad config
+GAMEPAD_STEER_DEADZONE = float(os.getenv("GAMEPAD_STEER_DEADZONE", "0.12"))
+GAMEPAD_DRIVE_DEADZONE = float(os.getenv("GAMEPAD_DRIVE_DEADZONE", "0.20"))
+INVERT_STEER_AXIS = os.getenv("INVERT_STEER_AXIS", "false").strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+INVERT_DRIVE_AXIS = os.getenv("INVERT_DRIVE_AXIS", "false").strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+
+# Steering config
+SERVO_STEP = float(os.getenv("SERVO_STEP", "20.0"))
+MANUAL_STEER_HOLD = float(os.getenv("MANUAL_STEER_HOLD", "0.25"))
+
+# Cruise control
+CRUISE_DURATION_S = float(os.getenv("CRUISE_DURATION_S", "30.0"))
+
+# Square pattern
+SQUARE_STRAIGHT_DURATION = float(os.getenv("SQUARE_STRAIGHT_DURATION_S", "5.0"))
+SQUARE_TURN_DURATION = float(os.getenv("SQUARE_TURN_DURATION_S", "1.0"))
+
+# Relay blink
+RELAY_BLINK_INTERVAL_S = float(os.getenv("RELAY_BLINK_INTERVAL_S", "0.12"))
+
+# ======================================================================
 # Base motor
 # ======================================================================
 OUT1 = int(os.getenv("BASE_OUT1", "17"))
@@ -119,3 +161,7 @@ last_base_state: tuple[int, int, int] | None = None
 # MQTT state
 mqtt_client: Any = None
 mqtt_connected = False
+
+# Control state (for gamepad override)
+manual_override_active = False
+current_route_mode = "AUTO"

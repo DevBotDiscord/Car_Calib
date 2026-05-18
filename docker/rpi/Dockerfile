@@ -43,7 +43,10 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+        libnss-mdns \
+        avahi-utils \
+    && rm -rf /var/lib/apt/lists/* \
+    && sed -i 's/^hosts:.*/hosts:          files mdns4_minimal [NOTFOUND=return] dns/' /etc/nsswitch.conf
 
 COPY requirements-rpi.txt /tmp/requirements-rpi.txt
 COPY --from=builder /tmp/wheels /tmp/wheels

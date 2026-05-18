@@ -78,15 +78,8 @@ from runtime.video_runtime_helpers import (
 )
 from vision.detector import LineDetector
 
-# Input device + control (optional, graceful fallback)
-try:
-    from control.input_controller import InputController
-    from runtime.gamepad_handler import InputDeviceHandler
-    _INPUT_ENABLED = True
-except ImportError:
-    InputController = None  # type: ignore[assignment]
-    InputDeviceHandler = None  # type: ignore[assignment]
-    _INPUT_ENABLED = False
+# MQTT control subscription (receives route/mode commands from RPi)
+from drivers.mqtt_control_client import MQTTControlClient
 
 # --------------------------------------------------------------------------- #
 # Logging configuration
@@ -198,33 +191,29 @@ def main() -> None:
     servo = ServoDriver()
     csv_writer, csv_file = init_csv_logger(args.csv_output, _CSV_FIELDNAMES)
 
-    # Input device + control setup (optional, graceful fallback)
-    input_handler: Any | None = None
-    input_controller: Any | None = None
-    base_driver = BaseDriver()
-    relay_driver = RelayDriver()
-    if _INPUT_ENABLED and InputDeviceHandler is not None:
-        from config.settings import (
-            GAMEPAD_DEVICE,
-            GAMEPAD_NAME_HINTS,
-            KEYBOARD_DEVICE,
-        )
-        input_handler = InputDeviceHandler(
-            keyboard_device_path=KEYBOARD_DEVICE,
-            gamepad_device_path=GAMEPAD_DEVICE,
-            gamepad_name_hints=tuple(GAMEPAD_NAME_HINTS.split(",")),
-        )
-        input_handler.setup()
-        logger.info(
-            "INPUT: devices detected gamepad=%s keyboard=%s",
-            input_handler.has_gamepad,
-            input_handler.has_keyboard,
-        )
-        if InputController is not None and (input_handler.has_gamepad or input_handler.has_keyboard):
-            input_controller = InputController(input_handler)
-            logger.info("INPUT: controller online")
-        else:
-            logger.info("INPUT: no input devices found, gamepad control disabled")
+    # MQTT control client setup (receives route/mode commands from RPi)
+    mqtt_control_client: MQTTControlClient | None = None
+
+    def on_route_control(payload: str) -> None:
+        nonlocal route_session, current_route_mode
+        if payload == "START":
+            if route_session is None:
+                start_route_session()
+        elif payload == "STOP":
+            if route_session is not None:
+                finalize_route_session(status="COMPLETED")
+
+    def on_mode_control(payload: str) -> None:
+        nonlocal current_route_mode
+        current_route_mode = payload
+        logger.info("MODE: received from RPi: %s", payload)
+
+    try:
+        mqtt_control_client = MQTTControlClient(on_route=on_route_control, on_mode=on_mode_control)
+        mqtt_control_client.setup()
+    except Exception as exc:
+        logger.warning("MQTT control client setup failed: %s", exc)
+        mqtt_control_client = None
 
     cap = None
     video_writer = None
@@ -246,15 +235,8 @@ def main() -> None:
     current_route_mode = "AUTO"
 
     def _detect_route_mode() -> str:
-        if input_controller is None:
-            return "AUTO"
-        if input_controller.cruise_active:
-            return "CRUISE"
-        if input_controller.square_pattern_active:
-            return "SQUARE"
-        if input_controller.controller_remote_steer_only:
-            return "REMOTE_STEER"
-        return "AUTO"
+        # Mode is set by RPi via MQTT
+        return current_route_mode
 
     def start_route_session() -> None:
         nonlocal route_session, route_csv_path, route_video_path, route_csv_writer, route_csv_file, current_route_mode
@@ -413,47 +395,6 @@ def main() -> None:
                 servo.center()
                 break
 
-            # --- input controller override ---
-            if input_controller is not None:
-                try:
-                    input_handler.poll()
-                except Exception:
-                    pass
-                decision = input_controller.process(time.monotonic())
-
-                # base motor
-                if decision.base_command:
-                    cmd = decision.base_command
-                    if cmd == "FORWARD":
-                        base_driver.forward()
-                    elif cmd == "BACKWARD":
-                        base_driver.backward()
-                    elif cmd == "STOP":
-                        base_driver.stop()
-                    elif cmd == "LOCK":
-                        base_driver.lock_base()
-                    elif cmd == "UNLOCK":
-                        base_driver.unlock_base()
-
-                # relay
-                if decision.relay_command == "ON":
-                    relay_driver.on()
-                elif decision.relay_command == "OFF":
-                    relay_driver.off()
-
-                # manual steer override
-                if decision.steer_angle is not None:
-                    servo_angle = decision.steer_angle
-
-                auto_route_active = bool(
-                    input_controller.controller_remote_steer_only
-                    or input_controller.cruise_active
-                    or input_controller.square_pattern_active
-                )
-                if auto_route_active and route_session is None:
-                    start_route_session()
-                if (not auto_route_active) and route_session is not None:
-                    finalize_route_session(status="COMPLETED")
 
             if route_session is not None:
                 angle_diff, calib_status, direction = route_session.update_frame(
@@ -736,19 +677,9 @@ def main() -> None:
     finally:
         servo.center()
         servo.close()
-        try:
-            base_driver.stop()
-            base_driver.close()
-        except Exception:
-            pass
-        try:
-            relay_driver.off()
-            relay_driver.close()
-        except Exception:
-            pass
-        if input_handler is not None:
+        if mqtt_control_client is not None:
             try:
-                input_handler.close()
+                mqtt_control_client.close()
             except Exception:
                 pass
         if cap is not None:

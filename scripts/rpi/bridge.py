@@ -10,7 +10,9 @@ import signal
 import time
 
 from . import config
-from .base import stop_base
+from .base import backward, forward, lock_base, stop_base, unlock_base
+from .controls import InputController
+from .input_handler import InputDeviceHandler
 from .steering import apply_steering, release_servo
 from .mqtt_client import close_mqtt, publish_status, setup_mqtt
 
@@ -75,6 +77,29 @@ def main() -> None:
     setup_servo_output()
     setup_mqtt()
 
+    # Setup input devices (optional, graceful fallback)
+    input_handler: InputDeviceHandler | None = None
+    input_controller: InputController | None = None
+    try:
+        input_handler = InputDeviceHandler(
+            keyboard_device_path=config.KEYBOARD_DEVICE,
+            gamepad_device_path=config.GAMEPAD_DEVICE,
+            gamepad_name_hints=tuple(config.GAMEPAD_NAME_HINTS.split(",")),
+            steer_axis=config.STEER_AXIS,
+            drive_axis=config.DRIVE_AXIS,
+            hat_y_axis=config.HAT_Y_AXIS,
+        )
+        input_handler.setup()
+        if input_handler.has_gamepad or input_handler.has_keyboard:
+            input_controller = InputController(input_handler)
+            print(f"INPUT: gamepad={input_handler.has_gamepad} keyboard={input_handler.has_keyboard}")
+        else:
+            print("INPUT: no devices found, control disabled")
+    except Exception as exc:
+        print(f"INPUT: setup failed: {exc}")
+        input_handler = None
+        input_controller = None
+
     _print_banner()
 
     if config.SERVO_RELEASE_IDLE:
@@ -83,16 +108,71 @@ def main() -> None:
         apply_steering(config.CENTER_ANGLE, "BOOT")
     stop_base()
 
-    # MQTT network I/O runs in background thread (loop_start).
-    # Main thread idles with periodic heartbeat.
+    # Main control loop: poll input, apply decisions, publish control signals
+    heartbeat_interval = 10.0
+    last_heartbeat = time.monotonic()
+
     try:
         while config.running:
-            time.sleep(10)
-            publish_status("online")
+            now = time.monotonic()
+
+            # Process input if available
+            if input_controller is not None and input_handler is not None:
+                try:
+                    input_handler.poll()
+                    decision = input_controller.process(now)
+
+                    # Apply base motor
+                    if decision.base_command:
+                        cmd = decision.base_command
+                        if cmd == "FORWARD":
+                            forward()
+                        elif cmd == "BACKWARD":
+                            backward()
+                        elif cmd == "STOP":
+                            stop_base()
+                        elif cmd == "LOCK":
+                            lock_base()
+                        elif cmd == "UNLOCK":
+                            unlock_base()
+
+                    # Apply relay
+                    if decision.relay_command:
+                        cmd = decision.relay_command
+                        if cmd == "ON":
+                            config.gpio.write(config.RELAY_PIN, 1)
+                            config.relay_on = True
+                        elif cmd == "OFF":
+                            config.gpio.write(config.RELAY_PIN, 0)
+                            config.relay_on = False
+
+                    # Manual servo override
+                    if decision.manual_steer:
+                        apply_steering(decision.steer_angle, "GAMEPAD")
+                        config.manual_override_active = True
+                    else:
+                        config.manual_override_active = False
+                        # MQTT callback will apply vision servo angle
+
+                except Exception as ctrl_exc:
+                    print(f"Control error: {ctrl_exc}")
+
+            # Periodic heartbeat
+            if (now - last_heartbeat) >= heartbeat_interval:
+                publish_status("online")
+                last_heartbeat = now
+
+            time.sleep(0.01)  # ~100Hz loop
+
     except KeyboardInterrupt:
         print("\nEXIT: Ctrl+C")
     finally:
         print("Cleaning up...")
+        if input_handler is not None:
+            try:
+                input_handler.close()
+            except Exception:
+                pass
         cleanup()
         print("Done.")
 
