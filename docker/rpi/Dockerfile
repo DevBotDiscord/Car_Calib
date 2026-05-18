@@ -45,8 +45,12 @@ RUN apt-get update \
         ca-certificates \
         libnss-mdns \
         avahi-utils \
+        avahi-daemon \
+        dbus \
     && rm -rf /var/lib/apt/lists/* \
-    && sed -i 's/^hosts:.*/hosts:          files mdns4_minimal [NOTFOUND=return] dns/' /etc/nsswitch.conf
+    && sed -i 's/^hosts:.*/hosts:          files mdns4_minimal [NOTFOUND=return] dns/' /etc/nsswitch.conf \
+    && mkdir -p /run/dbus /run/avahi-daemon \
+    && dbus-uuidgen > /etc/machine-id
 
 COPY requirements-rpi.txt /tmp/requirements-rpi.txt
 COPY --from=builder /tmp/wheels /tmp/wheels
