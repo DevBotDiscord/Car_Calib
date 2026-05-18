@@ -109,6 +109,13 @@ class InputController:
             ks.base_command = base_command
             return ks
 
+        # Gamepad steer (runs first so new input clears any pending recenter)
+        if not self.controller_remote_steer_only:
+            gs = self._gamepad_steer(now)
+            if gs is not None:
+                gs.base_command = base_command
+                return gs
+
         # Auto-recenter after steering release (sticky until next steer input)
         if self._recenter_pending:
             self._steer_angle = self._center_angle
@@ -118,14 +125,6 @@ class InputController:
         # Manual override hold
         if now < self.manual_override_until:
             return ControlDecision(base_command=base_command, manual_steer=True, steer_angle=self._steer_angle)
-
-        # Gamepad steer
-        if not self.controller_remote_steer_only:
-            gs = self._gamepad_steer(now)
-            if gs is not None:
-                gs.base_command = base_command
-                return gs
-            return ControlDecision(base_command=base_command, manual_steer=False)
 
         # Remote / idle
         return ControlDecision(base_command=base_command, manual_steer=False)
