@@ -67,6 +67,11 @@ class InputController:
         self._prev_pressed_buttons: set[int] = set()
         self._prev_pressed_keys: set[str] = set()
 
+        # Auto-return to home after a turn ends.
+        self._steering_active = False
+        self._auto_recenter_until = 0.0
+        self._auto_recenter_hold_s = float(getattr(config, "AUTO_RECENTER_HOLD_S", 0.25))
+
     def process(self, now: float) -> ControlDecision:
         """Run control logic and return a ControlDecision."""
         self._process_edge_triggers(now)
@@ -108,6 +113,11 @@ class InputController:
         # Manual override hold
         if now < self.manual_override_until:
             return ControlDecision(base_command=base_command, manual_steer=True, steer_angle=self._steer_angle)
+
+        # Auto-recenter window after steering release
+        if now < self._auto_recenter_until:
+            self._steer_angle = self._center_angle
+            return ControlDecision(base_command=base_command, manual_steer=True, steer_angle=self._center_angle)
 
         # Gamepad steer
         if not self.controller_remote_steer_only:
@@ -177,11 +187,14 @@ class InputController:
         if has_c:
             self._activate_manual_override(now)
             self._steer_angle = self._center_angle
+            self._mark_steering_active(now)
             return ControlDecision(manual_steer=True, steer_angle=self._center_angle)
         if has_d:
             self._activate_manual_override(now)
             self._steer_angle = _clamp(self._steer_angle - self._step, self.left_limit, self.right_limit)
+            self._mark_steering_active(now)
             return ControlDecision(manual_steer=True, steer_angle=self._steer_angle)
+        self._mark_steering_idle(now)
         return None
 
     def _gamepad_steer(self, now: float) -> ControlDecision | None:
@@ -190,6 +203,7 @@ class InputController:
             axis = -axis
         axis = _apply_deadzone(axis, self._gamepad_steer_deadzone)
         if axis == 0.0:
+            self._mark_steering_idle(now)
             return None
 
         if axis < 0:
@@ -199,12 +213,24 @@ class InputController:
 
         target = _clamp(target, self.left_limit, self.right_limit)
         if self._last_steer_angle is not None and abs(target - self._last_steer_angle) < self._steer_deadband_deg:
+            self._mark_steering_active(now)
             return ControlDecision(manual_steer=True, steer_angle=target)
 
         self._last_steer_angle = target
         self._steer_angle = target
         self._activate_manual_override(now)
+        self._mark_steering_active(now)
         return ControlDecision(manual_steer=True, steer_angle=target)
+
+    def _mark_steering_active(self, now: float) -> None:
+        self._steering_active = True
+        self._auto_recenter_until = 0.0
+
+    def _mark_steering_idle(self, now: float) -> None:
+        if self._steering_active:
+            self._steering_active = False
+            self._auto_recenter_until = now + self._auto_recenter_hold_s
+            logger.info("AUTO_RECENTER: %.2fs", self._auto_recenter_hold_s)
 
     def _process_edge_triggers(self, now: float) -> None:
         """Process buttons that fire on press (not hold)."""
