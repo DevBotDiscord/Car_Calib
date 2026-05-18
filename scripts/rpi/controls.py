@@ -71,6 +71,9 @@ class InputController:
         self._steering_active = False
         self._recenter_pending = False
 
+        # One-shot relay command queue (e.g. RB tap toggles the relay).
+        self._pending_relay_command: str | None = None
+
     def process(self, now: float) -> ControlDecision:
         """Run control logic and return a ControlDecision."""
         self._process_edge_triggers(now)
@@ -88,6 +91,12 @@ class InputController:
         # Square pattern
         if self.square_pattern_active:
             return self._square_pattern(now, base_command)
+
+        # Emit queued relay command first (tap/release or blink stop/start).
+        if self._pending_relay_command is not None:
+            cmd = self._pending_relay_command
+            self._pending_relay_command = None
+            return ControlDecision(relay_command=cmd)
 
         # Relay blink (RB hold)
         if config.BUTTON_UNLOCK in self._h.pressed_buttons and self.relay_rb_press_time > 0:
@@ -307,9 +316,11 @@ class InputController:
                 if self.relay_blink_active:
                     self.relay_blink_active = False
                     self.relay_on = False
+                    self._pending_relay_command = "OFF"
                     logger.info("RELAY: OFF (blink stop)")
-                elif (now - self.relay_rb_press_time) < _RELAY_BLINK_HOLD_THRESHOLD:
+                elif self.relay_rb_press_time > 0 and (now - self.relay_rb_press_time) < _RELAY_BLINK_HOLD_THRESHOLD:
                     self.relay_on = not self.relay_on
+                    self._pending_relay_command = "ON" if self.relay_on else "OFF"
                     logger.info("RELAY: %s (toggle)", "ON" if self.relay_on else "OFF")
                 self.relay_rb_press_time = 0.0
 
