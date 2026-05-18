@@ -6,6 +6,7 @@ No gamepad, keyboard, IMU, or control logic. Pure MQTT → hardware executor.
 
 from __future__ import annotations
 
+import errno
 import signal
 import time
 
@@ -154,6 +155,15 @@ def main() -> None:
                         config.manual_override_active = False
                         # MQTT callback will apply vision servo angle
 
+                except BlockingIOError:
+                    # No input event ready on non-blocking devices; skip silently.
+                    pass
+                except OSError as ctrl_exc:
+                    if ctrl_exc.errno == errno.EAGAIN:
+                        # Resource temporarily unavailable; retry next loop tick.
+                        pass
+                    else:
+                        print(f"Control error (OSError): {ctrl_exc}")
                 except Exception as ctrl_exc:
                     print(f"Control error: {ctrl_exc}")
 
