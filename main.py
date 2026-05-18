@@ -7,6 +7,11 @@ Orchestrates the 30 Hz control loop:
    :class:`~vision.detector.LineDetector`.
 3. Compute the servo angle via :class:`~control.servo_pid.ServoPID`.
 4. Send the angle to the servo via :class:`~drivers.servo_driver.ServoDriver`.
+   The driver publishes the angle as an integer over MQTT to the RPi bridge.
+
+The MiniPC also subscribes to ``car/control/route`` and ``car/control/mode``
+from the RPi gamepad/keyboard controller; those signals drive the route
+logging session lifecycle (start/stop) and tag the captured dataset.
 
 Error handling:
 - Camera initialisation failure triggers an immediate emergency stop and exit.
@@ -14,8 +19,11 @@ Error handling:
 - Per-frame hardware errors are logged but do not terminate the loop.
 
 State changes and PID values are logged to a CSV file (``run_log.csv``) in
-addition to the standard text log.
+addition to the standard text log. When a route session is active a parallel
+``route_frames.csv`` is written inside the route directory.
 """
+
+from __future__ import annotations
 
 import logging
 import sys
@@ -26,13 +34,13 @@ from typing import Any
 import cv2
 
 from config.settings import (
+    CTRL_HYSTERESIS_HIGH,
+    CTRL_HYSTERESIS_LOW,
     MAIN_CAMERA_INDEX,
     MAIN_CAMERA_RETRY_LIMIT,
     MAIN_CSV_LOG_FILE,
-    CTRL_HYSTERESIS_HIGH,
-    CTRL_HYSTERESIS_LOW,
-    MAIN_DEBUG_MODE,
     MAIN_DEBUG_FRAME_SCALE,
+    MAIN_DEBUG_MODE,
     MAIN_DEBUG_OVERLAY_SCALE,
     MAIN_DEBUG_VIDEO_OUTPUT,
     MAIN_FLIP_FRAME,
@@ -51,15 +59,14 @@ from config.settings import (
     MAIN_SHOW_DETECTOR_DEBUG,
     MAIN_SHOW_GUIDANCE_OVERLAY,
     MAIN_SHOW_PREVIEW,
-    MAIN_TERMINAL_LOG,
     MAIN_TARGET_HZ,
+    MAIN_TERMINAL_LOG,
     MAIN_VIDEO_OUTPUT_FPS,
     MAIN_VIDEO_RETRY_LIMIT,
     MAIN_WRITE_DEBUG_VIDEO,
 )
 from control.servo_pid import ServoPID
-from drivers.base_driver import BaseDriver
-from drivers.relay_driver import RelayDriver
+from drivers.mqtt_control_client import MQTTControlClient
 from drivers.servo_driver import ServoDriver
 from models.robot_state import RobotState
 from runtime.https_stream import HttpsMjpegServer, SharedFrameStore, ensure_self_signed_cert
@@ -71,15 +78,11 @@ from runtime.video_runtime_helpers import (
     draw_overlay,
     init_camera_with_retries,
     init_csv_logger,
-    init_video_writer,
+    init_live_video_writer,
     maybe_flip_frame,
-    resolve_show_preview,
     sleep_remainder,
 )
 from vision.detector import LineDetector
-
-# MQTT control subscription (receives route/mode commands from RPi)
-from drivers.mqtt_control_client import MQTTControlClient
 
 # --------------------------------------------------------------------------- #
 # Logging configuration
@@ -115,14 +118,6 @@ _CSV_FIELDNAMES = [
     "theta_horizontal",
     "reference_group_index",
     "selected_group_bbox",
-    "lateral_probe_y",
-    "lateral_left_x",
-    "lateral_right_x",
-    "lateral_tile_center_x",
-    "lateral_tile_width_px",
-    "lateral_offset_px",
-    "lateral_offset_norm",
-    "lateral_status",
     "lines_count",
     "groups_count",
     "horizontal_ok",
@@ -132,9 +127,6 @@ _CSV_FIELDNAMES = [
     "servo_center_angle",
     "servo_offset",
     "pid_error",
-    "angle_diff",
-    "calib_status",
-    "direction",
     "pid_p_term",
     "pid_i_term",
     "pid_d_term",
@@ -178,11 +170,6 @@ def main() -> None:
         hardware_retry_limit_default=MAIN_HARDWARE_RETRY_LIMIT,
     )
     args = parser.parse_args()
-    args.show_preview = resolve_show_preview(
-        show_preview=args.show_preview,
-        debug_mode=args.debug_mode,
-        argv=sys.argv[1:],
-    )
     configure_terminal_logging(args.terminal_log)
 
     state = RobotState()
@@ -190,30 +177,6 @@ def main() -> None:
     controller = ServoPID(state)
     servo = ServoDriver()
     csv_writer, csv_file = init_csv_logger(args.csv_output, _CSV_FIELDNAMES)
-
-    # MQTT control client setup (receives route/mode commands from RPi)
-    mqtt_control_client: MQTTControlClient | None = None
-
-    def on_route_control(payload: str) -> None:
-        nonlocal route_session, current_route_mode
-        if payload == "START":
-            if route_session is None:
-                start_route_session()
-        elif payload == "STOP":
-            if route_session is not None:
-                finalize_route_session(status="COMPLETED")
-
-    def on_mode_control(payload: str) -> None:
-        nonlocal current_route_mode
-        current_route_mode = payload
-        logger.info("MODE: received from RPi: %s", payload)
-
-    try:
-        mqtt_control_client = MQTTControlClient(on_route=on_route_control, on_mode=on_mode_control)
-        mqtt_control_client.setup()
-    except Exception as exc:
-        logger.warning("MQTT control client setup failed: %s", exc)
-        mqtt_control_client = None
 
     cap = None
     video_writer = None
@@ -224,38 +187,37 @@ def main() -> None:
     consecutive_hw_errors = 0
     consecutive_video_errors = 0
     stream_host = ""
-    preview_available = args.show_preview
+
+    # ----------------------------------------------------------------- #
+    # Route logging + MQTT control subscription
+    # ----------------------------------------------------------------- #
     route_session: RouteSession | None = None
-    route_csv_path = None
-    route_video_path = None
     route_csv_writer = None
     route_csv_file = None
+    current_route_mode = "AUTO"
     final_status = "COMPLETED"
     rejection_reason = ""
-    current_route_mode = "AUTO"
-
-    def _detect_route_mode() -> str:
-        # Mode is set by RPi via MQTT
-        return current_route_mode
 
     def start_route_session() -> None:
-        nonlocal route_session, route_csv_path, route_video_path, route_csv_writer, route_csv_file, current_route_mode
+        nonlocal route_session, route_csv_writer, route_csv_file
         if route_session is not None:
             return
-        current_route_mode = _detect_route_mode()
         route_session = RouteSession(route_mode=current_route_mode)
         route_csv_path = route_session.route_dir / "route_frames.csv"
-        route_video_path = route_session.route_dir / "route_video.mp4"
-        route_csv_writer, route_csv_file = init_csv_logger(str(route_csv_path), _CSV_FIELDNAMES)
-        logger.info("Route session started: id=%s mode=%s dir=%s", route_session.route_id, route_session.route_mode, route_session.route_dir)
+        route_csv_writer, route_csv_file = init_csv_logger(
+            str(route_csv_path), _CSV_FIELDNAMES
+        )
+        logger.info(
+            "Route session started: id=%s mode=%s dir=%s",
+            route_session.route_id,
+            route_session.route_mode,
+            route_session.route_dir,
+        )
 
     def finalize_route_session(status: str, reason: str = "") -> None:
-        nonlocal route_session, route_csv_writer, route_csv_file, route_csv_path, route_video_path, video_writer
+        nonlocal route_session, route_csv_writer, route_csv_file
         if route_session is None:
             return
-        if video_writer is not None:
-            video_writer.release()
-            video_writer = None
         if route_csv_file is not None:
             route_csv_file.close()
         summary = route_session.finalize(
@@ -272,15 +234,33 @@ def main() -> None:
             summary.rejection_reason or "-",
             summary.summary_path,
         )
-        if route_csv_path is not None:
-            logger.info("Route frame CSV saved: %s", route_csv_path)
-        if args.write_debug_video and route_video_path is not None:
-            logger.info("Route video saved: %s", route_video_path)
         route_session = None
         route_csv_writer = None
         route_csv_file = None
-        route_csv_path = None
-        route_video_path = None
+
+    def on_route_control(payload: str) -> None:
+        if payload == "START":
+            if route_session is None:
+                start_route_session()
+        elif payload == "STOP":
+            if route_session is not None:
+                finalize_route_session(status="COMPLETED")
+
+    def on_mode_control(payload: str) -> None:
+        nonlocal current_route_mode
+        current_route_mode = payload
+        logger.info("MODE: received from RPi: %s", payload)
+
+    mqtt_control_client: MQTTControlClient | None = None
+    try:
+        mqtt_control_client = MQTTControlClient(
+            on_route=on_route_control,
+            on_mode=on_mode_control,
+        )
+        mqtt_control_client.setup()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("MQTT control client setup failed: %s", exc)
+        mqtt_control_client = None
 
     if args.stream_enabled:
         stream_host = "0.0.0.0" if args.stream_public else args.host
@@ -304,32 +284,17 @@ def main() -> None:
         stream_server.start()
         logger.info("HTTPS MJPEG stream online: %s", stream_server.stream_url())
 
-    camera_candidates: list[int] = []
-    for idx in [_CAMERA_INDEX, 0, 1, 2, 3, 4, 5]:
-        if idx not in camera_candidates:
-            camera_candidates.append(idx)
-
-    opened_index: int | None = None
-    last_camera_error: RuntimeError | None = None
-    for candidate in camera_candidates:
-        try:
-            cap = init_camera_with_retries(
-                candidate,
-                retries=max(0, args.camera_retry_limit),
-                logger=logger,
-            )
-            opened_index = candidate
-            break
-        except RuntimeError as exc:
-            last_camera_error = exc
-            logger.warning("Camera probe failed at index=%d: %s", candidate, exc)
-
-    if cap is None or opened_index is None:
-        logger.critical("Camera auto-probe failed. Last error: %s", last_camera_error)
+    try:
+        cap = init_camera_with_retries(
+            _CAMERA_INDEX,
+            retries=max(0, args.camera_retry_limit),
+            logger=logger,
+        )
+        logger.info("Camera initialised (index=%d).", _CAMERA_INDEX)
+    except RuntimeError as exc:
+        logger.critical("Camera initialisation failed: %s", exc)
         servo.center()
         sys.exit(1)
-
-    logger.info("Camera initialised (index=%d).", opened_index)
 
     logger.info("Starting heading-hold control loop at %.0f Hz.", _TARGET_HZ)
     try:
@@ -350,8 +315,6 @@ def main() -> None:
                 theta, detector_debug = detector.get_reference_angle_debug(frame)
             else:
                 theta = detector.get_reference_angle(frame)
-            lateral_offset_norm = detector.last_lateral_offset_norm
-            lateral_offset_px = detector.last_lateral_offset_px
 
             theta_source = "live" if theta is not None else "none"
             if theta is not None:
@@ -372,19 +335,9 @@ def main() -> None:
             pid_p_term = state.pid.kp * pid_error
             pid_i_term = state.pid.ki * state.pid_integral
             pid_d_term = 0.0 if theta is None else state.pid.kd * ((pid_error - state.pid_last_error) / dt_est)
-            angle_diff = abs(theta - 90.0) if theta is not None else None
-            if theta is None:
-                direction = "UNKNOWN"
-            elif theta > 90.0:
-                direction = "RIGHT"
-            elif theta < 90.0:
-                direction = "LEFT"
-            else:
-                direction = "STRAIGHT"
-            calib_status = "MANUAL_OR_IDLE"
 
             try:
-                servo_angle = controller.update(theta, lateral_offset_norm=lateral_offset_norm)
+                servo_angle = controller.update(theta)
             except Exception as ctrl_exc:  # noqa: BLE001
                 logger.error(
                     "Controller error: %s - centering servo and stopping.",
@@ -395,9 +348,8 @@ def main() -> None:
                 servo.center()
                 break
 
-
             if route_session is not None:
-                angle_diff, calib_status, direction = route_session.update_frame(
+                route_session.update_frame(
                     mono_now=loop_start,
                     theta=theta,
                     fsm_state=state.fsm_state.name,
@@ -436,134 +388,54 @@ def main() -> None:
 
             selected_group_bbox = detector_debug.get("selected_group_bbox") if detector_debug else None
 
-            csv_writer.writerow(
-                {
-                    "route_id": route_session.route_id if route_session is not None else "",
-                    "route_mode": route_session.route_mode if route_session is not None else "",
-                    "frame_num": frame_num,
-                    "mono_timestamp": f"{loop_start:.6f}",
-                    "utc_timestamp": utc_timestamp,
-                    "loop_ms": f"{elapsed_ms:.4f}",
-                    "loop_overrun_ms": f"{overrun_ms:.4f}",
-                    "fsm_state": state.fsm_state.name,
-                    "calibration_active": int(state.calibration_active),
-                    "theta": f"{theta:.4f}" if theta is not None else "",
-                    "theta_source": theta_source,
-                    "theta_for_overlay": f"{last_known_theta:.4f}" if last_known_theta is not None else "",
-                    "theta_horizontal": (
-                        f"{detector_debug.get('theta_horizontal'):.4f}"
-                        if detector_debug and detector_debug.get("theta_horizontal") is not None
-                        else ""
-                    ),
-                    "reference_group_index": (
-                        detector_debug.get("reference_group_index", "") if detector_debug else ""
-                    ),
-                    "selected_group_bbox": _format_bbox(selected_group_bbox),
-                    "lateral_probe_y": detector_debug.get("lateral_probe_y", "") if detector_debug else "",
-                    "lateral_left_x": detector_debug.get("lateral_left_x", "") if detector_debug else "",
-                    "lateral_right_x": detector_debug.get("lateral_right_x", "") if detector_debug else "",
-                    "lateral_tile_center_x": detector_debug.get("lateral_tile_center_x", "") if detector_debug else "",
-                    "lateral_tile_width_px": detector_debug.get("lateral_tile_width_px", "") if detector_debug else "",
-                    "lateral_offset_px": (
-                        detector_debug.get("lateral_offset_px", "")
-                        if detector_debug
-                        else (f"{lateral_offset_px:.4f}" if lateral_offset_px is not None else "")
-                    ),
-                    "lateral_offset_norm": (
-                        detector_debug.get("lateral_offset_norm", "")
-                        if detector_debug
-                        else (f"{lateral_offset_norm:.6f}" if lateral_offset_norm is not None else "")
-                    ),
-                    "lateral_status": detector_debug.get("lateral_status", "") if detector_debug else "",
-                    "lines_count": detector_debug.get("lines_count", "") if detector_debug else "",
-                    "groups_count": detector_debug.get("groups_count", "") if detector_debug else "",
-                    "horizontal_ok": detector_debug.get("horizontal_ok", "") if detector_debug else "",
-                    "sanity_ok": detector_debug.get("sanity_ok", "") if detector_debug else "",
-                    "stale_output": detector_debug.get("stale_output", "") if detector_debug else "",
-                    "servo_angle": f"{servo_angle:.4f}",
-                    "servo_center_angle": f"{state.servo_center_angle:.4f}",
-                    "servo_offset": f"{(servo_angle - state.servo_center_angle):.4f}",
-                    "pid_error": f"{pid_error:.6f}",
-                    "angle_diff": f"{angle_diff:.6f}" if angle_diff is not None else "",
-                    "calib_status": calib_status,
-                    "direction": direction,
-                    "pid_p_term": f"{pid_p_term:.6f}",
-                    "pid_i_term": f"{pid_i_term:.6f}",
-                    "pid_d_term": f"{pid_d_term:.6f}",
-                    "pid_integral": f"{state.pid_integral:.6f}",
-                    "pid_last_error": f"{state.pid_last_error:.6f}",
-                    "hardware_send_latency_ms": f"{hardware_send_latency_ms:.4f}",
-                    "stream_enabled": int(args.stream_enabled),
-                    "stream_host": stream_host,
-                    "stream_port": args.port if args.stream_enabled else "",
-                }
-            )
-            if route_session is not None and route_csv_writer is not None:
-                route_csv_writer.writerow(
-                    {
-                        "route_id": route_session.route_id,
-                        "route_mode": route_session.route_mode,
-                        "frame_num": frame_num,
-                        "mono_timestamp": f"{loop_start:.6f}",
-                        "utc_timestamp": utc_timestamp,
-                        "loop_ms": f"{elapsed_ms:.4f}",
-                        "loop_overrun_ms": f"{overrun_ms:.4f}",
-                        "fsm_state": state.fsm_state.name,
-                        "calibration_active": int(state.calibration_active),
-                        "theta": f"{theta:.4f}" if theta is not None else "",
-                        "theta_source": theta_source,
-                        "theta_for_overlay": f"{last_known_theta:.4f}" if last_known_theta is not None else "",
-                        "theta_horizontal": (
-                            f"{detector_debug.get('theta_horizontal'):.4f}"
-                            if detector_debug and detector_debug.get("theta_horizontal") is not None
-                            else ""
-                        ),
-                        "reference_group_index": (
-                            detector_debug.get("reference_group_index", "") if detector_debug else ""
-                        ),
-                        "selected_group_bbox": _format_bbox(selected_group_bbox),
-                        "lateral_probe_y": detector_debug.get("lateral_probe_y", "") if detector_debug else "",
-                        "lateral_left_x": detector_debug.get("lateral_left_x", "") if detector_debug else "",
-                        "lateral_right_x": detector_debug.get("lateral_right_x", "") if detector_debug else "",
-                        "lateral_tile_center_x": detector_debug.get("lateral_tile_center_x", "") if detector_debug else "",
-                        "lateral_tile_width_px": detector_debug.get("lateral_tile_width_px", "") if detector_debug else "",
-                        "lateral_offset_px": (
-                            detector_debug.get("lateral_offset_px", "")
-                            if detector_debug
-                            else (f"{lateral_offset_px:.4f}" if lateral_offset_px is not None else "")
-                        ),
-                        "lateral_offset_norm": (
-                            detector_debug.get("lateral_offset_norm", "")
-                            if detector_debug
-                            else (f"{lateral_offset_norm:.6f}" if lateral_offset_norm is not None else "")
-                        ),
-                        "lateral_status": detector_debug.get("lateral_status", "") if detector_debug else "",
-                        "lines_count": detector_debug.get("lines_count", "") if detector_debug else "",
-                        "groups_count": detector_debug.get("groups_count", "") if detector_debug else "",
-                        "horizontal_ok": detector_debug.get("horizontal_ok", "") if detector_debug else "",
-                        "sanity_ok": detector_debug.get("sanity_ok", "") if detector_debug else "",
-                        "stale_output": detector_debug.get("stale_output", "") if detector_debug else "",
-                        "servo_angle": f"{servo_angle:.4f}",
-                        "servo_center_angle": f"{state.servo_center_angle:.4f}",
-                        "servo_offset": f"{(servo_angle - state.servo_center_angle):.4f}",
-                        "pid_error": f"{pid_error:.6f}",
-                        "angle_diff": f"{angle_diff:.6f}" if angle_diff is not None else "",
-                        "calib_status": calib_status,
-                        "direction": direction,
-                        "pid_p_term": f"{pid_p_term:.6f}",
-                        "pid_i_term": f"{pid_i_term:.6f}",
-                        "pid_d_term": f"{pid_d_term:.6f}",
-                        "pid_integral": f"{state.pid_integral:.6f}",
-                        "pid_last_error": f"{state.pid_last_error:.6f}",
-                        "hardware_send_latency_ms": f"{hardware_send_latency_ms:.4f}",
-                        "stream_enabled": int(args.stream_enabled),
-                        "stream_host": stream_host,
-                        "stream_port": args.port if args.stream_enabled else "",
-                    }
-                )
+            csv_row = {
+                "route_id": route_session.route_id if route_session is not None else "",
+                "route_mode": route_session.route_mode if route_session is not None else "",
+                "frame_num": frame_num,
+                "mono_timestamp": f"{loop_start:.6f}",
+                "utc_timestamp": utc_timestamp,
+                "loop_ms": f"{elapsed_ms:.4f}",
+                "loop_overrun_ms": f"{overrun_ms:.4f}",
+                "fsm_state": state.fsm_state.name,
+                "calibration_active": int(state.calibration_active),
+                "theta": f"{theta:.4f}" if theta is not None else "",
+                "theta_source": theta_source,
+                "theta_for_overlay": f"{last_known_theta:.4f}" if last_known_theta is not None else "",
+                "theta_horizontal": (
+                    f"{detector_debug.get('theta_horizontal'):.4f}"
+                    if detector_debug and detector_debug.get("theta_horizontal") is not None
+                    else ""
+                ),
+                "reference_group_index": (
+                    detector_debug.get("reference_group_index", "") if detector_debug else ""
+                ),
+                "selected_group_bbox": _format_bbox(selected_group_bbox),
+                "lines_count": detector_debug.get("lines_count", "") if detector_debug else "",
+                "groups_count": detector_debug.get("groups_count", "") if detector_debug else "",
+                "horizontal_ok": detector_debug.get("horizontal_ok", "") if detector_debug else "",
+                "sanity_ok": detector_debug.get("sanity_ok", "") if detector_debug else "",
+                "stale_output": detector_debug.get("stale_output", "") if detector_debug else "",
+                "servo_angle": f"{servo_angle:.4f}",
+                "servo_center_angle": f"{state.servo_center_angle:.4f}",
+                "servo_offset": f"{(servo_angle - state.servo_center_angle):.4f}",
+                "pid_error": f"{pid_error:.6f}",
+                "pid_p_term": f"{pid_p_term:.6f}",
+                "pid_i_term": f"{pid_i_term:.6f}",
+                "pid_d_term": f"{pid_d_term:.6f}",
+                "pid_integral": f"{state.pid_integral:.6f}",
+                "pid_last_error": f"{state.pid_last_error:.6f}",
+                "hardware_send_latency_ms": f"{hardware_send_latency_ms:.4f}",
+                "stream_enabled": int(args.stream_enabled),
+                "stream_host": stream_host,
+                "stream_port": args.port if args.stream_enabled else "",
+            }
+
+            csv_writer.writerow(csv_row)
             csv_file.flush()
-            if route_csv_file is not None:
-                route_csv_file.flush()
+            if route_session is not None and route_csv_writer is not None:
+                route_csv_writer.writerow(csv_row)
+                if route_csv_file is not None:
+                    route_csv_file.flush()
 
             output_frame = frame
             if args.debug_mode:
@@ -578,8 +450,6 @@ def main() -> None:
                     show_guidance_overlay=args.show_guidance_overlay,
                     start_calib_threshold_deg=CTRL_HYSTERESIS_HIGH,
                     stop_calib_threshold_deg=CTRL_HYSTERESIS_LOW,
-                    lateral_offset_norm=lateral_offset_norm,
-                    lateral_status=(detector_debug.get("lateral_status") if detector_debug else None),
                     overlay_scale=args.overlay_scale,
                 )
                 if args.show_detector_debug and detector_debug is not None:
@@ -605,16 +475,16 @@ def main() -> None:
                     interpolation=cv2.INTER_CUBIC,
                 )
 
-            if args.write_debug_video and route_session is not None and route_video_path is not None:
+            if args.write_debug_video:
                 if video_writer is None:
                     h, w = output_frame.shape[:2]
-                    video_writer = init_video_writer(
-                        str(route_video_path),
+                    video_writer, resolved_output_path = init_live_video_writer(
+                        args.video_output,
                         MAIN_VIDEO_OUTPUT_FPS,
                         w,
                         h,
                     )
-                    logger.info("Route video writer active: %s", route_video_path)
+                    logger.info("Debug video writer active: %s", resolved_output_path)
 
                 try:
                     video_writer.write(output_frame)
@@ -642,22 +512,16 @@ def main() -> None:
                     "servo_angle": servo_angle,
                     "reference_group_index": detector_debug.get("reference_group_index") if detector_debug else None,
                     "selected_group_bbox": selected_group_bbox,
-                    "lateral_offset_norm": lateral_offset_norm,
-                    "lateral_status": detector_debug.get("lateral_status") if detector_debug else None,
                 }
                 frame_store.set_frame(output_frame, telemetry)
 
-            if preview_available:
-                try:
-                    cv2.imshow("main_debug", output_frame)
-                    if (cv2.waitKey(1) & 0xFF) == ord("q"):
-                        logger.info("Quit requested from preview window.")
-                        final_status = "INTERRUPTED_MANUAL"
-                        rejection_reason = "preview_quit"
-                        break
-                except cv2.error as preview_exc:
-                    preview_available = False
-                    logger.warning("Preview disabled: %s", preview_exc)
+            if args.show_preview:
+                cv2.imshow("main_debug", output_frame)
+                if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                    logger.info("Quit requested from preview window.")
+                    final_status = "INTERRUPTED_MANUAL"
+                    rejection_reason = "preview_quit"
+                    break
 
             sleep_remainder(loop_start, _LOOP_PERIOD, logger)
 
@@ -675,21 +539,26 @@ def main() -> None:
             logger.error("Failed to center servo during shutdown: %s", center_exc)
         raise
     finally:
-        servo.center()
-        servo.close()
+        try:
+            servo.center()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            servo.close()
+        except Exception:  # noqa: BLE001
+            pass
         if mqtt_control_client is not None:
             try:
                 mqtt_control_client.close()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
         if cap is not None:
             cap.release()
         if video_writer is not None:
             video_writer.release()
-            video_writer = None
         if stream_server is not None:
             stream_server.stop()
-        if preview_available:
+        if args.show_preview:
             try:
                 cv2.destroyAllWindows()
             except cv2.error as close_preview_exc:

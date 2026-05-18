@@ -144,11 +144,21 @@ VISION_DEBUG_MASK_FILE = _get_str("VISION_DEBUG_MASK_FILE", "debug_mask.jpg")
 CTRL_HYSTERESIS_HIGH = _get_float("CTRL_HYSTERESIS_HIGH", 5.0)
 CTRL_HYSTERESIS_LOW = _get_float("CTRL_HYSTERESIS_LOW", 3.0)
 CTRL_RELOCK_VALID_FRAMES = _get_int("CTRL_RELOCK_VALID_FRAMES", 3)
-CTRL_SERVO_OUTPUT_DEADBAND_DEG = _get_float("CTRL_SERVO_OUTPUT_DEADBAND_DEG", 0.5)
-CTRL_SERVO_OUTPUT_SLEW_RATE_DEG_PER_S = _get_float("CTRL_SERVO_OUTPUT_SLEW_RATE_DEG_PER_S", 180.0)
 
 # --------------------------------------------------------------------------- #
 # Driver defaults
+# --------------------------------------------------------------------------- #
+DRIVER_SERVO_CHANNEL = _get_int("DRIVER_SERVO_CHANNEL", 0)
+DRIVER_SERVO_PULSE_MIN_US = _get_int("DRIVER_SERVO_PULSE_MIN_US", 1000)
+DRIVER_SERVO_PULSE_MAX_US = _get_int("DRIVER_SERVO_PULSE_MAX_US", 2000)
+DRIVER_SERVO_ANGLE_MIN = _get_float("DRIVER_SERVO_ANGLE_MIN", 0.0)
+DRIVER_SERVO_ANGLE_MAX = _get_float("DRIVER_SERVO_ANGLE_MAX", 180.0)
+DRIVER_MOTOR_PWM_MIN = _get_int("DRIVER_MOTOR_PWM_MIN", 0)
+DRIVER_MOTOR_PWM_MAX = _get_int("DRIVER_MOTOR_PWM_MAX", 255)
+DRIVER_MOTOR_PWM_CENTRE = _get_int("DRIVER_MOTOR_PWM_CENTRE", 128)
+
+# --------------------------------------------------------------------------- #
+# MQTT transport (servo publish + control subscribe)
 # --------------------------------------------------------------------------- #
 MQTT_BROKER_HOST = _get_str("MQTT_BROKER_HOST", "127.0.0.1")
 MQTT_BROKER_PORT = _get_int("MQTT_BROKER_PORT", 1883)
@@ -160,88 +170,13 @@ MQTT_BASE_COMMAND_TOPIC = _get_str("MQTT_BASE_COMMAND_TOPIC", "car/base/command"
 MQTT_RELAY_TOPIC = _get_str("MQTT_RELAY_TOPIC", "car/relay")
 MQTT_STATUS_TOPIC = _get_str("MQTT_STATUS_TOPIC", "car/status")
 MQTT_CLIENT_ID_PREFIX = _get_str("MQTT_CLIENT_ID_PREFIX", "car-calib")
-
-DRIVER_SERVO_CHANNEL = _get_int("DRIVER_SERVO_CHANNEL", 0)
-DRIVER_SERVO_PULSE_MIN_US = _get_int("DRIVER_SERVO_PULSE_MIN_US", 1000)
-DRIVER_SERVO_PULSE_MAX_US = _get_int("DRIVER_SERVO_PULSE_MAX_US", 2000)
-DRIVER_SERVO_ANGLE_MIN = _get_float("DRIVER_SERVO_ANGLE_MIN", 0.0)
-DRIVER_SERVO_ANGLE_MAX = _get_float("DRIVER_SERVO_ANGLE_MAX", 180.0)
 DRIVER_SERVO_MQTT_ENABLED = _get_bool("DRIVER_SERVO_MQTT_ENABLED", False)
-DRIVER_SERVO_BRIDGE_ENABLED = _get_bool("DRIVER_SERVO_BRIDGE_ENABLED", False)
-DRIVER_SERVO_BRIDGE_HOST = _get_str("DRIVER_SERVO_BRIDGE_HOST", "127.0.0.1")
-DRIVER_SERVO_BRIDGE_PORT = _get_int("DRIVER_SERVO_BRIDGE_PORT", 8765)
-DRIVER_SERVO_BRIDGE_CONNECT_TIMEOUT_S = _get_float(
-    "DRIVER_SERVO_BRIDGE_CONNECT_TIMEOUT_S",
-    1.0,
-)
-DRIVER_SERVO_BRIDGE_MIN_SEND_INTERVAL_S = _get_float(
-    "DRIVER_SERVO_BRIDGE_MIN_SEND_INTERVAL_S",
-    0.0,
-)
-DRIVER_SERVO_BRIDGE_MIN_ANGLE_DELTA = _get_float(
-    "DRIVER_SERVO_BRIDGE_MIN_ANGLE_DELTA",
-    0.0,
-)
-DRIVER_MOTOR_PWM_MIN = _get_int("DRIVER_MOTOR_PWM_MIN", 0)
-DRIVER_MOTOR_PWM_MAX = _get_int("DRIVER_MOTOR_PWM_MAX", 255)
-DRIVER_MOTOR_PWM_CENTRE = _get_int("DRIVER_MOTOR_PWM_CENTRE", 128)
 
 # --------------------------------------------------------------------------- #
-# Input device settings (MiniPC gamepad / keyboard)
-# --------------------------------------------------------------------------- #
-
-KEYBOARD_DEVICE = _get_str("KEYBOARD_DEVICE", "/dev/input/by-id/usb-YJX_CHIP_WirelessDevice-event-kbd")
-GAMEPAD_DEVICE = _get_str("GAMEPAD_DEVICE", "")
-GAMEPAD_NAME_HINTS = _get_str("GAMEPAD_NAME_HINTS", "edra,joystick,gamepad,controller,pad")
-
-# Axis codes (evdev ecodes)
-STEER_AXIS = _get_int("STEER_AXIS", 3)  # ABS_RX
-DRIVE_AXIS = _get_int("DRIVE_AXIS", 1)  # ABS_Y
-HAT_Y_AXIS = _get_int("HAT_Y_AXIS", 17)  # ABS_HAT0Y
-
-# Button codes (evdev ecodes)
-BUTTON_STOP = _get_int("BUTTON_STOP", 304)  # BTN_SOUTH = A
-BUTTON_IMU_MODE = _get_int("BUTTON_IMU_MODE", 305)  # BTN_EAST = B (square toggle)
-BUTTON_LOCK = _get_int("BUTTON_LOCK", 310)  # BTN_TL = LB
-BUTTON_UNLOCK = _get_int("BUTTON_UNLOCK", 311)  # BTN_TR = RB (relay)
-BUTTON_REMOTE_STEER_ONLY = _get_int("BUTTON_REMOTE_STEER_ONLY", 307)  # BTN_NORTH = Y
-BUTTON_QUIT = _get_int("BUTTON_QUIT", 315)  # BTN_START
-BUTTON_CRUISE = _get_int("BUTTON_CRUISE", 314)  # BTN_SELECT
-BUTTON_CENTER_PLUS = _get_int("BUTTON_CENTER_PLUS", 0)  # None in current mapping
-BUTTON_CENTER_MINUS = _get_int("BUTTON_CENTER_MINUS", 306)  # BTN_WEST = X
-
-# Gamepad config
-GAMEPAD_STEER_DEADZONE = _get_float("GAMEPAD_STEER_DEADZONE", 0.12)
-GAMEPAD_DRIVE_DEADZONE = _get_float("GAMEPAD_DRIVE_DEADZONE", 0.20)
-INVERT_STEER_AXIS = _get_bool("INVERT_STEER_AXIS", False)
-INVERT_DRIVE_AXIS = _get_bool("INVERT_DRIVE_AXIS", False)
-
-# Steering config
-SERVO_MAX_ANGLE_DEG = _get_float("SERVO_MAX_ANGLE_DEG", 45.0)
-SERVO_STEP = _get_float("SERVO_STEP", 20.0)
-STEER_DEADBAND_DEG = _get_float("STEER_DEADBAND_DEG", 1.0)
-MANUAL_STEER_HOLD = _get_float("MANUAL_STEER_HOLD", 0.25)
-
-LEFT_LIMIT = SERVO_CENTER_ANGLE - SERVO_MAX_ANGLE_DEG
-RIGHT_LIMIT = SERVO_CENTER_ANGLE + SERVO_MAX_ANGLE_DEG
-
-# Cruise control
-CRUISE_DURATION_S = _get_float("CRUISE_DURATION_S", 30.0)
-
-# Square pattern
-SQUARE_STRAIGHT_DURATION = _get_float("SQUARE_STRAIGHT_DURATION_S", 5.0)
-SQUARE_TURN_DURATION = _get_float("SQUARE_TURN_DURATION_S", 1.0)
-
-# Relay blink
-RELAY_BLINK_INTERVAL_S = _get_float("RELAY_BLINK_INTERVAL_S", 0.12)
-
 # Route logging / dataset acceptance
+# --------------------------------------------------------------------------- #
 ROUTE_LOG_ROOT = _get_str("ROUTE_LOG_ROOT", "/data/routes")
 ROUTE_DIRECTION_EPS_DEG = _get_float("ROUTE_DIRECTION_EPS_DEG", 1.0)
 ROUTE_ACCEPT_MIN_FRAMES = _get_int("ROUTE_ACCEPT_MIN_FRAMES", 60)
 ROUTE_ACCEPT_MAX_HW_ERRORS = _get_int("ROUTE_ACCEPT_MAX_HW_ERRORS", 0)
 ROUTE_ACCEPT_MAX_GAP_RATIO = _get_float("ROUTE_ACCEPT_MAX_GAP_RATIO", 0.25)
-
-# Route trigger source (current input_controller emits: cruise/square)
-ROUTE_TRIGGER_CRUISE = _get_bool("ROUTE_TRIGGER_CRUISE", True)
-ROUTE_TRIGGER_SQUARE = _get_bool("ROUTE_TRIGGER_SQUARE", True)
