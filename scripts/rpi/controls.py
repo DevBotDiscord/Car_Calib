@@ -110,14 +110,15 @@ class InputController:
             ks.base_command = base_command
             return ks
 
+        # Auto-recenter window after steering release (priority over manual hold)
+        if now < self._auto_recenter_until:
+            self._steer_angle = self._center_angle
+            self.manual_override_until = 0.0
+            return ControlDecision(base_command=base_command, manual_steer=True, steer_angle=self._center_angle)
+
         # Manual override hold
         if now < self.manual_override_until:
             return ControlDecision(base_command=base_command, manual_steer=True, steer_angle=self._steer_angle)
-
-        # Auto-recenter window after steering release
-        if now < self._auto_recenter_until:
-            self._steer_angle = self._center_angle
-            return ControlDecision(base_command=base_command, manual_steer=True, steer_angle=self._center_angle)
 
         # Gamepad steer
         if not self.controller_remote_steer_only:
@@ -194,7 +195,6 @@ class InputController:
             self._steer_angle = _clamp(self._steer_angle - self._step, self.left_limit, self.right_limit)
             self._mark_steering_active(now)
             return ControlDecision(manual_steer=True, steer_angle=self._steer_angle)
-        self._mark_steering_idle(now)
         return None
 
     def _gamepad_steer(self, now: float) -> ControlDecision | None:
