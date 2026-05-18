@@ -85,8 +85,10 @@ class InputController:
             self.cruise_active = False
             self.controller_remote_steer_only = self.cruise_prev_remote_steer_only
             self._last_steer_angle = None
+            publish_mode("AUTO")
+            publish_route_control("STOP")
             logger.info("CRUISE: finished")
-            return ControlDecision(base_command="STOP", route_command="STOP")
+            return ControlDecision(base_command="STOP")
 
         # Square pattern
         if self.square_pattern_active:
@@ -254,7 +256,6 @@ class InputController:
     def _process_button_edges(self, now: float) -> None:
         current = self._h.pressed_buttons
         for code in current - self._prev_pressed_buttons:
-            print(f"BTN_DEBUG: pressed code={code}")
             if code == config.BUTTON_REMOTE_STEER:
                 if self.cruise_active:
                     logger.info("REMOTE_STEER toggle ignored during CRUISE")
