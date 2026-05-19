@@ -566,44 +566,44 @@ _DASHBOARD_HTML = """<!doctype html>
   <title>car-calib route dashboard</title>
   <style>
     * { box-sizing: border-box; }
-    body { font-family: system-ui, sans-serif; background: #0d0d0f; color: #eee; margin: 0; padding: 20px; font-size: 15px; }
-    h1 { margin: 0 0 16px; font-size: 22px; letter-spacing: 0.3px; }
-    h2 { font-size: 17px; margin: 0 0 10px; }
-    h3 { font-size: 14px; margin: 16px 0 6px; color: #aaa; text-transform: uppercase; letter-spacing: 0.6px; }
-    .layout { display: grid; grid-template-columns: minmax(420px, 55vw) 1fr; gap: 20px; }
-    .panel { background: #16171a; border: 1px solid #2a2c30; border-radius: 10px; padding: 16px; }
-    img.stream { width: 85%; max-width: 800px; border: 1px solid #2a2c30; border-radius: 6px; background: #000; display: block; }
-    .row { display: flex; gap: 10px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
-    select, input, button { background: #1f2125; color: #eee; border: 1px solid #3a3d42; padding: 9px 12px; border-radius: 6px; font-size: 14px; }
-    select { min-width: 220px; }
-    input[type=number] { width: 110px; }
+    body { font-family: system-ui, sans-serif; background: #0d0d0f; color: #eee; margin: 0; padding: 24px; font-size: 18px; }
+    h1 { margin: 0 0 20px; font-size: 28px; letter-spacing: 0.4px; }
+    h2 { font-size: 22px; margin: 0 0 14px; }
+    h3 { font-size: 18px; margin: 20px 0 8px; color: #aaa; text-transform: uppercase; letter-spacing: 0.7px; }
+    .layout { display: grid; grid-template-columns: minmax(500px, 55vw) 1fr; gap: 24px; }
+    .panel { background: #16171a; border: 1px solid #2a2c30; border-radius: 12px; padding: 20px; }
+    img.stream { width: 85%; max-width: 960px; border: 1px solid #2a2c30; border-radius: 8px; background: #000; display: block; }
+    .row { display: flex; gap: 12px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+    select, input, button { background: #1f2125; color: #eee; border: 1px solid #3a3d42; padding: 11px 14px; border-radius: 7px; font-size: 17px; }
+    select { min-width: 260px; }
+    input[type=number] { width: 130px; }
     button { cursor: pointer; transition: background 0.12s; }
     button:hover { background: #2a2d33; }
-    button.primary { background: #2a8c5a; border-color: #3fb37a; color: #fff; font-weight: 600; padding: 11px 18px; font-size: 15px; }
+    button.primary { background: #2a8c5a; border-color: #3fb37a; color: #fff; font-weight: 600; padding: 13px 22px; font-size: 18px; }
     button.primary:hover { background: #34a36b; }
-    button.danger { background: #8c2a2a; border-color: #b34040; color: #fff; padding: 11px 18px; font-size: 15px; }
+    button.danger { background: #8c2a2a; border-color: #b34040; color: #fff; padding: 13px 22px; font-size: 18px; }
     button.danger:hover { background: #a33434; }
-    button.rm { background: #2a2c30; border-color: #4a4c50; color: #f88; padding: 4px 10px; font-size: 13px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-    th { text-align: left; padding: 8px 10px; border-bottom: 2px solid #2a2c30; font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
-    td { padding: 9px 10px; border-bottom: 1px solid #232427; font-size: 14px; }
+    button.rm { background: #2a2c30; border-color: #4a4c50; color: #f88; padding: 6px 12px; font-size: 16px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th { text-align: left; padding: 10px 12px; border-bottom: 2px solid #2a2c30; font-size: 14px; color: #888; text-transform: uppercase; letter-spacing: 0.6px; }
+    td { padding: 11px 12px; border-bottom: 1px solid #232427; font-size: 17px; }
     tr.step-row { transition: background 0.15s; }
     tr.done { color: #6a8; background: rgba(60, 140, 90, 0.08); }
     tr.done td.idx::before { content: \"✓ \"; color: #4cb37a; }
-    tr.active { background: rgba(255, 200, 80, 0.18); color: #ffd870; font-weight: 600; box-shadow: inset 4px 0 0 #ffb840; }
+    tr.active { background: rgba(255, 200, 80, 0.18); color: #ffd870; font-weight: 600; box-shadow: inset 5px 0 0 #ffb840; }
     tr.active td.idx::before { content: \"▶ \"; color: #ffb840; }
     tr.pending { color: #888; }
-    pre { background: #0a0a0c; padding: 10px; border-radius: 6px; max-height: 220px; overflow: auto; font-size: 12px; border: 1px solid #2a2c30; }
-    .muted { color: #888; font-size: 13px; }
-    .pill { display: inline-block; padding: 3px 9px; border-radius: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.3px; }
+    pre { background: #0a0a0c; padding: 12px; border-radius: 7px; max-height: 264px; overflow: auto; font-size: 14px; border: 1px solid #2a2c30; }
+    .muted { color: #888; font-size: 16px; }
+    .pill { display: inline-block; padding: 4px 11px; border-radius: 14px; font-size: 14px; font-weight: 600; letter-spacing: 0.4px; }
     .pill-idle { background: #2a2c30; color: #888; }
     .pill-running { background: #2a8c5a; color: #fff; }
     .pill-error { background: #8c2a2a; color: #fff; }
-    .telemetry-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-top: 12px; }
-    .tile { background: #1a1c20; border: 1px solid #2a2c30; border-radius: 6px; padding: 8px 10px; }
-    .tile .k { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
-    .tile .v { font-size: 14px; font-weight: 600; margin-top: 2px; word-break: break-all; }
-    .progress { height: 6px; background: #1a1c20; border-radius: 3px; overflow: hidden; margin-top: 8px; }
+    .telemetry-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 10px; margin-top: 14px; }
+    .tile { background: #1a1c20; border: 1px solid #2a2c30; border-radius: 7px; padding: 10px 12px; }
+    .tile .k { font-size: 13px; color: #888; text-transform: uppercase; letter-spacing: 0.6px; }
+    .tile .v { font-size: 17px; font-weight: 600; margin-top: 3px; word-break: break-all; }
+    .progress { height: 7px; background: #1a1c20; border-radius: 4px; overflow: hidden; margin-top: 10px; }
     .progress > div { height: 100%; background: linear-gradient(90deg, #2a8c5a, #4cb37a); transition: width 0.2s; }
   </style>
 </head>
