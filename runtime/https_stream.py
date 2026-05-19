@@ -299,31 +299,59 @@ _DASHBOARD_HTML = """<!doctype html>
   <meta charset=\"utf-8\">
   <title>car-calib route dashboard</title>
   <style>
-    body { font-family: system-ui, sans-serif; background: #111; color: #eee; margin: 0; padding: 16px; }
-    h1 { margin: 0 0 12px; font-size: 18px; }
-    .layout { display: grid; grid-template-columns: minmax(360px, 60vw) 1fr; gap: 16px; }
-    .panel { background: #1c1c1c; border: 1px solid #333; border-radius: 8px; padding: 12px; }
-    img.stream { width: 100%; max-width: 960px; border: 1px solid #333; background: #000; }
-    .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
-    select, input, button { background: #222; color: #eee; border: 1px solid #555; padding: 6px 8px; border-radius: 4px; }
-    button { cursor: pointer; }
-    button.primary { background: #285; border-color: #4a8; color: #001; font-weight: 600; }
-    button.danger { background: #722; border-color: #a44; color: #fee; }
-    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-    th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #333; font-size: 13px; }
-    pre { background: #0a0a0a; padding: 8px; border-radius: 4px; max-height: 200px; overflow: auto; font-size: 12px; }
-    .muted { color: #888; font-size: 12px; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; background: #0d0d0f; color: #eee; margin: 0; padding: 20px; font-size: 15px; }
+    h1 { margin: 0 0 16px; font-size: 22px; letter-spacing: 0.3px; }
+    h2 { font-size: 17px; margin: 0 0 10px; }
+    h3 { font-size: 14px; margin: 16px 0 6px; color: #aaa; text-transform: uppercase; letter-spacing: 0.6px; }
+    .layout { display: grid; grid-template-columns: minmax(420px, 55vw) 1fr; gap: 20px; }
+    .panel { background: #16171a; border: 1px solid #2a2c30; border-radius: 10px; padding: 16px; }
+    img.stream { width: 100%; border: 1px solid #2a2c30; border-radius: 6px; background: #000; display: block; }
+    .row { display: flex; gap: 10px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+    select, input, button { background: #1f2125; color: #eee; border: 1px solid #3a3d42; padding: 9px 12px; border-radius: 6px; font-size: 14px; }
+    select { min-width: 220px; }
+    input[type=number] { width: 110px; }
+    button { cursor: pointer; transition: background 0.12s; }
+    button:hover { background: #2a2d33; }
+    button.primary { background: #2a8c5a; border-color: #3fb37a; color: #fff; font-weight: 600; padding: 11px 18px; font-size: 15px; }
+    button.primary:hover { background: #34a36b; }
+    button.danger { background: #8c2a2a; border-color: #b34040; color: #fff; padding: 11px 18px; font-size: 15px; }
+    button.danger:hover { background: #a33434; }
+    button.rm { background: #2a2c30; border-color: #4a4c50; color: #f88; padding: 4px 10px; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th { text-align: left; padding: 8px 10px; border-bottom: 2px solid #2a2c30; font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+    td { padding: 9px 10px; border-bottom: 1px solid #232427; font-size: 14px; }
+    tr.step-row { transition: background 0.15s; }
+    tr.done { color: #6a8; background: rgba(60, 140, 90, 0.08); }
+    tr.done td.idx::before { content: \"✓ \"; color: #4cb37a; }
+    tr.active { background: rgba(255, 200, 80, 0.18); color: #ffd870; font-weight: 600; box-shadow: inset 4px 0 0 #ffb840; }
+    tr.active td.idx::before { content: \"▶ \"; color: #ffb840; }
+    tr.pending { color: #888; }
+    pre { background: #0a0a0c; padding: 10px; border-radius: 6px; max-height: 220px; overflow: auto; font-size: 12px; border: 1px solid #2a2c30; }
+    .muted { color: #888; font-size: 13px; }
+    .pill { display: inline-block; padding: 3px 9px; border-radius: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.3px; }
+    .pill-idle { background: #2a2c30; color: #888; }
+    .pill-running { background: #2a8c5a; color: #fff; }
+    .pill-error { background: #8c2a2a; color: #fff; }
+    .telemetry-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-top: 12px; }
+    .tile { background: #1a1c20; border: 1px solid #2a2c30; border-radius: 6px; padding: 8px 10px; }
+    .tile .k { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+    .tile .v { font-size: 14px; font-weight: 600; margin-top: 2px; word-break: break-all; }
+    .progress { height: 6px; background: #1a1c20; border-radius: 3px; overflow: hidden; margin-top: 8px; }
+    .progress > div { height: 100%; background: linear-gradient(90deg, #2a8c5a, #4cb37a); transition: width 0.2s; }
   </style>
 </head>
 <body>
   <h1>car-calib · route dashboard</h1>
   <div class=\"layout\">
     <div class=\"panel\">
+      <h2>Live stream</h2>
       <img id=\"stream\" class=\"stream\" alt=\"camera stream\">
-      <div class=\"muted\" id=\"telemetry\">telemetry: …</div>
+      <h3>Telemetry</h3>
+      <div class=\"telemetry-grid\" id=\"telemetryGrid\"></div>
     </div>
     <div class=\"panel\">
-      <h2 style=\"font-size:15px;margin:0 0 8px\">Route script builder</h2>
+      <h2>Route script builder</h2>
       <div class=\"row\">
         <select id=\"action\">
           <option value=\"forward\">forward (FORWARD + center)</option>
@@ -333,22 +361,28 @@ _DASHBOARD_HTML = """<!doctype html>
           <option value=\"straight\">straight (alias)</option>
           <option value=\"stop\">stop / pause</option>
         </select>
-        <input id=\"duration\" type=\"number\" min=\"0\" step=\"0.5\" value=\"2\" style=\"width: 90px\">
+        <input id=\"duration\" type=\"number\" min=\"0\" step=\"0.5\" value=\"2\">
         <span class=\"muted\">seconds</span>
         <button id=\"add\">+ add step</button>
-        <button id=\"clear\">clear</button>
+        <button id=\"clear\">clear all</button>
       </div>
+
+      <h3>Steps</h3>
       <table id=\"steps\">
-        <thead><tr><th>#</th><th>action</th><th>duration_s</th><th></th></tr></thead>
+        <thead><tr><th style=\"width:50px\">#</th><th>Action</th><th style=\"width:120px\">Duration</th><th style=\"width:70px\"></th></tr></thead>
         <tbody></tbody>
       </table>
-      <div class=\"row\" style=\"margin-top:12px\">
+
+      <div class=\"row\" style=\"margin-top:18px\">
         <button id=\"run\" class=\"primary\">▶ run script (auto-record)</button>
         <button id=\"stop\" class=\"danger\">■ stop</button>
-        <span id=\"runState\" class=\"muted\">idle</span>
+        <span id=\"runPill\" class=\"pill pill-idle\">idle</span>
+        <span id=\"runDetail\" class=\"muted\"></span>
       </div>
-      <h3 style=\"font-size:13px;margin:14px 0 4px\">JSON preview</h3>
-      <pre id=\"preview\">[]</pre>
+      <div class=\"progress\"><div id=\"progressBar\" style=\"width:0%\"></div></div>
+
+      <h3>JSON preview</h3>
+      <pre id=\"preview\">{\n  \"steps\": []\n}</pre>
     </div>
   </div>
 <script>
@@ -360,49 +394,86 @@ document.getElementById(\"stream\").src = STREAM + qp;
 const steps = [];
 const tbody = document.querySelector(\"#steps tbody\");
 const preview = document.getElementById(\"preview\");
-const runState = document.getElementById(\"runState\");
-const telemetry = document.getElementById(\"telemetry\");
+const runPill = document.getElementById(\"runPill\");
+const runDetail = document.getElementById(\"runDetail\");
+const progressBar = document.getElementById(\"progressBar\");
+const telemetryGrid = document.getElementById(\"telemetryGrid\");
+let currentRunningStep = 0;
+let isRunning = false;
 
 function render() {
   tbody.innerHTML = \"\";
   steps.forEach((s, i) => {
     const tr = document.createElement(\"tr\");
-    tr.innerHTML = `<td>${i+1}</td><td>${s.action}</td><td>${s.duration_s}</td><td><button data-i=\"${i}\" class=\"rm\">×</button></td>`;
+    tr.className = \"step-row\";
+    tr.dataset.idx = i;
+    if (isRunning) {
+      if (i + 1 < currentRunningStep) tr.classList.add(\"done\");
+      else if (i + 1 === currentRunningStep) tr.classList.add(\"active\");
+      else tr.classList.add(\"pending\");
+    }
+    tr.innerHTML = `<td class=\"idx\">${i+1}</td><td>${s.action}</td><td>${s.duration_s.toFixed(1)} s</td><td>${isRunning ? \"\" : `<button data-i=\"${i}\" class=\"rm\">×</button>`}</td>`;
     tbody.appendChild(tr);
   });
   preview.textContent = JSON.stringify({steps}, null, 2);
 }
 
 document.getElementById(\"add\").onclick = () => {
+  if (isRunning) return;
   const action = document.getElementById(\"action\").value;
   const duration_s = parseFloat(document.getElementById(\"duration\").value || \"0\");
   if (!isFinite(duration_s) || duration_s < 0) return;
   steps.push({action, duration_s});
   render();
 };
-document.getElementById(\"clear\").onclick = () => { steps.length = 0; render(); };
+document.getElementById(\"clear\").onclick = () => {
+  if (isRunning) return;
+  steps.length = 0;
+  render();
+};
 tbody.onclick = (e) => {
+  if (isRunning) return;
   const t = e.target;
   if (t.classList.contains(\"rm\")) { steps.splice(parseInt(t.dataset.i, 10), 1); render(); }
 };
 
-async function postJSON(url, body) {
-  const r = await fetch(url + qp, {method: \"POST\", headers: {\"Content-Type\": \"application/json\"}, body: JSON.stringify(body)});
-  return await r.json().catch(() => ({}));
-}
-
 document.getElementById(\"run\").onclick = async () => {
-  if (steps.length === 0) { runState.textContent = \"add steps first\"; return; }
-  runState.textContent = \"submitting…\";
+  if (steps.length === 0) { runDetail.textContent = \"add steps first\"; return; }
+  runDetail.textContent = \"submitting…\";
   const r = await fetch(\"/route/script\" + qp, {method: \"POST\", headers: {\"Content-Type\": \"application/json\"}, body: JSON.stringify({steps})});
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) { runState.textContent = \"error: \" + (j.detail || r.status); return; }
-  runState.textContent = \"running\";
+  if (!r.ok) { runDetail.textContent = \"error: \" + JSON.stringify(j.detail || r.status); return; }
+  runDetail.textContent = \"\";
 };
 document.getElementById(\"stop\").onclick = async () => {
   await fetch(\"/route/script/stop\" + qp, {method: \"POST\"});
-  runState.textContent = \"stopping\";
+  runDetail.textContent = \"stopping…\";
 };
+
+function setPill(klass, text) {
+  runPill.className = \"pill \" + klass;
+  runPill.textContent = text;
+}
+
+function buildTile(k, v) {
+  const el = document.createElement(\"div\");
+  el.className = \"tile\";
+  el.innerHTML = `<div class=\"k\">${k}</div><div class=\"v\">${v ?? '-'}</div>`;
+  return el;
+}
+
+function renderTelemetry(t) {
+  telemetryGrid.innerHTML = \"\";
+  const fields = [
+    [\"route_id\", t.route_id],
+    [\"mode\", t.route_mode],
+    [\"fsm\", t.fsm_state],
+    [\"theta\", t.theta != null ? Number(t.theta).toFixed(2) + \"°\" : null],
+    [\"servo\", t.servo_angle != null ? Number(t.servo_angle).toFixed(2) + \"°\" : null],
+    [\"frame\", t.frame_num],
+  ];
+  fields.forEach(([k, v]) => telemetryGrid.appendChild(buildTile(k, v)));
+}
 
 async function pollStatus() {
   try {
@@ -410,21 +481,38 @@ async function pollStatus() {
     if (r.ok) {
       const j = await r.json();
       const st = j.status || {};
-      const cur = st.step ? `${st.step.action} ${st.step.duration_s}s` : \"-\";
-      runState.textContent = st.running ? `running step ${st.current_step}/${st.total} (${cur})` : (st.last_error ? (\"error: \" + st.last_error) : \"idle\");
+      const wasRunning = isRunning;
+      isRunning = !!st.running;
+      currentRunningStep = st.current_step || 0;
+      if (st.running) {
+        setPill(\"pill-running\", `running ${currentRunningStep}/${st.total}`);
+        const cur = st.step ? `${st.step.action} ${st.step.duration_s}s` : \"\";
+        runDetail.textContent = cur;
+        progressBar.style.width = (st.total ? (currentRunningStep / st.total * 100) : 0) + \"%\";
+      } else if (st.last_error) {
+        setPill(\"pill-error\", \"error\");
+        runDetail.textContent = st.last_error;
+        progressBar.style.width = \"0%\";
+      } else {
+        setPill(\"pill-idle\", \"idle\");
+        if (wasRunning) runDetail.textContent = \"finished\";
+        progressBar.style.width = \"0%\";
+        currentRunningStep = 0;
+      }
+      if (wasRunning !== isRunning || st.running) render();
     }
   } catch (e) {}
   try {
     const r2 = await fetch(STATUS + qp);
     if (r2.ok) {
       const j2 = await r2.json();
-      const t = j2.telemetry || {};
-      telemetry.textContent = `route_id=${t.route_id||'-'} mode=${t.route_mode||'-'} fsm=${t.fsm_state||'-'} servo=${t.servo_angle||'-'} theta=${t.theta||'-'}`;
+      renderTelemetry(j2.telemetry || {});
     }
   } catch (e) {}
 }
-setInterval(pollStatus, 800);
+setInterval(pollStatus, 500);
 render();
+renderTelemetry({});
 </script>
 </body>
 </html>
