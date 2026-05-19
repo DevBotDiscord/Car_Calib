@@ -220,14 +220,14 @@ class HttpsMjpegServer:
         def routes_list(token: str = "", limit: int = 30) -> Any:
             _check_token(token)
             from config.settings import ROUTE_LOG_ROOT
-            root = Path(ROUTE_LOG_ROOT)
-            if not root.exists():
-                root = Path("logs/routes")
+            root = _resolve_route_root(ROUTE_LOG_ROOT)
             if not root.exists():
                 return JSONResponse({"ok": True, "routes": []})
             entries: list[dict[str, Any]] = []
             for child in sorted(root.iterdir(), reverse=True):
                 if not child.is_dir():
+                    continue
+                if child.name.startswith("_"):
                     continue
                 summary_path = child / "route_summary.json"
                 zip_path = child.parent / (child.name + ".zip")
@@ -250,27 +250,82 @@ class HttpsMjpegServer:
         @app.get("/routes/download/{name}")
         def routes_download(name: str, token: str = "") -> Any:
             _check_token(token)
-            from config.settings import ROUTE_LOG_ROOT
-            # Reject path traversal: only basename, no slashes/backslashes/..
-            if "/" in name or "\\" in name or ".." in name or name.startswith("."):
-                raise HTTPException(status_code=400, detail="invalid_name")
-            root = Path(ROUTE_LOG_ROOT)
-            if not root.exists():
-                root = Path("logs/routes")
-            zip_path = (root / f"{name}.zip").resolve()
-            try:
-                root_resolved = root.resolve()
-            except OSError as exc:
-                raise HTTPException(status_code=500, detail=f"root_resolve: {exc}") from exc
-            if not str(zip_path).startswith(str(root_resolved) + "/") and zip_path.parent != root_resolved:
-                raise HTTPException(status_code=400, detail="path_outside_root")
-            if not zip_path.exists():
-                raise HTTPException(status_code=404, detail="zip_not_found")
+            zip_path = _resolve_route_zip(name)
             return Response(
                 content=zip_path.read_bytes(),
                 media_type="application/zip",
                 headers={"Content-Disposition": f'attachment; filename=\"{name}.zip\"'},
             )
+
+        @app.delete("/routes/{name}")
+        def routes_delete(name: str, token: str = "") -> Any:
+            _check_token(token)
+            removed = _delete_route_dir_and_zip(name)
+            return JSONResponse({"ok": True, "removed": removed})
+
+        @app.post("/routes/delete_all")
+        def routes_delete_all(token: str = "") -> Any:
+            _check_token(token)
+            from config.settings import ROUTE_LOG_ROOT
+            root = _resolve_route_root(ROUTE_LOG_ROOT)
+            count = 0
+            errors: list[str] = []
+            if root.exists():
+                import shutil as _shutil
+                for child in list(root.iterdir()):
+                    if child.name.startswith("_"):
+                        continue  # keep _presets and similar metadata
+                    try:
+                        if child.is_dir():
+                            _shutil.rmtree(child)
+                            count += 1
+                        elif child.suffix == ".zip":
+                            child.unlink()
+                            count += 1
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(f"{child.name}: {exc}")
+            return JSONResponse({"ok": not errors, "removed": count, "errors": errors})
+
+        @app.get("/presets")
+        def presets_list(token: str = "") -> Any:
+            _check_token(token)
+            return JSONResponse({"ok": True, "presets": _presets_list()})
+
+        @app.get("/presets/{name}")
+        def presets_get(name: str, token: str = "") -> Any:
+            _check_token(token)
+            data = _preset_load(name)
+            if data is None:
+                raise HTTPException(status_code=404, detail="preset_not_found")
+            return JSONResponse({"ok": True, "preset": data})
+
+        @app.put("/presets/{name}")
+        async def presets_put(name: str, request: _FastAPIRequest, token: str = "") -> Any:
+            _check_token(token)
+            try:
+                payload = await request.json()
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"invalid_json: {exc}") from exc
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=400, detail="payload_must_be_object")
+            from runtime.route_script import validate_steps
+            try:
+                steps = validate_steps(payload.get("steps"))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            try:
+                _preset_save(name, steps, payload.get("description"))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return JSONResponse({"ok": True, "preset": _preset_load(name)})
+
+        @app.delete("/presets/{name}")
+        def presets_delete(name: str, token: str = "") -> Any:
+            _check_token(token)
+            removed = _preset_delete(name)
+            if not removed:
+                raise HTTPException(status_code=404, detail="preset_not_found")
+            return JSONResponse({"ok": True})
 
         return app
 
@@ -356,6 +411,148 @@ def _load_summary_brief(path: Path) -> dict[str, Any]:
     }
 
 
+def _resolve_route_root(route_log_root: str) -> Path:
+    root = Path(route_log_root)
+    if not root.exists():
+        fallback = Path("logs/routes")
+        if fallback.exists():
+            return fallback
+    return root
+
+
+def _safe_basename(name: str) -> str:
+    if "/" in name or "\\" in name or ".." in name or name.startswith("."):
+        raise _http_invalid_name()
+    return name
+
+
+def _http_invalid_name() -> Exception:
+    fastapi_module = importlib.import_module("fastapi")
+    return fastapi_module.HTTPException(status_code=400, detail="invalid_name")
+
+
+def _resolve_route_zip(name: str) -> Path:
+    from config.settings import ROUTE_LOG_ROOT
+    name = _safe_basename(name)
+    root = _resolve_route_root(ROUTE_LOG_ROOT)
+    zip_path = (root / f"{name}.zip").resolve()
+    try:
+        root_resolved = root.resolve()
+    except OSError as exc:
+        fastapi_module = importlib.import_module("fastapi")
+        raise fastapi_module.HTTPException(status_code=500, detail=f"root_resolve: {exc}") from exc
+    if zip_path.parent != root_resolved:
+        fastapi_module = importlib.import_module("fastapi")
+        raise fastapi_module.HTTPException(status_code=400, detail="path_outside_root")
+    if not zip_path.exists():
+        fastapi_module = importlib.import_module("fastapi")
+        raise fastapi_module.HTTPException(status_code=404, detail="zip_not_found")
+    return zip_path
+
+
+def _delete_route_dir_and_zip(name: str) -> dict[str, bool]:
+    import shutil as _shutil
+    from config.settings import ROUTE_LOG_ROOT
+    name = _safe_basename(name)
+    root = _resolve_route_root(ROUTE_LOG_ROOT)
+    try:
+        root_resolved = root.resolve()
+    except OSError as exc:
+        fastapi_module = importlib.import_module("fastapi")
+        raise fastapi_module.HTTPException(status_code=500, detail=f"root_resolve: {exc}") from exc
+    out = {"dir": False, "zip": False}
+    dir_path = (root / name).resolve()
+    if dir_path.parent == root_resolved and dir_path.exists() and dir_path.is_dir():
+        _shutil.rmtree(dir_path)
+        out["dir"] = True
+    zip_path = (root / f"{name}.zip").resolve()
+    if zip_path.parent == root_resolved and zip_path.exists():
+        zip_path.unlink()
+        out["zip"] = True
+    return out
+
+
+# ----- preset CRUD ---------------------------------------------------------
+
+_PRESET_NAME_MAX = 64
+
+
+def _preset_dir() -> Path:
+    from config.settings import ROUTE_LOG_ROOT
+    root = _resolve_route_root(ROUTE_LOG_ROOT)
+    p = root / "_presets"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _preset_path(name: str) -> Path:
+    if not name or len(name) > _PRESET_NAME_MAX:
+        raise ValueError(f"preset name length must be 1..{_PRESET_NAME_MAX}")
+    safe = _safe_basename(name)
+    # restrict charset to ASCII alnum + dash/underscore/space
+    for ch in safe:
+        if not (ch.isalnum() or ch in "-_ "):
+            raise ValueError(f"preset name char not allowed: {ch!r}")
+    return _preset_dir() / f"{safe}.json"
+
+
+def _preset_save(name: str, steps: list[dict[str, Any]], description: Any | None) -> None:
+    import json as _json
+    path = _preset_path(name)
+    payload = {
+        "name": name,
+        "description": str(description) if description is not None else "",
+        "steps": steps,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    path.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _preset_load(name: str) -> dict[str, Any] | None:
+    import json as _json
+    try:
+        path = _preset_path(name)
+    except ValueError:
+        return None
+    if not path.exists():
+        return None
+    try:
+        return _json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _preset_delete(name: str) -> bool:
+    try:
+        path = _preset_path(name)
+    except ValueError:
+        return False
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
+def _presets_list() -> list[dict[str, Any]]:
+    import json as _json
+    out: list[dict[str, Any]] = []
+    pdir = _preset_dir()
+    if not pdir.exists():
+        return out
+    for child in sorted(pdir.glob("*.json")):
+        try:
+            data = _json.loads(child.read_text(encoding="utf-8"))
+            out.append({
+                "name": data.get("name", child.stem),
+                "description": data.get("description", ""),
+                "steps_count": len(data.get("steps", []) or []),
+                "updated_at": data.get("updated_at"),
+            })
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
 def _normalize_path(path: str) -> str:
     if not path:
         return "/"
@@ -436,6 +633,15 @@ _DASHBOARD_HTML = """<!doctype html>
         <button id=\"clear\">clear all</button>
       </div>
 
+      <div class=\"row\" style=\"margin-top:6px;border-top:1px solid #2a2c30;padding-top:10px\">
+        <span class=\"muted\">presets:</span>
+        <select id=\"presetSelect\" style=\"min-width:200px\"><option value=\"\">— select preset —</option></select>
+        <button id=\"presetLoad\">load</button>
+        <button id=\"presetDelete\" class=\"rm\" style=\"padding:9px 12px\">delete</button>
+        <input id=\"presetName\" type=\"text\" placeholder=\"preset name\" style=\"flex:1;min-width:140px\">
+        <button id=\"presetSave\">save current</button>
+      </div>
+
       <h3>Steps</h3>
       <table id=\"steps\">
         <thead><tr><th style=\"width:50px\">#</th><th>Action</th><th style=\"width:120px\">Duration</th><th style=\"width:70px\"></th></tr></thead>
@@ -456,7 +662,7 @@ _DASHBOARD_HTML = """<!doctype html>
   </div>
   <div class=\"panel\" style=\"margin-top:20px\">
     <h2>Recent routes</h2>
-    <div class=\"row\"><button id=\"refreshRoutes\">↻ refresh</button><span class=\"muted\" id=\"routesMuted\">auto-refresh every 5s</span></div>
+    <div class=\"row\"><button id=\"refreshRoutes\">↻ refresh</button><button id=\"deleteAllRoutes\" class=\"danger\" style=\"padding:9px 14px;font-size:13px\">🗑 delete all</button><span class=\"muted\" id=\"routesMuted\">auto-refresh every 5s</span></div>
     <table id=\"routesTable\">
       <thead><tr><th>Route ID</th><th>Mode</th><th>Status</th><th>Frames</th><th>Elapsed</th><th>Zip size</th><th>Ended (UTC)</th><th></th></tr></thead>
       <tbody></tbody>
@@ -615,8 +821,9 @@ async function refreshRoutes() {
     routesTbody.innerHTML = \"\";
     list.forEach(r => {
       const tr = document.createElement(\"tr\");
-      const dl = r.has_zip ? `<a class=\"pill pill-running\" style=\"text-decoration:none;padding:4px 10px\" href=\"/routes/download/${encodeURIComponent(r.route_id)}${qp}\">⬇ download</a>` : `<span class=\"muted\">no zip</span>`;
-      tr.innerHTML = `<td>${r.route_id}</td><td>${r.route_mode||'-'}</td><td>${r.status||'-'}${r.accepted===false?' ✗':''}${r.accepted===true?' ✓':''}</td><td>${r.total_frames??'-'}</td><td>${fmtElapsed(r.elapsed_s)}</td><td>${fmtBytes(r.zip_size)}</td><td>${fmtTs(r.end_timestamp_utc)}</td><td>${dl}</td>`;
+      const dl = r.has_zip ? `<a class=\"pill pill-running\" style=\"text-decoration:none;padding:4px 10px;margin-right:6px\" href=\"/routes/download/${encodeURIComponent(r.route_id)}${qp}\">⬇</a>` : `<span class=\"muted\" style=\"margin-right:6px\">no zip</span>`;
+      const del = `<button class=\"rm route-del\" data-name=\"${r.route_id}\" style=\"padding:4px 10px\">🗑</button>`;
+      tr.innerHTML = `<td>${r.route_id}</td><td>${r.route_mode||'-'}</td><td>${r.status||'-'}${r.accepted===false?' ✗':''}${r.accepted===true?' ✓':''}</td><td>${r.total_frames??'-'}</td><td>${fmtElapsed(r.elapsed_s)}</td><td>${fmtBytes(r.zip_size)}</td><td>${fmtTs(r.end_timestamp_utc)}</td><td>${dl}${del}</td>`;
       routesTbody.appendChild(tr);
     });
   } catch (e) {}
@@ -624,6 +831,79 @@ async function refreshRoutes() {
 document.getElementById(\"refreshRoutes\").onclick = refreshRoutes;
 setInterval(refreshRoutes, 5000);
 refreshRoutes();
+
+routesTbody.onclick = async (e) => {
+  const t = e.target;
+  if (!t.classList.contains(\"route-del\")) return;
+  const name = t.dataset.name;
+  if (!confirm(`Delete route ${name}? This removes its directory and zip.`)) return;
+  const r = await fetch(`/routes/${encodeURIComponent(name)}${qp}`, {method: \"DELETE\"});
+  if (!r.ok) { alert(\"delete failed\"); return; }
+  refreshRoutes();
+};
+
+document.getElementById(\"deleteAllRoutes\").onclick = async () => {
+  if (!confirm(\"Delete ALL routes (directories + zips)? This cannot be undone.\")) return;
+  if (!confirm(\"Are you really sure? This wipes recorded data.\")) return;
+  const r = await fetch(\"/routes/delete_all\" + qp, {method: \"POST\"});
+  const j = await r.json().catch(() => ({}));
+  alert(`removed=${j.removed||0} errors=${(j.errors||[]).length}`);
+  refreshRoutes();
+};
+
+// ---------- presets CRUD ----------
+const presetSelect = document.getElementById(\"presetSelect\");
+const presetName = document.getElementById(\"presetName\");
+async function refreshPresets() {
+  try {
+    const r = await fetch(\"/presets\" + qp);
+    if (!r.ok) return;
+    const j = await r.json();
+    const list = j.presets || [];
+    const cur = presetSelect.value;
+    presetSelect.innerHTML = \"<option value=\\\"\\\">— select preset —</option>\";
+    list.forEach(p => {
+      const o = document.createElement(\"option\");
+      o.value = p.name;
+      o.textContent = `${p.name} (${p.steps_count} steps)`;
+      presetSelect.appendChild(o);
+    });
+    if (cur) presetSelect.value = cur;
+  } catch (e) {}
+}
+document.getElementById(\"presetLoad\").onclick = async () => {
+  const name = presetSelect.value;
+  if (!name) { alert(\"select a preset first\"); return; }
+  const r = await fetch(`/presets/${encodeURIComponent(name)}${qp}`);
+  if (!r.ok) { alert(\"load failed\"); return; }
+  const j = await r.json();
+  const p = j.preset || {};
+  steps.length = 0;
+  (p.steps || []).forEach(s => steps.push({action: s.action, duration_s: Number(s.duration_s)}));
+  presetName.value = p.name || name;
+  render();
+};
+document.getElementById(\"presetSave\").onclick = async () => {
+  const name = (presetName.value || \"\").trim();
+  if (!name) { alert(\"enter preset name\"); return; }
+  if (steps.length === 0) { alert(\"add steps first\"); return; }
+  const r = await fetch(`/presets/${encodeURIComponent(name)}${qp}`, {method: \"PUT\", headers: {\"Content-Type\": \"application/json\"}, body: JSON.stringify({steps})});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(\"save failed: \" + JSON.stringify(j.detail || r.status)); return; }
+  await refreshPresets();
+  presetSelect.value = name;
+};
+document.getElementById(\"presetDelete\").onclick = async () => {
+  const name = presetSelect.value;
+  if (!name) { alert(\"select a preset first\"); return; }
+  if (!confirm(`Delete preset \\\"${name}\\\"?`)) return;
+  const r = await fetch(`/presets/${encodeURIComponent(name)}${qp}`, {method: \"DELETE\"});
+  if (!r.ok) { alert(\"delete failed\"); return; }
+  presetSelect.value = \"\";
+  refreshPresets();
+};
+refreshPresets();
+setInterval(refreshPresets, 10000);
 </script>
 </body>
 </html>
