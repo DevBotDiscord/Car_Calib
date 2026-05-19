@@ -116,6 +116,15 @@ class RouteScriptRunner:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._mqtt = self._build_client()
+        self._pending_meta: dict[str, Any] | None = None
+        self._meta_lock = threading.Lock()
+
+    def consume_pending_meta(self) -> dict[str, Any] | None:
+        """Atomic getter for the most recent script-meta blob (and clear it)."""
+        with self._meta_lock:
+            meta = self._pending_meta
+            self._pending_meta = None
+            return meta
 
     # ------------------------------------------------------------------ #
     # MQTT setup
@@ -166,7 +175,7 @@ class RouteScriptRunner:
         with self._lock:
             return dict(self._state)
 
-    def submit(self, steps: list[dict[str, Any]]) -> bool:
+    def submit(self, steps: list[dict[str, Any]], preset_name: str | None = None, description: str | None = None) -> bool:
         with self._lock:
             if self._state["running"]:
                 return False
@@ -176,6 +185,14 @@ class RouteScriptRunner:
             self._state["step"] = None
             self._state["started_at"] = time.time()
             self._state["last_error"] = None
+        with self._meta_lock:
+            self._pending_meta = {
+                "source": "dashboard_script_runner",
+                "preset_name": preset_name,
+                "description": description,
+                "steps": list(steps),
+                "submitted_at_unix": time.time(),
+            }
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, args=(steps,), daemon=True)
         self._thread.start()

@@ -63,6 +63,11 @@ class RouteSession:
         self._root_dir = self._resolve_root_dir()
         self._route_dir = self._root_dir / self.route_id
         self._route_dir.mkdir(parents=True, exist_ok=True)
+        self._extra_meta: dict[str, object] = {}
+
+    def attach_meta(self, key: str, value: object) -> None:
+        """Attach extra metadata to be persisted in the route summary."""
+        self._extra_meta[key] = value
 
     def start(self, mono_now: float) -> None:
         self._start_monotonic = mono_now
@@ -125,6 +130,8 @@ class RouteSession:
             "hardware_error_count": self.hw_error_count,
             "route_direction_eps_deg": ROUTE_DIRECTION_EPS_DEG,
         }
+        if self._extra_meta:
+            payload["extra_meta"] = self._extra_meta
 
         summary_path = self._route_dir / "route_summary.json"
         summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

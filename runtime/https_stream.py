@@ -204,7 +204,14 @@ class HttpsMjpegServer:
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-            if not self._script_runner.submit(steps):
+            preset_name = (payload.get("preset_name") if isinstance(payload, dict) else None) or None
+            description = (payload.get("description") if isinstance(payload, dict) else None) or None
+            if preset_name is not None:
+                preset_name = str(preset_name)[:_PRESET_NAME_MAX]
+            if description is not None:
+                description = str(description)[:512]
+
+            if not self._script_runner.submit(steps, preset_name=preset_name, description=description):
                 raise HTTPException(status_code=409, detail="script_already_running")
             return JSONResponse({"ok": True, "status": self._script_runner.status()})
 
@@ -256,6 +263,26 @@ class HttpsMjpegServer:
                 media_type="application/zip",
                 headers={"Content-Disposition": f'attachment; filename=\"{name}.zip\"'},
             )
+
+        @app.get("/routes/{name}/summary")
+        def routes_summary(name: str, token: str = "") -> Any:
+            _check_token(token)
+            from config.settings import ROUTE_LOG_ROOT
+            safe = _safe_basename(name)
+            root = _resolve_route_root(ROUTE_LOG_ROOT)
+            summary_path = (root / safe / "route_summary.json").resolve()
+            try:
+                root_resolved = root.resolve()
+            except OSError as exc:
+                raise HTTPException(status_code=500, detail=f"root_resolve: {exc}") from exc
+            if root_resolved not in summary_path.parents:
+                raise HTTPException(status_code=400, detail="path_outside_root")
+            if not summary_path.exists():
+                raise HTTPException(status_code=404, detail="summary_not_found")
+            try:
+                return JSONResponse({"ok": True, "summary": _load_summary_full(summary_path)})
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=500, detail=f"read_failed: {exc}") from exc
 
         @app.delete("/routes/{name}")
         def routes_delete(name: str, token: str = "") -> Any:
@@ -401,6 +428,8 @@ def _validate_cert_pair(cert_file: str, key_file: str) -> None:
 def _load_summary_brief(path: Path) -> dict[str, Any]:
     import json as _json
     raw = _json.loads(path.read_text(encoding="utf-8"))
+    extra = raw.get("extra_meta") or {}
+    script = (extra.get("script") if isinstance(extra, dict) else None) or {}
     return {
         "route_mode": raw.get("route_mode"),
         "status": raw.get("status"),
@@ -408,7 +437,14 @@ def _load_summary_brief(path: Path) -> dict[str, Any]:
         "total_frames": raw.get("total_frames"),
         "elapsed_s": raw.get("total_elapsed_seconds"),
         "end_timestamp_utc": raw.get("end_timestamp_utc"),
+        "preset_name": script.get("preset_name") if isinstance(script, dict) else None,
+        "script_source": script.get("source") if isinstance(script, dict) else None,
     }
+
+
+def _load_summary_full(path: Path) -> dict[str, Any]:
+    import json as _json
+    return _json.loads(path.read_text(encoding="utf-8"))
 
 
 def _resolve_route_root(route_log_root: str) -> Path:
@@ -607,6 +643,20 @@ _DASHBOARD_HTML = """<!doctype html>
     .progress { height: 7px; background: #1a1c20; border-radius: 4px; overflow: hidden; margin-top: 10px; }
     .progress > div { height: 100%; background: linear-gradient(90deg, #2a8c5a, #4cb37a); transition: width 0.2s; }
 
+    .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none; align-items: flex-start; justify-content: center; z-index: 1000; padding: 30px 20px; overflow: auto; }
+    .modal-bg.show { display: flex; }
+    .modal { background: #16171a; border: 1px solid #2a2c30; border-radius: 12px; padding: 24px; max-width: 880px; width: 100%; box-shadow: 0 12px 40px rgba(0,0,0,0.6); }
+    .modal h2 { margin: 0; font-size: 22px; }
+    .modal .close { float: right; background: #2a2c30; border-color: #4a4c50; padding: 6px 12px; }
+    .kv { display: grid; grid-template-columns: 200px 1fr; gap: 6px 14px; margin-top: 14px; font-size: 16px; }
+    .kv .k { color: #888; }
+    .kv .v { color: #eee; word-break: break-all; }
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 6px; font-size: 14px; font-weight: 600; }
+    .badge-ok { background: #2a8c5a; color: #fff; }
+    .badge-fail { background: #8c2a2a; color: #fff; }
+    tr.route-clickable { cursor: pointer; }
+    tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
+
     @media (max-width: 900px) {
       body { padding: 12px; font-size: 16px; }
       h1 { font-size: 22px; margin-bottom: 12px; }
@@ -704,11 +754,18 @@ _DASHBOARD_HTML = """<!doctype html>
   </div>
   <div class=\"panel\" style=\"margin-top:20px\">
     <h2>Recent routes</h2>
-    <div class=\"row\"><button id=\"refreshRoutes\">↻ refresh</button><button id=\"deleteAllRoutes\" class=\"danger\" style=\"padding:9px 14px;font-size:13px\">🗑 delete all</button><span class=\"muted\" id=\"routesMuted\">auto-refresh every 5s</span></div>
+    <div class=\"row\"><button id=\"refreshRoutes\">↻ refresh</button><button id=\"deleteAllRoutes\" class=\"danger\" style=\"padding:9px 14px;font-size:13px\">🗑 delete all</button><span class=\"muted\" id=\"routesMuted\">click row for full info · auto-refresh 5s</span></div>
     <table id=\"routesTable\">
-      <thead><tr><th>Route ID</th><th>Mode</th><th>Status</th><th>Frames</th><th>Elapsed</th><th>Zip size</th><th>Ended (UTC)</th><th></th></tr></thead>
+      <thead><tr><th>Route ID</th><th>Mode</th><th>Preset</th><th>Status</th><th>Frames</th><th>Elapsed</th><th>Zip size</th><th>Ended (UTC)</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
+  </div>
+  <div id=\"summaryModal\" class=\"modal-bg\">
+    <div class=\"modal\">
+      <button class=\"close\" id=\"summaryClose\">✕ close</button>
+      <h2 id=\"summaryTitle\">Route summary</h2>
+      <div id=\"summaryBody\"></div>
+    </div>
   </div>
 <script>
 const TOKEN = \"__TOKEN__\";
@@ -765,7 +822,11 @@ tbody.onclick = (e) => {
 document.getElementById(\"run\").onclick = async () => {
   if (steps.length === 0) { runDetail.textContent = \"add steps first\"; return; }
   runDetail.textContent = \"submitting…\";
-  const r = await fetch(\"/route/script\" + qp, {method: \"POST\", headers: {\"Content-Type\": \"application/json\"}, body: JSON.stringify({steps})});
+  const presetSel = document.getElementById(\"presetSelect\");
+  const presetInput = document.getElementById(\"presetName\");
+  const preset_name = (presetSel && presetSel.value) || (presetInput && presetInput.value.trim()) || null;
+  const body = {steps, preset_name, description: null};
+  const r = await fetch(\"/route/script\" + qp, {method: \"POST\", headers: {\"Content-Type\": \"application/json\"}, body: JSON.stringify(body)});
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { runDetail.textContent = \"error: \" + JSON.stringify(j.detail || r.status); return; }
   runDetail.textContent = \"\";
@@ -863,9 +924,12 @@ async function refreshRoutes() {
     routesTbody.innerHTML = \"\";
     list.forEach(r => {
       const tr = document.createElement(\"tr\");
-      const dl = r.has_zip ? `<a class=\"pill pill-running\" style=\"text-decoration:none;padding:4px 10px;margin-right:6px\" href=\"/routes/download/${encodeURIComponent(r.route_id)}${qp}\">⬇</a>` : `<span class=\"muted\" style=\"margin-right:6px\">no zip</span>`;
+      tr.className = \"route-clickable\";
+      tr.dataset.name = r.route_id;
+      const dl = r.has_zip ? `<a class=\"pill pill-running\" style=\"text-decoration:none;padding:4px 10px;margin-right:6px\" href=\"/routes/download/${encodeURIComponent(r.route_id)}${qp}\" onclick=\"event.stopPropagation()\">⬇</a>` : `<span class=\"muted\" style=\"margin-right:6px\">no zip</span>`;
       const del = `<button class=\"rm route-del\" data-name=\"${r.route_id}\" style=\"padding:4px 10px\">🗑</button>`;
-      tr.innerHTML = `<td>${r.route_id}</td><td>${r.route_mode||'-'}</td><td>${r.status||'-'}${r.accepted===false?' ✗':''}${r.accepted===true?' ✓':''}</td><td>${r.total_frames??'-'}</td><td>${fmtElapsed(r.elapsed_s)}</td><td>${fmtBytes(r.zip_size)}</td><td>${fmtTs(r.end_timestamp_utc)}</td><td>${dl}${del}</td>`;
+      const presetCol = r.preset_name ? `<span class=\"badge badge-ok\">${r.preset_name}</span>` : (r.script_source ? `<span class=\"muted\">${r.script_source}</span>` : `<span class=\"muted\">-</span>`);
+      tr.innerHTML = `<td>${r.route_id}</td><td>${r.route_mode||'-'}</td><td>${presetCol}</td><td>${r.status||'-'}${r.accepted===false?' ✗':''}${r.accepted===true?' ✓':''}</td><td>${r.total_frames??'-'}</td><td>${fmtElapsed(r.elapsed_s)}</td><td>${fmtBytes(r.zip_size)}</td><td>${fmtTs(r.end_timestamp_utc)}</td><td>${dl}${del}</td>`;
       routesTbody.appendChild(tr);
     });
   } catch (e) {}
@@ -876,13 +940,88 @@ refreshRoutes();
 
 routesTbody.onclick = async (e) => {
   const t = e.target;
-  if (!t.classList.contains(\"route-del\")) return;
-  const name = t.dataset.name;
-  if (!confirm(`Delete route ${name}? This removes its directory and zip.`)) return;
-  const r = await fetch(`/routes/${encodeURIComponent(name)}${qp}`, {method: \"DELETE\"});
-  if (!r.ok) { alert(\"delete failed\"); return; }
-  refreshRoutes();
+  if (t.classList.contains(\"route-del\")) {
+    const name = t.dataset.name;
+    if (!confirm(`Delete route ${name}? This removes its directory and zip.`)) return;
+    const r = await fetch(`/routes/${encodeURIComponent(name)}${qp}`, {method: \"DELETE\"});
+    if (!r.ok) { alert(\"delete failed\"); return; }
+    refreshRoutes();
+    return;
+  }
+  // Row click: open summary modal
+  const tr = t.closest(\"tr.route-clickable\");
+  if (tr && tr.dataset.name) {
+    openSummary(tr.dataset.name);
+  }
 };
+
+async function openSummary(name) {
+  const body = document.getElementById(\"summaryBody\");
+  const title = document.getElementById(\"summaryTitle\");
+  body.innerHTML = `<div class=\"muted\" style=\"margin-top:14px\">loading…</div>`;
+  title.textContent = `Route summary · ${name}`;
+  document.getElementById(\"summaryModal\").classList.add(\"show\");
+  try {
+    const r = await fetch(`/routes/${encodeURIComponent(name)}/summary${qp}`);
+    if (!r.ok) {
+      body.innerHTML = `<div class=\"muted\" style=\"margin-top:14px;color:#f88\">load failed (${r.status})</div>`;
+      return;
+    }
+    const j = await r.json();
+    body.innerHTML = renderSummary(j.summary || {});
+  } catch (e) {
+    body.innerHTML = `<div class=\"muted\" style=\"margin-top:14px;color:#f88\">network error</div>`;
+  }
+}
+
+function renderSummary(s) {
+  const accepted = s.accepted === true ? '<span class=\"badge badge-ok\">accepted ✓</span>' : (s.accepted === false ? '<span class=\"badge badge-fail\">rejected ✗</span>' : '-');
+  const extra = s.extra_meta || {};
+  const script = extra.script || {};
+  const stepsRows = (script.steps || []).map((st, i) => `<tr><td>${i+1}</td><td>${st.action}</td><td>${Number(st.duration_s).toFixed(1)} s</td></tr>`).join(\"\");
+  const stepsTable = stepsRows
+    ? `<table style=\"margin-top:6px\"><thead><tr><th>#</th><th>Action</th><th>Duration</th></tr></thead><tbody>${stepsRows}</tbody></table>`
+    : `<div class=\"muted\">no script steps recorded</div>`;
+  const submittedAt = script.submitted_at_unix ? new Date(script.submitted_at_unix * 1000).toISOString() : null;
+
+  return `
+    <div class=\"kv\">
+      <div class=\"k\">Route ID</div><div class=\"v\">${s.route_id || '-'}</div>
+      <div class=\"k\">Mode</div><div class=\"v\">${s.route_mode || '-'}</div>
+      <div class=\"k\">Status</div><div class=\"v\">${s.status || '-'} ${accepted}</div>
+      <div class=\"k\">Rejection reason</div><div class=\"v\">${s.rejection_reason || '-'}</div>
+      <div class=\"k\">Started (UTC)</div><div class=\"v\">${s.start_timestamp_utc || '-'}</div>
+      <div class=\"k\">Ended (UTC)</div><div class=\"v\">${s.end_timestamp_utc || '-'}</div>
+      <div class=\"k\">Elapsed</div><div class=\"v\">${s.total_elapsed_seconds != null ? Number(s.total_elapsed_seconds).toFixed(2) + ' s' : '-'}</div>
+      <div class=\"k\">Total frames</div><div class=\"v\">${s.total_frames ?? '-'}</div>
+      <div class=\"k\">Frames with theta</div><div class=\"v\">${s.frames_with_theta ?? '-'}</div>
+      <div class=\"k\">Gap ratio</div><div class=\"v\">${s.gap_ratio != null ? Number(s.gap_ratio).toFixed(3) : '-'}</div>
+      <div class=\"k\">HW errors</div><div class=\"v\">${s.hardware_error_count ?? '-'}</div>
+      <div class=\"k\">Abstract steps</div><div class=\"v\">${s.abstract_steps ?? '-'}</div>
+    </div>
+    <h3>Script source</h3>
+    <div class=\"kv\">
+      <div class=\"k\">Source</div><div class=\"v\">${script.source || '-'}</div>
+      <div class=\"k\">Preset name</div><div class=\"v\">${script.preset_name || '-'}</div>
+      <div class=\"k\">Description</div><div class=\"v\">${script.description || '-'}</div>
+      <div class=\"k\">Submitted (UTC)</div><div class=\"v\">${submittedAt || '-'}</div>
+      <div class=\"k\">Step count</div><div class=\"v\">${(script.steps || []).length}</div>
+    </div>
+    <h3>Steps</h3>
+    ${stepsTable}
+    <h3>Raw JSON</h3>
+    <pre>${escapeHtml(JSON.stringify(s, null, 2))}</pre>
+  `;
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>\"']/g, c => ({\"&\":\"&amp;\",\"<\":\"&lt;\",\">\":\"&gt;\",\"\\\"\":\"&quot;\",\"'\":\"&#39;\"}[c]));
+}
+
+document.getElementById(\"summaryClose\").onclick = () => document.getElementById(\"summaryModal\").classList.remove(\"show\");
+document.getElementById(\"summaryModal\").addEventListener(\"click\", (e) => {
+  if (e.target.id === \"summaryModal\") e.currentTarget.classList.remove(\"show\");
+});
 
 document.getElementById(\"deleteAllRoutes\").onclick = async () => {
   if (!confirm(\"Delete ALL routes (directories + zips)? This cannot be undone.\")) return;

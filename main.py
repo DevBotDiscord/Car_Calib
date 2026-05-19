@@ -213,6 +213,14 @@ def main() -> None:
         )
         route_video_writer = None
         route_video_size = None
+        # Attach optional script-runner metadata (preset name, steps, ...).
+        if script_runner is not None:
+            try:
+                meta = script_runner.consume_pending_meta()
+                if meta:
+                    route_session.attach_meta("script", meta)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to attach script meta: %s", exc)
         logger.info(
             "Route session started: id=%s mode=%s dir=%s",
             route_session.route_id,
