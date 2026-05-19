@@ -109,7 +109,7 @@ BUTTON_UNLOCK = int(os.getenv("BUTTON_UNLOCK", "311"))  # BTN_TR = RB
 BUTTON_REMOTE_STEER = int(os.getenv("BUTTON_REMOTE_STEER", "307"))  # BTN_NORTH = Y
 BUTTON_QUIT = int(os.getenv("BUTTON_QUIT", "315"))  # BTN_START
 BUTTON_CRUISE = int(os.getenv("BUTTON_CRUISE", "314"))  # BTN_SELECT
-BUTTON_CENTER_MINUS = int(os.getenv("BUTTON_CENTER_MINUS", "306"))  # BTN_WEST = X
+BUTTON_RECORD = int(os.getenv("BUTTON_RECORD", "306"))  # BTN_WEST = X (toggle high-level route record)
 
 # Gamepad config
 GAMEPAD_STEER_DEADZONE = float(os.getenv("GAMEPAD_STEER_DEADZONE", "0.12"))

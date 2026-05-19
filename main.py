@@ -470,6 +470,8 @@ def main() -> None:
                     start_calib_threshold_deg=CTRL_HYSTERESIS_HIGH,
                     stop_calib_threshold_deg=CTRL_HYSTERESIS_LOW,
                     overlay_scale=args.overlay_scale,
+                    route_id=route_session.route_id if route_session is not None else None,
+                    route_mode=current_route_mode,
                 )
                 if args.show_detector_debug and detector_debug is not None:
                     frame_height, frame_width = annotated.shape[:2]
@@ -484,6 +486,22 @@ def main() -> None:
                     output_frame = cv2.vconcat([annotated, detector_panel])
                 else:
                     output_frame = annotated
+            elif args.stream_enabled or args.write_debug_video:
+                output_frame = draw_overlay(
+                    frame=frame.copy(),
+                    frame_num=frame_num,
+                    theta=theta,
+                    theta_for_overlay=last_known_theta,
+                    servo_angle=servo_angle,
+                    servo_center_angle=state.servo_center_angle,
+                    fsm_state=state.fsm_state.name,
+                    show_guidance_overlay=False,
+                    start_calib_threshold_deg=CTRL_HYSTERESIS_HIGH,
+                    stop_calib_threshold_deg=CTRL_HYSTERESIS_LOW,
+                    overlay_scale=args.overlay_scale,
+                    route_id=route_session.route_id if route_session is not None else None,
+                    route_mode=current_route_mode,
+                )
 
             if args.frame_scale > 1.0:
                 output_frame = cv2.resize(
@@ -529,6 +547,8 @@ def main() -> None:
                     "theta_source": theta_source,
                     "fsm_state": state.fsm_state.name,
                     "servo_angle": servo_angle,
+                    "route_id": route_session.route_id if route_session is not None else None,
+                    "route_mode": current_route_mode,
                     "reference_group_index": detector_debug.get("reference_group_index") if detector_debug else None,
                     "selected_group_bbox": selected_group_bbox,
                 }

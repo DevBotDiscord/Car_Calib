@@ -242,6 +242,8 @@ def draw_overlay(
     start_calib_threshold_deg: float,
     stop_calib_threshold_deg: float,
     overlay_scale: float = 1.0,
+    route_id: str | None = None,
+    route_mode: str | None = None,
 ) -> np.ndarray:
     """Render pipeline values onto a frame before writing to output video."""
     s = max(0.5, min(1.5, overlay_scale))
@@ -265,6 +267,33 @@ def draw_overlay(
     )
     cv2.putText(frame, f"Servo: {servo_angle:.2f} deg", (base_x, int(89 * s)), cv2.FONT_HERSHEY_SIMPLEX, 0.7 * s, (80, 255, 80), 2)
     cv2.putText(frame, f"State: {fsm_state}", (base_x, int(116 * s)), cv2.FONT_HERSHEY_SIMPLEX, 0.7 * s, (255, 200, 120), 2)
+
+    if route_id or route_mode:
+        h_frame, w_frame = frame.shape[:2]
+        rx0 = w_frame - int(360 * s)
+        ry0 = int(8 * s)
+        rx1 = w_frame - int(8 * s)
+        ry1 = ry0 + int(64 * s)
+        cv2.rectangle(frame, (rx0, ry0), (rx1, ry1), (0, 0, 0), -1)
+        cv2.addWeighted(frame, 0.65, frame, 0.35, 0, frame)
+        cv2.putText(
+            frame,
+            f"Route: {route_id or '-'}",
+            (rx0 + int(10 * s), ry0 + int(24 * s)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55 * s,
+            (200, 220, 255),
+            2,
+        )
+        cv2.putText(
+            frame,
+            f"Mode: {route_mode or '-'}",
+            (rx0 + int(10 * s), ry0 + int(50 * s)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55 * s,
+            (180, 255, 200),
+            2,
+        )
 
     if theta is None and theta_for_overlay is not None:
         cv2.putText(

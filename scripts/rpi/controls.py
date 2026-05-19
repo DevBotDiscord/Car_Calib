@@ -74,6 +74,12 @@ class InputController:
         # One-shot relay command queue (e.g. RB tap toggles the relay).
         self._pending_relay_command: str | None = None
 
+        # High-level route record holders. Route session is active whenever
+        # at least one holder is present; START is published on 0→1 and STOP
+        # on 1→0. Mode is recomputed from active holders.
+        self._route_holders: set[str] = set()
+        self._published_mode: str = "AUTO"
+
     def process(self, now: float) -> ControlDecision:
         """Run control logic and return a ControlDecision."""
         self._process_edge_triggers(now)
@@ -85,8 +91,7 @@ class InputController:
             self.cruise_active = False
             self.controller_remote_steer_only = self.cruise_prev_remote_steer_only
             self._last_steer_angle = None
-            publish_mode("AUTO")
-            publish_route_control("STOP")
+            self._release_route("cruise")
             logger.info("CRUISE: finished")
             return ControlDecision(base_command="STOP")
 
@@ -261,9 +266,8 @@ class InputController:
                     logger.info("REMOTE_STEER toggle ignored during CRUISE")
                 else:
                     self.controller_remote_steer_only = not self.controller_remote_steer_only
-                    mode = "REMOTE_STEER" if self.controller_remote_steer_only else "AUTO"
-                    publish_mode(mode)
-                    logger.info("MODE: %s", mode)
+                    self._publish_mode_if_changed()
+                    logger.info("MODE: %s", self._published_mode)
             elif code == config.BUTTON_SQUARE:
                 self.square_pattern_active = not self.square_pattern_active
                 if self.square_pattern_active:
@@ -271,39 +275,44 @@ class InputController:
                         self.cruise_active = False
                         self.controller_remote_steer_only = self.cruise_prev_remote_steer_only
                         self._last_steer_angle = None
+                        self._release_route("cruise")
                     self.square_phase = "straight"
                     self.square_phase_start = now
-                    publish_mode("SQUARE")
-                    publish_route_control("START")
+                    self._acquire_route("square")
                     logger.info("SQUARE: ON")
                 else:
                     self._last_steer_angle = None
-                    publish_mode("AUTO")
-                    publish_route_control("STOP")
+                    self._release_route("square")
                     logger.info("SQUARE: OFF")
             elif code == config.BUTTON_CRUISE:
                 if self.cruise_active:
                     self.cruise_active = False
                     self.controller_remote_steer_only = self.cruise_prev_remote_steer_only
                     self._last_steer_angle = None
-                    publish_mode("AUTO")
-                    publish_route_control("STOP")
+                    self._release_route("cruise")
                     logger.info("CRUISE: cancelled")
                 else:
                     if self.square_pattern_active:
                         self.square_pattern_active = False
                         self._last_steer_angle = None
-                        publish_mode("AUTO")
-                        publish_route_control("STOP")
+                        self._release_route("square")
                     self.cruise_active = True
                     self.cruise_start_time = now
                     self.cruise_prev_remote_steer_only = self.controller_remote_steer_only
                     self.controller_remote_steer_only = True
-                    publish_mode("CRUISE")
-                    publish_route_control("START")
+                    self._acquire_route("cruise")
                     logger.info("CRUISE: started")
-            elif code == config.BUTTON_CENTER_MINUS:
-                self._adjust_center(-1)
+            elif code == config.BUTTON_RECORD:
+                if "manual" in self._route_holders:
+                    self._release_route("manual")
+                    logger.info("RECORD: manual route holder released")
+                else:
+                    # Record default = manual driving, but never override
+                    # an already-running cruise/square session.
+                    if not self.cruise_active and not self.square_pattern_active:
+                        self.controller_remote_steer_only = False
+                    self._acquire_route("manual")
+                    logger.info("RECORD: manual route holder acquired (manual drive default)")
             elif code == config.BUTTON_QUIT:
                 import os
                 os._exit(0)
@@ -342,21 +351,18 @@ class InputController:
                     self.cruise_active = False
                     self.controller_remote_steer_only = self.cruise_prev_remote_steer_only
                     self._last_steer_angle = None
-                    publish_mode("AUTO")
-                    publish_route_control("STOP")
+                    self._release_route("cruise")
                     logger.info("CRUISE: cancelled (keyboard)")
                 else:
                     if self.square_pattern_active:
                         self.square_pattern_active = False
                         self._last_steer_angle = None
-                        publish_mode("AUTO")
-                        publish_route_control("STOP")
+                        self._release_route("square")
                     self.cruise_active = True
                     self.cruise_start_time = now
                     self.cruise_prev_remote_steer_only = self.controller_remote_steer_only
                     self.controller_remote_steer_only = True
-                    publish_mode("CRUISE")
-                    publish_route_control("START")
+                    self._acquire_route("cruise")
                     logger.info("CRUISE: started (keyboard)")
 
         self._prev_pressed_keys = current.copy()
@@ -369,3 +375,43 @@ class InputController:
 
     def _activate_manual_override(self, now: float) -> None:
         self.manual_override_until = now + self._manual_steer_hold
+
+    # ------------------------------------------------------------------ #
+    # Route record holders
+    # ------------------------------------------------------------------ #
+    def _resolve_mode(self) -> str:
+        """Pick the canonical mode label from active holders + flags."""
+        # Priority order: cruise > square > manual record > remote_steer > auto
+        if "cruise" in self._route_holders:
+            return "CRUISE"
+        if "square" in self._route_holders:
+            return "SQUARE"
+        if "manual" in self._route_holders:
+            return "RECORD"
+        if self.controller_remote_steer_only:
+            return "REMOTE_STEER"
+        return "AUTO"
+
+    def _publish_mode_if_changed(self) -> None:
+        mode = self._resolve_mode()
+        if mode != self._published_mode:
+            self._published_mode = mode
+            publish_mode(mode)
+
+    def _acquire_route(self, holder: str) -> None:
+        was_empty = not self._route_holders
+        self._route_holders.add(holder)
+        if was_empty:
+            publish_route_control("START")
+            logger.info("ROUTE: START (holder=%s)", holder)
+        self._publish_mode_if_changed()
+
+    def _release_route(self, holder: str) -> None:
+        if holder not in self._route_holders:
+            self._publish_mode_if_changed()
+            return
+        self._route_holders.discard(holder)
+        if not self._route_holders:
+            publish_route_control("STOP")
+            logger.info("ROUTE: STOP (released last holder=%s)", holder)
+        self._publish_mode_if_changed()

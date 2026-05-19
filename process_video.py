@@ -181,6 +181,8 @@ def process_video(
                 show_guidance_overlay=show_guidance_overlay,
                 start_calib_threshold_deg=start_calib_threshold_deg,
                 stop_calib_threshold_deg=stop_calib_threshold_deg,
+                route_id=None,
+                route_mode=None,
             )
 
             top_frame = annotated
