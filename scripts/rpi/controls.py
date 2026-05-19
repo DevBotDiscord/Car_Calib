@@ -184,8 +184,6 @@ class InputController:
             drive = -drive
         drive = _apply_deadzone(drive, self._gamepad_drive_deadzone)
 
-        if config.BUTTON_LOCK in self._h.pressed_buttons:
-            return ControlDecision(base_command="LOCK")
         if config.BUTTON_STOP in self._h.pressed_buttons:
             return ControlDecision(base_command="STOP")
         if drive < 0:

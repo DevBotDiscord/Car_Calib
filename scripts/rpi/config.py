@@ -104,11 +104,10 @@ HAT_Y_AXIS = int(os.getenv("HAT_Y_AXIS", "17"))  # ABS_HAT0Y
 # Button codes (evdev ecodes)
 BUTTON_STOP = int(os.getenv("BUTTON_STOP", "304"))  # BTN_SOUTH = A
 BUTTON_SQUARE = int(os.getenv("BUTTON_SQUARE", "305"))  # BTN_EAST = B
-BUTTON_LOCK = int(os.getenv("BUTTON_LOCK", "310"))  # BTN_TL = LB
+BUTTON_CRUISE = int(os.getenv("BUTTON_CRUISE", "310"))  # BTN_TL = LB (cruise toggle)
 BUTTON_UNLOCK = int(os.getenv("BUTTON_UNLOCK", "311"))  # BTN_TR = RB
 BUTTON_REMOTE_STEER = int(os.getenv("BUTTON_REMOTE_STEER", "307"))  # BTN_NORTH = Y
 BUTTON_QUIT = int(os.getenv("BUTTON_QUIT", "315"))  # BTN_START
-BUTTON_CRUISE = int(os.getenv("BUTTON_CRUISE", "314"))  # BTN_SELECT
 BUTTON_RECORD = int(os.getenv("BUTTON_RECORD", "306"))  # BTN_WEST = X (toggle high-level route record)
 
 # Gamepad config

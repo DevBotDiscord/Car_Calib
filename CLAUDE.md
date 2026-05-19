@@ -173,10 +173,10 @@ RPi Dockerfile is multi-stage:
 | B | BTN_EAST (305) | Toggle square pattern |
 | X | BTN_WEST (306) | Toggle high-level route recording holder (RECORD mode when active alone) |
 | Y | BTN_NORTH (307) | Toggle remote steer only |
-| LB | BTN_TL (310) | Lock base |
+| LB | BTN_TL (310) | Toggle cruise |
 | RB | BTN_TR (311) | Relay tap/hold (tap=toggle, hold=blink) |
 | START | BTN_START (315) | Quit |
-| SELECT/BACK | BTN_SELECT (314) | Toggle cruise |
+| SELECT/BACK | BTN_SELECT (314) | (unbound) |
 | Right stick X | ABS_RX (3) | Steering |
 | Left stick Y | ABS_Y (1) | Drive (forward/backward) |
 | D-pad up/down | ABS_HAT0Y (17) | HAT state tracked (no center adjust action in current controller) |
@@ -241,7 +241,7 @@ holder releases. Mode label resolved from active holders by priority
 
 - **AUTO** — vision PID drives servo, gamepad/keyboard drives base, no holder
 - **REMOTE_STEER** — toggle Y; gamepad steer disabled, MQTT vision drives servo
-- **CRUISE** — toggle SELECT or ENTER; auto-FORWARD `CRUISE_DURATION_S`, remote_steer_only forced ON, acquires `cruise` holder; release on cancel/timeout
+- **CRUISE** — toggle LB or ENTER; auto-FORWARD `CRUISE_DURATION_S`, remote_steer_only forced ON, acquires `cruise` holder; release on cancel/timeout
 - **SQUARE** — toggle B; loops `SQUARE_STRAIGHT_DURATION_S` forward then `SQUARE_TURN_DURATION_S` right at `RIGHT_LIMIT`; acquires `square` holder
 - **RECORD** — toggle X; pure manual recording. Logs all frames, accepts cruise/square/manual driving inside same session. Acquires `manual` holder (released on second X press)
 
