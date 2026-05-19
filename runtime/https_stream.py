@@ -563,6 +563,7 @@ _DASHBOARD_HTML = """<!doctype html>
 <html lang=\"en\">
 <head>
   <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">
   <title>car-calib route dashboard</title>
   <style>
     * { box-sizing: border-box; }
@@ -605,6 +606,47 @@ _DASHBOARD_HTML = """<!doctype html>
     .tile .v { font-size: 17px; font-weight: 600; margin-top: 3px; word-break: break-all; }
     .progress { height: 7px; background: #1a1c20; border-radius: 4px; overflow: hidden; margin-top: 10px; }
     .progress > div { height: 100%; background: linear-gradient(90deg, #2a8c5a, #4cb37a); transition: width 0.2s; }
+
+    @media (max-width: 900px) {
+      body { padding: 12px; font-size: 16px; }
+      h1 { font-size: 22px; margin-bottom: 12px; }
+      h2 { font-size: 18px; }
+      h3 { font-size: 15px; }
+      .layout { grid-template-columns: 1fr; gap: 14px; }
+      .panel { padding: 14px; border-radius: 10px; }
+      img.stream { width: 100%; max-width: 100%; }
+      select, input, button { padding: 10px 12px; font-size: 16px; }
+      select { min-width: 0; flex: 1 1 100%; }
+      input[type=number] { width: 100%; flex: 1 1 100%; }
+      input[type=text] { flex: 1 1 100%; }
+      .row { gap: 8px; }
+      .row > button { flex: 1 1 auto; }
+      button.primary, button.danger { padding: 12px 18px; font-size: 17px; flex: 1 1 auto; }
+      button.rm { padding: 6px 10px; font-size: 14px; }
+      table { font-size: 14px; }
+      th { font-size: 11px; padding: 8px 6px; }
+      td { font-size: 14px; padding: 9px 6px; }
+      .telemetry-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+      .tile .v { font-size: 15px; }
+      pre { font-size: 12px; max-height: 180px; }
+      /* hide less critical columns on narrow screens */
+      #routesTable th:nth-child(4),
+      #routesTable td:nth-child(4),
+      #routesTable th:nth-child(5),
+      #routesTable td:nth-child(5),
+      #routesTable th:nth-child(7),
+      #routesTable td:nth-child(7) { display: none; }
+    }
+    @media (max-width: 480px) {
+      body { padding: 10px; font-size: 15px; }
+      h1 { font-size: 20px; }
+      .panel { padding: 12px; }
+      .telemetry-grid { grid-template-columns: 1fr 1fr; }
+      #routesTable th:nth-child(2),
+      #routesTable td:nth-child(2),
+      #routesTable th:nth-child(6),
+      #routesTable td:nth-child(6) { display: none; }
+    }
   </style>
 </head>
 <body>
