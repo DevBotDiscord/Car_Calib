@@ -14,6 +14,11 @@ from typing import Any, Optional
 
 import cv2
 
+try:  # Optional dependency: only needed when stream server is started.
+    from fastapi import Request as _FastAPIRequest
+except Exception:  # noqa: BLE001
+    _FastAPIRequest = Any  # type: ignore[assignment,misc]
+
 
 @dataclass
 class SharedFrameStore:
@@ -183,7 +188,7 @@ class HttpsMjpegServer:
             return JSONResponse({"ok": True, "status": self._script_runner.status()})
 
         @app.post("/route/script")
-        async def route_script_submit(request: Request, token: str = "") -> Any:
+        async def route_script_submit(request: _FastAPIRequest, token: str = "") -> Any:
             _check_token(token)
             if self._script_runner is None:
                 raise HTTPException(status_code=503, detail="script_runner_disabled")
