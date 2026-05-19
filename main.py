@@ -79,6 +79,7 @@ from runtime.video_runtime_helpers import (
     init_camera_with_retries,
     init_csv_logger,
     init_live_video_writer,
+    init_video_writer,
     maybe_flip_frame,
     sleep_remainder,
 )
@@ -194,12 +195,15 @@ def main() -> None:
     route_session: RouteSession | None = None
     route_csv_writer = None
     route_csv_file = None
+    route_video_writer = None
+    route_video_size: tuple[int, int] | None = None
     current_route_mode = "AUTO"
     final_status = "COMPLETED"
     rejection_reason = ""
 
     def start_route_session() -> None:
         nonlocal route_session, route_csv_writer, route_csv_file
+        nonlocal route_video_writer, route_video_size
         if route_session is not None:
             return
         route_session = RouteSession(route_mode=current_route_mode)
@@ -207,6 +211,8 @@ def main() -> None:
         route_csv_writer, route_csv_file = init_csv_logger(
             str(route_csv_path), _CSV_FIELDNAMES
         )
+        route_video_writer = None
+        route_video_size = None
         logger.info(
             "Route session started: id=%s mode=%s dir=%s",
             route_session.route_id,
@@ -216,10 +222,18 @@ def main() -> None:
 
     def finalize_route_session(status: str, reason: str = "") -> None:
         nonlocal route_session, route_csv_writer, route_csv_file
+        nonlocal route_video_writer, route_video_size
         if route_session is None:
             return
         if route_csv_file is not None:
             route_csv_file.close()
+        if route_video_writer is not None:
+            try:
+                route_video_writer.release()
+            except Exception:  # noqa: BLE001
+                pass
+        route_video_writer = None
+        route_video_size = None
         summary = route_session.finalize(
             mono_now=time.monotonic(),
             status=status,
@@ -486,7 +500,7 @@ def main() -> None:
                     output_frame = cv2.vconcat([annotated, detector_panel])
                 else:
                     output_frame = annotated
-            elif args.stream_enabled or args.write_debug_video:
+            elif args.stream_enabled or args.write_debug_video or route_session is not None:
                 output_frame = draw_overlay(
                     frame=frame.copy(),
                     frame_num=frame_num,
@@ -539,6 +553,33 @@ def main() -> None:
                         final_status = "FAILED_VIDEO_OUTPUT"
                         rejection_reason = "video_writer_retry_limit"
                         break
+
+            if route_session is not None:
+                if route_video_writer is None:
+                    h, w = output_frame.shape[:2]
+                    route_video_path = route_session.route_dir / "route.mp4"
+                    try:
+                        route_video_writer = init_video_writer(
+                            str(route_video_path),
+                            MAIN_VIDEO_OUTPUT_FPS,
+                            w,
+                            h,
+                        )
+                        route_video_size = (w, h)
+                        logger.info("Route video writer active: %s", route_video_path)
+                    except RuntimeError as route_video_exc:
+                        logger.error("Route video writer init failed: %s", route_video_exc)
+                        route_video_writer = None
+                if route_video_writer is not None:
+                    h, w = output_frame.shape[:2]
+                    if route_video_size != (w, h):
+                        write_frame = cv2.resize(output_frame, route_video_size, interpolation=cv2.INTER_AREA)
+                    else:
+                        write_frame = output_frame
+                    try:
+                        route_video_writer.write(write_frame)
+                    except Exception as route_video_exc:  # noqa: BLE001
+                        logger.warning("Route video write error: %s", route_video_exc)
 
             if args.stream_enabled:
                 telemetry = {
