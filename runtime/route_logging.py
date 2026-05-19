@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -127,6 +128,15 @@ class RouteSession:
 
         summary_path = self._route_dir / "route_summary.json"
         summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+        # Bundle the route directory into a sibling .zip for quick download.
+        archive_path: Path | None = None
+        try:
+            base_name = str(self._route_dir)
+            archive = shutil.make_archive(base_name, "zip", root_dir=str(self._route_dir.parent), base_dir=self._route_dir.name)
+            archive_path = Path(archive)
+        except Exception:  # noqa: BLE001
+            archive_path = None
 
         return RouteFinalizeResult(
             route_id=self.route_id,

@@ -216,6 +216,62 @@ class HttpsMjpegServer:
             self._script_runner.stop()
             return JSONResponse({"ok": True, "status": self._script_runner.status()})
 
+        @app.get("/routes/list")
+        def routes_list(token: str = "", limit: int = 30) -> Any:
+            _check_token(token)
+            from config.settings import ROUTE_LOG_ROOT
+            root = Path(ROUTE_LOG_ROOT)
+            if not root.exists():
+                root = Path("logs/routes")
+            if not root.exists():
+                return JSONResponse({"ok": True, "routes": []})
+            entries: list[dict[str, Any]] = []
+            for child in sorted(root.iterdir(), reverse=True):
+                if not child.is_dir():
+                    continue
+                summary_path = child / "route_summary.json"
+                zip_path = child.parent / (child.name + ".zip")
+                meta = {"route_id": child.name, "has_zip": zip_path.exists()}
+                if zip_path.exists():
+                    try:
+                        meta["zip_size"] = zip_path.stat().st_size
+                    except OSError:
+                        meta["zip_size"] = None
+                if summary_path.exists():
+                    try:
+                        meta.update(_load_summary_brief(summary_path))
+                    except Exception:  # noqa: BLE001
+                        pass
+                entries.append(meta)
+                if len(entries) >= max(1, min(200, limit)):
+                    break
+            return JSONResponse({"ok": True, "routes": entries})
+
+        @app.get("/routes/download/{name}")
+        def routes_download(name: str, token: str = "") -> Any:
+            _check_token(token)
+            from config.settings import ROUTE_LOG_ROOT
+            # Reject path traversal: only basename, no slashes/backslashes/..
+            if "/" in name or "\\" in name or ".." in name or name.startswith("."):
+                raise HTTPException(status_code=400, detail="invalid_name")
+            root = Path(ROUTE_LOG_ROOT)
+            if not root.exists():
+                root = Path("logs/routes")
+            zip_path = (root / f"{name}.zip").resolve()
+            try:
+                root_resolved = root.resolve()
+            except OSError as exc:
+                raise HTTPException(status_code=500, detail=f"root_resolve: {exc}") from exc
+            if not str(zip_path).startswith(str(root_resolved) + "/") and zip_path.parent != root_resolved:
+                raise HTTPException(status_code=400, detail="path_outside_root")
+            if not zip_path.exists():
+                raise HTTPException(status_code=404, detail="zip_not_found")
+            return Response(
+                content=zip_path.read_bytes(),
+                media_type="application/zip",
+                headers={"Content-Disposition": f'attachment; filename=\"{name}.zip\"'},
+            )
+
         return app
 
 
@@ -287,6 +343,19 @@ def _validate_cert_pair(cert_file: str, key_file: str) -> None:
     ctx.load_cert_chain(certfile=cert_file, keyfile=key_file)
 
 
+def _load_summary_brief(path: Path) -> dict[str, Any]:
+    import json as _json
+    raw = _json.loads(path.read_text(encoding="utf-8"))
+    return {
+        "route_mode": raw.get("route_mode"),
+        "status": raw.get("status"),
+        "accepted": raw.get("accepted"),
+        "total_frames": raw.get("total_frames"),
+        "elapsed_s": raw.get("total_elapsed_seconds"),
+        "end_timestamp_utc": raw.get("end_timestamp_utc"),
+    }
+
+
 def _normalize_path(path: str) -> str:
     if not path:
         return "/"
@@ -306,7 +375,7 @@ _DASHBOARD_HTML = """<!doctype html>
     h3 { font-size: 14px; margin: 16px 0 6px; color: #aaa; text-transform: uppercase; letter-spacing: 0.6px; }
     .layout { display: grid; grid-template-columns: minmax(420px, 55vw) 1fr; gap: 20px; }
     .panel { background: #16171a; border: 1px solid #2a2c30; border-radius: 10px; padding: 16px; }
-    img.stream { width: 100%; border: 1px solid #2a2c30; border-radius: 6px; background: #000; display: block; }
+    img.stream { width: 85%; max-width: 800px; border: 1px solid #2a2c30; border-radius: 6px; background: #000; display: block; }
     .row { display: flex; gap: 10px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
     select, input, button { background: #1f2125; color: #eee; border: 1px solid #3a3d42; padding: 9px 12px; border-radius: 6px; font-size: 14px; }
     select { min-width: 220px; }
@@ -384,6 +453,14 @@ _DASHBOARD_HTML = """<!doctype html>
       <h3>JSON preview</h3>
       <pre id=\"preview\">{\n  \"steps\": []\n}</pre>
     </div>
+  </div>
+  <div class=\"panel\" style=\"margin-top:20px\">
+    <h2>Recent routes</h2>
+    <div class=\"row\"><button id=\"refreshRoutes\">↻ refresh</button><span class=\"muted\" id=\"routesMuted\">auto-refresh every 5s</span></div>
+    <table id=\"routesTable\">
+      <thead><tr><th>Route ID</th><th>Mode</th><th>Status</th><th>Frames</th><th>Elapsed</th><th>Zip size</th><th>Ended (UTC)</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
   </div>
 <script>
 const TOKEN = \"__TOKEN__\";
@@ -513,6 +590,40 @@ async function pollStatus() {
 setInterval(pollStatus, 500);
 render();
 renderTelemetry({});
+
+const routesTbody = document.querySelector(\"#routesTable tbody\");
+function fmtBytes(n) {
+  if (n == null) return \"-\";
+  if (n < 1024) return n + \" B\";
+  if (n < 1024*1024) return (n/1024).toFixed(1) + \" KB\";
+  return (n/1024/1024).toFixed(1) + \" MB\";
+}
+function fmtElapsed(s) {
+  if (s == null) return \"-\";
+  return Number(s).toFixed(1) + \" s\";
+}
+function fmtTs(t) {
+  if (!t) return \"-\";
+  return t.replace(\"T\", \" \").replace(/\\.[0-9]+/, \"\").replace(\"+00:00\", \"Z\");
+}
+async function refreshRoutes() {
+  try {
+    const r = await fetch(\"/routes/list?limit=50\" + (TOKEN ? (\"&token=\" + encodeURIComponent(TOKEN)) : \"\"));
+    if (!r.ok) return;
+    const j = await r.json();
+    const list = j.routes || [];
+    routesTbody.innerHTML = \"\";
+    list.forEach(r => {
+      const tr = document.createElement(\"tr\");
+      const dl = r.has_zip ? `<a class=\"pill pill-running\" style=\"text-decoration:none;padding:4px 10px\" href=\"/routes/download/${encodeURIComponent(r.route_id)}${qp}\">⬇ download</a>` : `<span class=\"muted\">no zip</span>`;
+      tr.innerHTML = `<td>${r.route_id}</td><td>${r.route_mode||'-'}</td><td>${r.status||'-'}${r.accepted===false?' ✗':''}${r.accepted===true?' ✓':''}</td><td>${r.total_frames??'-'}</td><td>${fmtElapsed(r.elapsed_s)}</td><td>${fmtBytes(r.zip_size)}</td><td>${fmtTs(r.end_timestamp_utc)}</td><td>${dl}</td>`;
+      routesTbody.appendChild(tr);
+    });
+  } catch (e) {}
+}
+document.getElementById(\"refreshRoutes\").onclick = refreshRoutes;
+setInterval(refreshRoutes, 5000);
+refreshRoutes();
 </script>
 </body>
 </html>
