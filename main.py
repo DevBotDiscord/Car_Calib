@@ -276,6 +276,7 @@ def main() -> None:
         logger.warning("MQTT control client setup failed: %s", exc)
         mqtt_control_client = None
 
+    script_runner = None
     if args.stream_enabled:
         stream_host = "0.0.0.0" if args.stream_public else args.host
         ensure_self_signed_cert(
@@ -284,6 +285,12 @@ def main() -> None:
             host=stream_host,
             valid_days=MAIN_HTTPS_SELF_SIGNED_DAYS,
         )
+        try:
+            from runtime.route_script import RouteScriptRunner
+            script_runner = RouteScriptRunner()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Route script runner disabled: %s", exc)
+            script_runner = None
         stream_server = HttpsMjpegServer(
             host=stream_host,
             port=args.port,
@@ -294,9 +301,11 @@ def main() -> None:
             cert_file=MAIN_HTTPS_CERT_FILE,
             key_file=MAIN_HTTPS_KEY_FILE,
             frame_store=frame_store,
+            script_runner=script_runner,
         )
         stream_server.start()
         logger.info("HTTPS MJPEG stream online: %s", stream_server.stream_url())
+        logger.info("Dashboard URL: https://%s:%d/dashboard", stream_host, args.port)
 
     camera_candidates: list[int] = []
     for idx in (_CAMERA_INDEX, 0, 1, 2, 3, 4, 5):
@@ -638,6 +647,11 @@ def main() -> None:
             video_writer.release()
         if stream_server is not None:
             stream_server.stop()
+        if script_runner is not None:
+            try:
+                script_runner.close()
+            except Exception:  # noqa: BLE001
+                pass
         if args.show_preview:
             try:
                 cv2.destroyAllWindows()

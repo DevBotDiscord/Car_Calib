@@ -55,6 +55,7 @@ class HttpsMjpegServer:
         cert_file: str,
         key_file: str,
         frame_store: SharedFrameStore,
+        script_runner: Any | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -65,6 +66,7 @@ class HttpsMjpegServer:
         self._cert_file = cert_file
         self._key_file = key_file
         self._frame_store = frame_store
+        self._script_runner = script_runner
 
         self._server: Any = None
         self._thread: threading.Thread | None = None
@@ -161,6 +163,54 @@ class HttpsMjpegServer:
 
             return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
 
+        @app.get("/dashboard")
+        def dashboard(token: str = "") -> Any:
+            _check_token(token)
+            return Response(
+                content=_DASHBOARD_HTML.replace(
+                    "__STREAM_PATH__", self._stream_path
+                ).replace("__STATUS_PATH__", self._status_path).replace(
+                    "__TOKEN__", self._token
+                ),
+                media_type="text/html; charset=utf-8",
+            )
+
+        @app.get("/route/script/status")
+        def route_script_status(token: str = "") -> Any:
+            _check_token(token)
+            if self._script_runner is None:
+                return JSONResponse({"ok": False, "error": "script_runner_disabled"}, status_code=503)
+            return JSONResponse({"ok": True, "status": self._script_runner.status()})
+
+        @app.post("/route/script")
+        async def route_script_submit(request: Request, token: str = "") -> Any:
+            _check_token(token)
+            if self._script_runner is None:
+                raise HTTPException(status_code=503, detail="script_runner_disabled")
+            try:
+                payload = await request.json()
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"invalid_json: {exc}") from exc
+
+            from runtime.route_script import validate_steps  # local import to avoid cycle
+
+            try:
+                steps = validate_steps(payload.get("steps") if isinstance(payload, dict) else None)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+            if not self._script_runner.submit(steps):
+                raise HTTPException(status_code=409, detail="script_already_running")
+            return JSONResponse({"ok": True, "status": self._script_runner.status()})
+
+        @app.post("/route/script/stop")
+        def route_script_stop(token: str = "") -> Any:
+            _check_token(token)
+            if self._script_runner is None:
+                raise HTTPException(status_code=503, detail="script_runner_disabled")
+            self._script_runner.stop()
+            return JSONResponse({"ok": True, "status": self._script_runner.status()})
+
         return app
 
 
@@ -236,3 +286,141 @@ def _normalize_path(path: str) -> str:
     if not path:
         return "/"
     return path if path.startswith("/") else f"/{path}"
+
+
+_DASHBOARD_HTML = """<!doctype html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\">
+  <title>car-calib route dashboard</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #111; color: #eee; margin: 0; padding: 16px; }
+    h1 { margin: 0 0 12px; font-size: 18px; }
+    .layout { display: grid; grid-template-columns: minmax(360px, 60vw) 1fr; gap: 16px; }
+    .panel { background: #1c1c1c; border: 1px solid #333; border-radius: 8px; padding: 12px; }
+    img.stream { width: 100%; max-width: 960px; border: 1px solid #333; background: #000; }
+    .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+    select, input, button { background: #222; color: #eee; border: 1px solid #555; padding: 6px 8px; border-radius: 4px; }
+    button { cursor: pointer; }
+    button.primary { background: #285; border-color: #4a8; color: #001; font-weight: 600; }
+    button.danger { background: #722; border-color: #a44; color: #fee; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #333; font-size: 13px; }
+    pre { background: #0a0a0a; padding: 8px; border-radius: 4px; max-height: 200px; overflow: auto; font-size: 12px; }
+    .muted { color: #888; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>car-calib · route dashboard</h1>
+  <div class=\"layout\">
+    <div class=\"panel\">
+      <img id=\"stream\" class=\"stream\" alt=\"camera stream\">
+      <div class=\"muted\" id=\"telemetry\">telemetry: …</div>
+    </div>
+    <div class=\"panel\">
+      <h2 style=\"font-size:15px;margin:0 0 8px\">Route script builder</h2>
+      <div class=\"row\">
+        <select id=\"action\">
+          <option value=\"forward\">forward (FORWARD + center)</option>
+          <option value=\"backward\">backward (BACKWARD + center)</option>
+          <option value=\"left\">left (FORWARD + max left)</option>
+          <option value=\"right\">right (FORWARD + max right)</option>
+          <option value=\"straight\">straight (alias)</option>
+          <option value=\"stop\">stop / pause</option>
+        </select>
+        <input id=\"duration\" type=\"number\" min=\"0\" step=\"0.5\" value=\"2\" style=\"width: 90px\">
+        <span class=\"muted\">seconds</span>
+        <button id=\"add\">+ add step</button>
+        <button id=\"clear\">clear</button>
+      </div>
+      <table id=\"steps\">
+        <thead><tr><th>#</th><th>action</th><th>duration_s</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class=\"row\" style=\"margin-top:12px\">
+        <button id=\"run\" class=\"primary\">▶ run script (auto-record)</button>
+        <button id=\"stop\" class=\"danger\">■ stop</button>
+        <span id=\"runState\" class=\"muted\">idle</span>
+      </div>
+      <h3 style=\"font-size:13px;margin:14px 0 4px\">JSON preview</h3>
+      <pre id=\"preview\">[]</pre>
+    </div>
+  </div>
+<script>
+const TOKEN = \"__TOKEN__\";
+const STREAM = \"__STREAM_PATH__\";
+const STATUS = \"__STATUS_PATH__\";
+const qp = TOKEN ? (\"?token=\" + encodeURIComponent(TOKEN)) : \"\";
+document.getElementById(\"stream\").src = STREAM + qp;
+const steps = [];
+const tbody = document.querySelector(\"#steps tbody\");
+const preview = document.getElementById(\"preview\");
+const runState = document.getElementById(\"runState\");
+const telemetry = document.getElementById(\"telemetry\");
+
+function render() {
+  tbody.innerHTML = \"\";
+  steps.forEach((s, i) => {
+    const tr = document.createElement(\"tr\");
+    tr.innerHTML = `<td>${i+1}</td><td>${s.action}</td><td>${s.duration_s}</td><td><button data-i=\"${i}\" class=\"rm\">×</button></td>`;
+    tbody.appendChild(tr);
+  });
+  preview.textContent = JSON.stringify({steps}, null, 2);
+}
+
+document.getElementById(\"add\").onclick = () => {
+  const action = document.getElementById(\"action\").value;
+  const duration_s = parseFloat(document.getElementById(\"duration\").value || \"0\");
+  if (!isFinite(duration_s) || duration_s < 0) return;
+  steps.push({action, duration_s});
+  render();
+};
+document.getElementById(\"clear\").onclick = () => { steps.length = 0; render(); };
+tbody.onclick = (e) => {
+  const t = e.target;
+  if (t.classList.contains(\"rm\")) { steps.splice(parseInt(t.dataset.i, 10), 1); render(); }
+};
+
+async function postJSON(url, body) {
+  const r = await fetch(url + qp, {method: \"POST\", headers: {\"Content-Type\": \"application/json\"}, body: JSON.stringify(body)});
+  return await r.json().catch(() => ({}));
+}
+
+document.getElementById(\"run\").onclick = async () => {
+  if (steps.length === 0) { runState.textContent = \"add steps first\"; return; }
+  runState.textContent = \"submitting…\";
+  const r = await fetch(\"/route/script\" + qp, {method: \"POST\", headers: {\"Content-Type\": \"application/json\"}, body: JSON.stringify({steps})});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { runState.textContent = \"error: \" + (j.detail || r.status); return; }
+  runState.textContent = \"running\";
+};
+document.getElementById(\"stop\").onclick = async () => {
+  await fetch(\"/route/script/stop\" + qp, {method: \"POST\"});
+  runState.textContent = \"stopping\";
+};
+
+async function pollStatus() {
+  try {
+    const r = await fetch(\"/route/script/status\" + qp);
+    if (r.ok) {
+      const j = await r.json();
+      const st = j.status || {};
+      const cur = st.step ? `${st.step.action} ${st.step.duration_s}s` : \"-\";
+      runState.textContent = st.running ? `running step ${st.current_step}/${st.total} (${cur})` : (st.last_error ? (\"error: \" + st.last_error) : \"idle\");
+    }
+  } catch (e) {}
+  try {
+    const r2 = await fetch(STATUS + qp);
+    if (r2.ok) {
+      const j2 = await r2.json();
+      const t = j2.telemetry || {};
+      telemetry.textContent = `route_id=${t.route_id||'-'} mode=${t.route_mode||'-'} fsm=${t.fsm_state||'-'} servo=${t.servo_angle||'-'} theta=${t.theta||'-'}`;
+    }
+  } catch (e) {}
+}
+setInterval(pollStatus, 800);
+render();
+</script>
+</body>
+</html>
+"""

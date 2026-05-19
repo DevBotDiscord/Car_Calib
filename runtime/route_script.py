@@ -1,0 +1,276 @@
+"""Route script runner — manual route builder backend.
+
+Drives the car through a list of ``(action, duration_s)`` steps by publishing
+MQTT commands to ``car/base/command`` and ``car/servo/angle``. Wraps each run
+in a route session via ``car/control/route`` so the MiniPC vision loop logs
+the matching CSV + MP4 automatically.
+
+Action types (servo angles are in the legacy 60..120 vision range that the
+RPi bridge maps onto its physical servo limits):
+
+* ``forward``  / ``straight`` — base FORWARD, servo CENTER
+* ``backward``                 — base BACKWARD, servo CENTER
+* ``left``                     — base FORWARD, servo LEFT  (max permissible)
+* ``right``                    — base FORWARD, servo RIGHT (max permissible)
+* ``stop`` / ``pause``         — base STOP
+
+Re-publishes the servo angle at ``REPUBLISH_HZ`` so the vision PID stream does
+not steal the steering target during the step window.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import threading
+import time
+from typing import Any
+
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:  # pragma: no cover - optional dependency
+    mqtt = None  # type: ignore[assignment]
+
+from config.settings import (
+    MQTT_BASE_COMMAND_TOPIC,
+    MQTT_BROKER_HOST,
+    MQTT_BROKER_PORT,
+    MQTT_CLIENT_ID_PREFIX,
+    MQTT_KEEPALIVE_S,
+    MQTT_PASSWORD,
+    MQTT_SERVO_TOPIC,
+    MQTT_USERNAME,
+)
+
+logger = logging.getLogger(__name__)
+
+
+_VALID_ACTIONS = {"forward", "backward", "straight", "left", "right", "stop", "pause"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+SCRIPT_LEFT_ANGLE = _env_float("ROUTE_SCRIPT_LEFT_ANGLE", 60.0)
+SCRIPT_CENTER_ANGLE = _env_float("ROUTE_SCRIPT_CENTER_ANGLE", 90.0)
+SCRIPT_RIGHT_ANGLE = _env_float("ROUTE_SCRIPT_RIGHT_ANGLE", 120.0)
+SCRIPT_REPUBLISH_HZ = _env_float("ROUTE_SCRIPT_REPUBLISH_HZ", 10.0)
+SCRIPT_MAX_DURATION_S = _env_float("ROUTE_SCRIPT_MAX_DURATION_S", 30.0)
+SCRIPT_MAX_STEPS = int(_env_float("ROUTE_SCRIPT_MAX_STEPS", 64))
+
+
+def validate_steps(raw_steps: Any) -> list[dict[str, Any]]:
+    """Validate a payload list of steps and return normalized dicts."""
+    if not isinstance(raw_steps, list):
+        raise ValueError("steps must be a list")
+    if len(raw_steps) == 0:
+        raise ValueError("steps must not be empty")
+    if len(raw_steps) > SCRIPT_MAX_STEPS:
+        raise ValueError(f"steps exceeds maximum {SCRIPT_MAX_STEPS}")
+
+    normalized: list[dict[str, Any]] = []
+    for idx, raw in enumerate(raw_steps):
+        if not isinstance(raw, dict):
+            raise ValueError(f"step #{idx} must be an object")
+        action = str(raw.get("action", "")).strip().lower()
+        if action not in _VALID_ACTIONS:
+            raise ValueError(f"step #{idx} action {action!r} not in {sorted(_VALID_ACTIONS)}")
+        try:
+            duration = float(raw.get("duration_s", 0.0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"step #{idx} duration_s invalid: {exc}") from exc
+        if duration < 0.0:
+            raise ValueError(f"step #{idx} duration_s must be >= 0")
+        if duration > SCRIPT_MAX_DURATION_S:
+            raise ValueError(
+                f"step #{idx} duration_s exceeds {SCRIPT_MAX_DURATION_S}s safety cap"
+            )
+        normalized.append({"action": action, "duration_s": duration})
+    return normalized
+
+
+class RouteScriptRunner:
+    """Runs route scripts in a background thread and reports status."""
+
+    def __init__(self) -> None:
+        if mqtt is None:
+            raise RuntimeError("paho-mqtt is not available; cannot run route scripts")
+
+        self._lock = threading.Lock()
+        self._state: dict[str, Any] = {
+            "running": False,
+            "current_step": 0,
+            "total": 0,
+            "step": None,
+            "started_at": None,
+            "last_error": None,
+        }
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._mqtt = self._build_client()
+
+    # ------------------------------------------------------------------ #
+    # MQTT setup
+    # ------------------------------------------------------------------ #
+
+    def _build_client(self) -> Any:
+        client_id = f"{MQTT_CLIENT_ID_PREFIX}-route-script-{os.getpid()}"
+        callback_api_version = getattr(mqtt, "CallbackAPIVersion", None)
+        if callback_api_version is not None:
+            client = mqtt.Client(
+                callback_api_version=callback_api_version.VERSION1,
+                client_id=client_id,
+            )
+        else:
+            client = mqtt.Client(client_id=client_id)
+        if MQTT_USERNAME:
+            client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+        client.reconnect_delay_set(min_delay=1, max_delay=5)
+        client.connect_async(MQTT_BROKER_HOST, MQTT_BROKER_PORT, keepalive=MQTT_KEEPALIVE_S)
+        client.loop_start()
+        logger.info(
+            "RouteScriptRunner MQTT client connecting to %s:%d", MQTT_BROKER_HOST, MQTT_BROKER_PORT
+        )
+        return client
+
+    def close(self) -> None:
+        self.stop()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        try:
+            self._mqtt.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self._mqtt.loop_stop()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ------------------------------------------------------------------ #
+    # Public API used by HTTPS server
+    # ------------------------------------------------------------------ #
+
+    def is_running(self) -> bool:
+        with self._lock:
+            return bool(self._state["running"])
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._state)
+
+    def submit(self, steps: list[dict[str, Any]]) -> bool:
+        with self._lock:
+            if self._state["running"]:
+                return False
+            self._state["running"] = True
+            self._state["current_step"] = 0
+            self._state["total"] = len(steps)
+            self._state["step"] = None
+            self._state["started_at"] = time.time()
+            self._state["last_error"] = None
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, args=(steps,), daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    # ------------------------------------------------------------------ #
+    # Worker
+    # ------------------------------------------------------------------ #
+
+    def _run(self, steps: list[dict[str, Any]]) -> None:
+        logger.info("Route script start (%d steps)", len(steps))
+        self._publish_route("START")
+        try:
+            for idx, step in enumerate(steps):
+                if self._stop_event.is_set():
+                    logger.info("Route script stop requested at step %d", idx)
+                    break
+                with self._lock:
+                    self._state["current_step"] = idx + 1
+                    self._state["step"] = dict(step)
+                self._execute_step(step)
+            self._publish_neutral()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Route script crashed: %s", exc)
+            with self._lock:
+                self._state["last_error"] = str(exc)
+            self._publish_neutral()
+        finally:
+            self._publish_route("STOP")
+            with self._lock:
+                self._state["running"] = False
+                self._state["step"] = None
+            logger.info("Route script finished")
+
+    def _execute_step(self, step: dict[str, Any]) -> None:
+        action = step["action"]
+        duration_s = float(step["duration_s"])
+
+        if action in ("forward", "straight"):
+            angle = SCRIPT_CENTER_ANGLE
+            base_cmd = "FORWARD"
+        elif action == "backward":
+            angle = SCRIPT_CENTER_ANGLE
+            base_cmd = "BACKWARD"
+        elif action == "left":
+            angle = SCRIPT_LEFT_ANGLE
+            base_cmd = "FORWARD"
+        elif action == "right":
+            angle = SCRIPT_RIGHT_ANGLE
+            base_cmd = "FORWARD"
+        else:  # stop / pause
+            angle = SCRIPT_CENTER_ANGLE
+            base_cmd = "STOP"
+
+        self._publish_base(base_cmd)
+        self._publish_angle(angle)
+
+        # Re-publish servo target at REPUBLISH_HZ to outvote the vision PID
+        # stream while the step window is active. Base command is sticky on
+        # the RPi side so we only publish it once at start.
+        period = 1.0 / max(1.0, SCRIPT_REPUBLISH_HZ)
+        deadline = time.monotonic() + duration_s
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or self._stop_event.is_set():
+                break
+            time.sleep(min(period, remaining))
+            self._publish_angle(angle)
+
+    def _publish_neutral(self) -> None:
+        self._publish_base("STOP")
+        self._publish_angle(SCRIPT_CENTER_ANGLE)
+
+    # ------------------------------------------------------------------ #
+    # MQTT publishes
+    # ------------------------------------------------------------------ #
+
+    def _publish_base(self, command: str) -> None:
+        try:
+            self._mqtt.publish(MQTT_BASE_COMMAND_TOPIC, command, qos=0)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("RouteScriptRunner base publish failed: %s", exc)
+
+    def _publish_angle(self, angle: float) -> None:
+        payload = json.dumps({"angle": int(round(angle))})
+        try:
+            self._mqtt.publish(MQTT_SERVO_TOPIC, payload, qos=0)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("RouteScriptRunner servo publish failed: %s", exc)
+
+    def _publish_route(self, command: str) -> None:
+        try:
+            self._mqtt.publish("car/control/route", command, qos=1)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("RouteScriptRunner route publish failed: %s", exc)
