@@ -70,6 +70,8 @@ class InputController:
         # Auto-return to home after a turn ends.
         self._steering_active = False
         self._recenter_pending = False
+        self._idle_tick_count = 0
+        self._idle_tick_threshold = max(1, int(config.GAMEPAD_IDLE_HYSTERESIS_TICKS))
 
         # One-shot relay command queue (e.g. RB tap toggles the relay).
         self._pending_relay_command: str | None = None
@@ -217,8 +219,13 @@ class InputController:
             axis = -axis
         axis = _apply_deadzone(axis, self._gamepad_steer_deadzone)
         if axis == 0.0:
-            self._mark_steering_idle(now)
+            self._idle_tick_count += 1
+            if self._idle_tick_count >= self._idle_tick_threshold:
+                self._mark_steering_idle(now)
             return None
+
+        # Real input: clear idle counter so transient deadzone bounces don't recenter.
+        self._idle_tick_count = 0
 
         if axis < 0:
             target = self._center_angle - axis * (self.right_limit - self._center_angle)
