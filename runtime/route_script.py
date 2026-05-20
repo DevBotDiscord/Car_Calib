@@ -234,28 +234,34 @@ class RouteScriptRunner:
         action = step["action"]
         duration_s = float(step["duration_s"])
 
+        # forward/straight: defer steering to vision PID (do not publish
+        # servo angle so the PID stream wins). All other actions pin the
+        # servo to a fixed angle while the step is active.
         if action in ("forward", "straight"):
-            angle = SCRIPT_CENTER_ANGLE
             base_cmd = "FORWARD"
+            angle: float | None = None
         elif action == "backward":
-            angle = SCRIPT_CENTER_ANGLE
             base_cmd = "BACKWARD"
-        elif action == "left":
-            angle = SCRIPT_LEFT_ANGLE
-            base_cmd = "FORWARD"
-        elif action == "right":
-            angle = SCRIPT_RIGHT_ANGLE
-            base_cmd = "FORWARD"
-        else:  # stop / pause
             angle = SCRIPT_CENTER_ANGLE
+        elif action == "left":
+            base_cmd = "FORWARD"
+            angle = SCRIPT_LEFT_ANGLE
+        elif action == "right":
+            base_cmd = "FORWARD"
+            angle = SCRIPT_RIGHT_ANGLE
+        else:  # stop / pause
             base_cmd = "STOP"
+            angle = None
 
         self._publish_base(base_cmd)
-        self._publish_angle(angle)
+        if angle is not None:
+            self._publish_angle(angle)
 
-        # Re-publish servo target at REPUBLISH_HZ to outvote the vision PID
-        # stream while the step window is active. Base command is sticky on
-        # the RPi side so we only publish it once at start.
+        # Re-publish pinned servo target at REPUBLISH_HZ to outvote the
+        # vision PID stream while the step window is active. Base command
+        # is sticky on the RPi side so we only publish it once at start.
+        # When angle is None (forward/straight, stop) the script lets the
+        # PID stream drive the servo unchanged.
         period = 1.0 / max(1.0, SCRIPT_REPUBLISH_HZ)
         deadline = time.monotonic() + duration_s
         while True:
@@ -263,11 +269,12 @@ class RouteScriptRunner:
             if remaining <= 0 or self._stop_event.is_set():
                 break
             time.sleep(min(period, remaining))
-            self._publish_angle(angle)
+            if angle is not None:
+                self._publish_angle(angle)
 
     def _publish_neutral(self) -> None:
+        # Stop the base; do not touch servo so vision PID retains control.
         self._publish_base("STOP")
-        self._publish_angle(SCRIPT_CENTER_ANGLE)
 
     # ------------------------------------------------------------------ #
     # MQTT publishes
