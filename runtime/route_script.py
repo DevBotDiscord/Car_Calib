@@ -209,6 +209,7 @@ class RouteScriptRunner:
 
     def _run(self, steps: list[dict[str, Any]]) -> None:
         logger.info("Route script start (%d steps)", len(steps))
+        self._publish_script_active("ON")
         self._publish_route("START")
         try:
             for idx, step in enumerate(steps):
@@ -227,6 +228,7 @@ class RouteScriptRunner:
             self._publish_neutral()
         finally:
             self._publish_route("STOP")
+            self._publish_script_active("OFF")
             with self._lock:
                 self._state["running"] = False
                 self._state["step"] = None
@@ -308,3 +310,9 @@ class RouteScriptRunner:
             self._mqtt.publish("car/control/route", command, qos=1)
         except Exception as exc:  # noqa: BLE001
             logger.error("RouteScriptRunner route publish failed: %s", exc)
+
+    def _publish_script_active(self, command: str) -> None:
+        try:
+            self._mqtt.publish("car/control/script_active", command, qos=1, retain=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("RouteScriptRunner script_active publish failed: %s", exc)

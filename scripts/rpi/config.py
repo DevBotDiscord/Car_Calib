@@ -163,10 +163,5 @@ mqtt_connected = False
 
 # Control state (for gamepad override)
 manual_override_active = False
-manual_override_active_until = 0.0  # monotonic deadline; sticky window for MQTT block
+script_active = False
 current_route_mode = "AUTO"
-
-# Sticky window for manual override after last manual_steer decision (anti-jitter).
-MANUAL_OVERRIDE_STICKY_S = float(os.getenv("MANUAL_OVERRIDE_STICKY_S", "0.5"))
-# Idle hysteresis: require N consecutive ticks of axis-deadzone before triggering recenter.
-GAMEPAD_IDLE_HYSTERESIS_TICKS = int(os.getenv("GAMEPAD_IDLE_HYSTERESIS_TICKS", "5"))

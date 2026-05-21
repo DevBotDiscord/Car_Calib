@@ -51,10 +51,22 @@ def publish_mode(mode: str) -> None:
 # ---------------------------------------------------------------------------
 
 def handle_servo_message(payload_text: str) -> None:
-    if config.manual_override_active:
-        return  # Gamepad has priority
+    if config.manual_override_active and not config.script_active:
+        return  # Gamepad has priority unless a dashboard route script is running
     angle = resolve_remote_servo_angle(payload_text)
     apply_steering(angle, "MQTT")
+
+
+def handle_script_active_message(payload_text: str) -> None:
+    cmd = payload_text.strip().upper()
+    if cmd in ("ON", "1", "TRUE", "START"):
+        config.script_active = True
+        print("MQTT: script_active=ON (route script driving)")
+    elif cmd in ("OFF", "0", "FALSE", "STOP"):
+        config.script_active = False
+        print("MQTT: script_active=OFF")
+    else:
+        print(f"MQTT: unknown script_active payload: {cmd}")
 
 
 def handle_base_message(payload_text: str) -> None:
@@ -101,8 +113,9 @@ def on_mqtt_connect(client, userdata, flags, rc, properties=None) -> None:
     client.subscribe(config.MQTT_SERVO_TOPIC)
     client.subscribe(config.MQTT_BASE_COMMAND_TOPIC)
     client.subscribe(config.MQTT_RELAY_TOPIC)
+    client.subscribe("car/control/script_active")
     print(f"MQTT: connected to {config.MQTT_BROKER_HOST}:{config.MQTT_BROKER_PORT}")
-    print(f"  topics: {config.MQTT_SERVO_TOPIC}, {config.MQTT_BASE_COMMAND_TOPIC}, {config.MQTT_RELAY_TOPIC}")
+    print(f"  topics: {config.MQTT_SERVO_TOPIC}, {config.MQTT_BASE_COMMAND_TOPIC}, {config.MQTT_RELAY_TOPIC}, car/control/script_active")
     publish_status("online")
 
 
@@ -129,6 +142,8 @@ def on_mqtt_message(client, userdata, message) -> None:
             handle_base_message(payload_text)
         elif topic == config.MQTT_RELAY_TOPIC:
             handle_relay_message(payload_text)
+        elif topic == "car/control/script_active":
+            handle_script_active_message(payload_text)
         else:
             print(f"MQTT: unhandled topic: {topic}")
     except (ValueError, json.JSONDecodeError) as exc:
