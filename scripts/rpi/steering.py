@@ -8,12 +8,26 @@ from . import config
 from .config import _angle_within_limits, _clamp as _clamp_angle
 
 
+# Absolute angle scale used to map degrees -> servo pulse, matching the
+# standalone controlv8 reference: [-90 deg, +90 deg] -> [SERVO_MIN_PULSE_US,
+# SERVO_MAX_PULSE_US]. The logical [LEFT_LIMIT, RIGHT_LIMIT] window only
+# clamps the input; the pulse mapping itself is absolute so the same
+# numeric angle produces the same physical servo position regardless of
+# how the trim limits are configured.
+_SERVO_ABS_MIN_DEG = -90.0
+_SERVO_ABS_MAX_DEG = 90.0
+
+
 def _angle_to_pulse_us(angle: float) -> int:
     clamped = _clamp_angle(angle, config.LEFT_LIMIT, config.RIGHT_LIMIT)
-    span = config.RIGHT_LIMIT - config.LEFT_LIMIT
+    span = _SERVO_ABS_MAX_DEG - _SERVO_ABS_MIN_DEG
     if span == 0:
         return config.SERVO_MIN_PULSE_US
-    ratio = (clamped - config.LEFT_LIMIT) / span
+    ratio = (clamped - _SERVO_ABS_MIN_DEG) / span
+    if ratio < 0.0:
+        ratio = 0.0
+    elif ratio > 1.0:
+        ratio = 1.0
     return int(config.SERVO_MIN_PULSE_US + ratio * (config.SERVO_MAX_PULSE_US - config.SERVO_MIN_PULSE_US))
 
 
