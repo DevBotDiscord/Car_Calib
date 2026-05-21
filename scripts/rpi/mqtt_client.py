@@ -51,8 +51,11 @@ def publish_mode(mode: str) -> None:
 # ---------------------------------------------------------------------------
 
 def handle_servo_message(payload_text: str) -> None:
-    if config.manual_override_active and not config.script_active:
-        return  # Gamepad has priority unless a dashboard route script is running
+    # Only accept MQTT servo commands while a dashboard route script is
+    # active. Vision PID stream and stray publishers are ignored otherwise
+    # so manual gamepad/keyboard control stays exclusive on the RPi.
+    if not config.script_active:
+        return
     angle = resolve_remote_servo_angle(payload_text)
     apply_steering(angle, "MQTT")
 

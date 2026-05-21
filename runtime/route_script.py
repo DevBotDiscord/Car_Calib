@@ -285,8 +285,11 @@ class RouteScriptRunner:
             script_lock.set_pinned(False)
 
     def _publish_neutral(self) -> None:
-        # Stop the base; do not touch servo so vision PID retains control.
+        # Stop the base and recenter the servo before releasing control.
+        # Script_active is still ON here so the center command lands on
+        # the RPi servo path; the caller flips it OFF afterwards.
         self._publish_base("STOP")
+        self._publish_angle(SCRIPT_CENTER_ANGLE)
 
     # ------------------------------------------------------------------ #
     # MQTT publishes
