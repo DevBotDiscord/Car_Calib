@@ -27,6 +27,8 @@ import threading
 import time
 from typing import Any
 
+from runtime import script_lock
+
 try:
     import paho.mqtt.client as mqtt
 except ImportError:  # pragma: no cover - optional dependency
@@ -253,6 +255,11 @@ class RouteScriptRunner:
             base_cmd = "STOP"
             angle = None
 
+        # Tell the local servo driver (vision PID side) to back off while
+        # this step pins the servo, so its 30Hz stream does not fight our
+        # 10Hz republish on the same MQTT topic.
+        script_lock.set_pinned(angle is not None)
+
         self._publish_base(base_cmd)
         if angle is not None:
             self._publish_angle(angle)
@@ -264,13 +271,16 @@ class RouteScriptRunner:
         # PID stream drive the servo unchanged.
         period = 1.0 / max(1.0, SCRIPT_REPUBLISH_HZ)
         deadline = time.monotonic() + duration_s
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0 or self._stop_event.is_set():
-                break
-            time.sleep(min(period, remaining))
-            if angle is not None:
-                self._publish_angle(angle)
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or self._stop_event.is_set():
+                    break
+                time.sleep(min(period, remaining))
+                if angle is not None:
+                    self._publish_angle(angle)
+        finally:
+            script_lock.set_pinned(False)
 
     def _publish_neutral(self) -> None:
         # Stop the base; do not touch servo so vision PID retains control.

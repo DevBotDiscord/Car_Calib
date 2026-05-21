@@ -40,6 +40,11 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     mqtt = None  # type: ignore[assignment]
 
+try:
+    from runtime import script_lock as _script_lock
+except Exception:  # noqa: BLE001 - script_lock optional
+    _script_lock = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 _PULSE_MIN_US: int = DRIVER_SERVO_PULSE_MIN_US
@@ -123,6 +128,12 @@ class ServoDriver:
             clamped,
             pulse_us,
         )
+
+        # While a route-script step is pinning the servo, do not publish
+        # the vision PID's target — it would fight the script's republish
+        # on the same MQTT topic.
+        if _script_lock is not None and _script_lock.is_pinned():
+            return
 
         if self._mqtt_enabled and self._mqtt_client is not None:
             self._publish_mqtt_angle(clamped)
