@@ -886,15 +886,33 @@ async function pollStatus() {
         currentRunningStep = 0;
       }
       if (wasRunning !== isRunning || st.running) render();
+      // Script just finished -> immediate route list refresh + stream reload.
+      if (wasRunning && !isRunning) {
+        setTimeout(() => { refreshRoutes(); reloadStream(); }, 800);
+      }
     }
   } catch (e) {}
   try {
     const r2 = await fetch(STATUS + qp);
     if (r2.ok) {
       const j2 = await r2.json();
-      renderTelemetry(j2.telemetry || {});
+      const tel = j2.telemetry || {};
+      // Route_id changed (likely STOP just landed) -> refresh route list + reload stream.
+      const newRid = tel.route_id || null;
+      if (lastRouteId !== undefined && lastRouteId !== newRid) {
+        setTimeout(() => { refreshRoutes(); reloadStream(); }, 600);
+      }
+      lastRouteId = newRid;
+      renderTelemetry(tel);
     }
   } catch (e) {}
+}
+let lastRouteId;
+function reloadStream() {
+  const img = document.getElementById(\"stream\");
+  if (!img) return;
+  const base = STREAM + qp + (qp ? \"&\" : \"?\") + \"_t=\" + Date.now();
+  img.src = base;
 }
 setInterval(pollStatus, 500);
 render();
