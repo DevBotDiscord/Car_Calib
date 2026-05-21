@@ -70,8 +70,6 @@ class InputController:
         # Auto-return to home after a turn ends.
         self._steering_active = False
         self._recenter_pending = False
-        self._idle_tick_count = 0
-        self._idle_tick_threshold = max(1, int(config.GAMEPAD_IDLE_HYSTERESIS_TICKS))
 
         # One-shot relay command queue (e.g. RB tap toggles the relay).
         self._pending_relay_command: str | None = None
@@ -134,8 +132,12 @@ class InputController:
                 gs.base_command = base_command
                 return gs
 
-        # Auto-recenter after steering release (sticky until next steer input)
+        # Auto-recenter after steering release (one-shot: snap to center
+        # then clear the flag so the MQTT/script servo path can take over
+        # on subsequent ticks).
         if self._recenter_pending:
+            self._recenter_pending = False
+            self._steering_active = False
             self._steer_angle = self._center_angle
             self.manual_override_until = 0.0
             return ControlDecision(base_command=base_command, manual_steer=True, steer_angle=self._center_angle)
@@ -219,13 +221,8 @@ class InputController:
             axis = -axis
         axis = _apply_deadzone(axis, self._gamepad_steer_deadzone)
         if axis == 0.0:
-            self._idle_tick_count += 1
-            if self._idle_tick_count >= self._idle_tick_threshold:
-                self._mark_steering_idle(now)
+            self._mark_steering_idle(now)
             return None
-
-        # Real input: clear idle counter so transient deadzone bounces don't recenter.
-        self._idle_tick_count = 0
 
         if axis < 0:
             target = self._center_angle - axis * (self.right_limit - self._center_angle)
