@@ -196,9 +196,9 @@ def build_detector_debug_panel(
 
     tiles = [
         (gray, "Gray"),
+        (grouped_vis, "Grouped + Reference"),
         (roi, "ROI Masked"),
         (hough_vis, "Hough Lines"),
-        (grouped_vis, "Grouped + Reference"),
     ]
 
     for idx, (tile, label) in enumerate(tiles):
@@ -211,9 +211,9 @@ def build_detector_debug_panel(
         x1 = x0 + tile_w
         panel[y0:y1, x0:x1] = tile
 
-    # Put metadata on top of bottom-right tile.
+    # Put metadata on top of the Grouped + Reference tile (top-right).
     text_x = tile_w + 8
-    text_y = tile_h + 42
+    text_y = 42
     corridor = detector_debug.get("corridor_debug", {}) or {}
     meta_lines = [
         f"lines={detector_debug['lines_count']} groups={detector_debug['groups_count']}",
