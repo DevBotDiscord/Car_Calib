@@ -713,39 +713,34 @@ class LineDetector:
             logger.debug("No line groups formed.")
             return None
 
-        corridor_theta, _ = self._select_corridor_theta(groups, gray.shape[1])
-        if corridor_theta is not None:
-            theta = corridor_theta
-            self._last_source = "corridor"
-        else:
-            horizontal_groups = [
-                group
-                for group in groups
-                if self._is_horizontal_candidate(self._group_fit_angle(group))
-                and self._group_total_length(group) >= _MIN_GROUP_TOTAL_LENGTH_PX
-            ]
-            if not horizontal_groups:
-                logger.debug(
-                    "No horizontal/corridor candidates found (horizontal max error=%.1f°).",
-                    _HORIZONTAL_MAX_ERROR_DEG,
-                )
-                return None
+        horizontal_groups = [
+            group
+            for group in groups
+            if self._is_horizontal_candidate(self._group_fit_angle(group))
+            and self._group_total_length(group) >= _MIN_GROUP_TOTAL_LENGTH_PX
+        ]
+        if not horizontal_groups:
+            logger.debug(
+                "No horizontal Hough candidate groups found (horizontal max error=%.1f°).",
+                _HORIZONTAL_MAX_ERROR_DEG,
+            )
+            return None
 
-            ref_idx = self._select_reference_group_index(horizontal_groups)
-            best_group = horizontal_groups[ref_idx]
-            theta_horizontal = self._group_fit_angle(best_group)
-            self._last_selected_y = self._group_max_y(best_group)
+        ref_idx = self._select_reference_group_index(horizontal_groups)
+        best_group = horizontal_groups[ref_idx]
+        theta_horizontal = self._group_fit_angle(best_group)
+        self._last_selected_y = self._group_max_y(best_group)
 
-            if not self._is_horizontal_candidate(theta_horizontal):
-                logger.debug(
-                    "Rejected non-horizontal candidate θ=%.2f° (max error=%.1f°).",
-                    theta_horizontal,
-                    _HORIZONTAL_MAX_ERROR_DEG,
-                )
-                return None
+        if not self._is_horizontal_candidate(theta_horizontal):
+            logger.debug(
+                "Rejected non-horizontal candidate θ=%.2f° (max error=%.1f°).",
+                theta_horizontal,
+                _HORIZONTAL_MAX_ERROR_DEG,
+            )
+            return None
 
-            theta = self._horizontal_to_vertical_angle(theta_horizontal)
-            self._last_source = "horizontal_near"
+        theta = self._horizontal_to_vertical_angle(theta_horizontal)
+        self._last_source = "hough_horizontal_near"
 
         if not self._sanity_check(theta):
             return None
@@ -802,44 +797,33 @@ class LineDetector:
                     if self._is_horizontal_candidate(self._group_fit_angle(group))
                     and self._group_total_length(group) >= _MIN_GROUP_TOTAL_LENGTH_PX
                 ]
-                corridor_theta, corridor_debug = self._select_corridor_theta(groups, gray.shape[1])
-                if corridor_theta is not None:
-                    theta_candidate = corridor_theta
-                    theta_horizontal = None
+                _, corridor_debug = self._select_corridor_theta(groups, gray.shape[1])
+                horizontal_ok = len(horizontal_candidate_indices) > 0
+                if horizontal_ok:
+                    reference_idx = min(
+                        horizontal_candidate_indices,
+                        key=lambda idx: (
+                            -self._group_max_y(groups[idx]),
+                            (
+                                abs(self._group_max_y(groups[idx]) - self._last_selected_y) * _TEMPORAL_Y_WEIGHT
+                                if self._last_selected_y is not None
+                                else 0.0
+                            ),
+                            self._group_horizontal_error(groups[idx]),
+                        ),
+                    )
+                    theta_horizontal = self._group_fit_angle(groups[reference_idx])
+                    theta_candidate = self._horizontal_to_vertical_angle(theta_horizontal)
                     sanity_ok = self._sanity_check(theta_candidate)
                     if sanity_ok:
+                        self._last_selected_y = self._group_max_y(groups[reference_idx])
                         theta_out = self._smooth_theta(theta_candidate)
                         self._last_angle = theta_out
-                        self._last_source = "corridor"
+                        self._last_source = "hough_horizontal_near"
                     else:
                         stale_output = self._last_angle is not None
                 else:
-                    horizontal_ok = len(horizontal_candidate_indices) > 0
-                    if horizontal_ok:
-                        reference_idx = min(
-                            horizontal_candidate_indices,
-                            key=lambda idx: (
-                                -self._group_max_y(groups[idx]),
-                                (
-                                    abs(self._group_max_y(groups[idx]) - self._last_selected_y) * _TEMPORAL_Y_WEIGHT
-                                    if self._last_selected_y is not None
-                                    else 0.0
-                                ),
-                                self._group_horizontal_error(groups[idx]),
-                            ),
-                        )
-                        theta_horizontal = self._group_fit_angle(groups[reference_idx])
-                        theta_candidate = self._horizontal_to_vertical_angle(theta_horizontal)
-                        sanity_ok = self._sanity_check(theta_candidate)
-                        if sanity_ok:
-                            self._last_selected_y = self._group_max_y(groups[reference_idx])
-                            theta_out = self._smooth_theta(theta_candidate)
-                            self._last_angle = theta_out
-                            self._last_source = "horizontal_near"
-                        else:
-                            stale_output = self._last_angle is not None
-                    else:
-                        stale_output = self._last_angle is not None
+                    stale_output = self._last_angle is not None
             else:
                 stale_output = self._last_angle is not None
         elif self._last_angle is not None:
@@ -854,15 +838,27 @@ class LineDetector:
         if selected_group_bbox is not None:
             x, y, w, h = selected_group_bbox
             cv2.rectangle(grouped_vis, (x, y), (x + w, y + h), (255, 80, 80), 2)
+            selected_y = int(self._group_max_y(groups[reference_idx])) if reference_idx is not None else y + h
+            cv2.line(grouped_vis, (0, selected_y), (grouped_vis.shape[1] - 1, selected_y), (0, 255, 255), 2)
             cv2.putText(
                 grouped_vis,
-                "Selected horizontal group",
+                "Selected Hough horizontal group",
                 (x, max(18, y - 6)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
                 (255, 80, 80),
                 2,
             )
+            if theta_out is not None:
+                cv2.putText(
+                    grouped_vis,
+                    f"hough_theta={theta_horizontal:.1f} steer_theta={theta_out:.1f} error={theta_out - 90.0:+.1f}deg y={selected_y}",
+                    (10, max(42, selected_y - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 255, 255),
+                    2,
+                )
         elif stale_output:
             cv2.putText(
                 grouped_vis,
