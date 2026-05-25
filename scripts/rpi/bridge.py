@@ -151,11 +151,9 @@ def main() -> None:
                     if decision.manual_steer:
                         apply_steering(decision.steer_angle, "GAMEPAD")
                         config.manual_override_active = True
-                        config.manual_override_active_until = now + config.MANUAL_OVERRIDE_STICKY_S
                     else:
-                        if now >= config.manual_override_active_until:
-                            config.manual_override_active = False
-                        # MQTT callback will apply vision servo angle once sticky window elapses
+                        config.manual_override_active = False
+                        # MQTT callback will apply vision servo angle
 
                 except BlockingIOError:
                     # No input event ready on non-blocking devices; skip silently.

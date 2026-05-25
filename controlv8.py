@@ -40,10 +40,8 @@ OUT3 = 22
 SERVO_PIN = 12
 
 # Steering config
-CENTER_ANGLE = -26
-SERVO_MAX_ANGLE_DEG = 45
-LEFT_LIMIT = CENTER_ANGLE - SERVO_MAX_ANGLE_DEG
-RIGHT_LIMIT = CENTER_ANGLE + SERVO_MAX_ANGLE_DEG
+CENTER_ANGLE = -28
+STEER_RANGE = 60  # degrees each side of center
 
 # MG996R pulse
 SERVO_MIN_PULSE = 0.0005
@@ -107,17 +105,20 @@ def _servo_off() -> None:
 # HELPERS
 # =========================================================
 
-def angle_bounds(left_limit: float, right_limit: float) -> tuple[float, float]:
-    return (left_limit, right_limit) if left_limit <= right_limit else (right_limit, left_limit)
+def get_limits():
+    """Return (left_limit, right_limit) based on current CENTER_ANGLE +- STEER_RANGE."""
+    return (CENTER_ANGLE + STEER_RANGE, CENTER_ANGLE - STEER_RANGE)
 
 
-def clamp_angle(value: float, left_limit: float, right_limit: float) -> float:
-    lower, upper = angle_bounds(left_limit, right_limit)
-    return max(lower, min(upper, value))
-
-    
 def clamp(value, lo, hi):
-    return clamp_angle(value, lo, hi)
+    """Clamp value between lo and hi (order-insensitive)."""
+    return max(min(lo, hi), min(max(lo, hi), value))
+
+
+def clamp_steer(value: float) -> float:
+    """Clamp steering angle to current limits."""
+    left, right = get_limits()
+    return clamp(value, left, right)
 
 
 def log(message):
@@ -176,7 +177,8 @@ def apply_deadzone(value, deadzone):
 
 def adjust_center(delta):
     global CENTER_ANGLE
-    CENTER_ANGLE = clamp(CENTER_ANGLE + delta, LEFT_LIMIT, RIGHT_LIMIT)
+    left, right = get_limits()
+    CENTER_ANGLE = clamp(CENTER_ANGLE + delta, left, right)
     log(f"CENTER_ANGLE: {CENTER_ANGLE}")
     steer_center()
 
@@ -192,12 +194,11 @@ def set_base(b1, b2, b3, label=None):
     pi.write(OUT2, 1 if b2 else 0)
     pi.write(OUT3, 1 if b3 else 0)
 
-    if state != last_base_state:
-        if label:
-            log(f"BASE: {label} -> {state}")
-        else:
-            log(f"BASE: {state}")
-        last_base_state = state
+    if label:
+        log(f"BASE: {label} -> {state}")
+    elif state != last_base_state:
+        log(f"BASE: {state}")
+    last_base_state = state
 
 
 def stop_base():
@@ -226,7 +227,7 @@ def unlock_base():
 def apply_steering(target_angle):
     global steer_angle
 
-    steer_angle = clamp(target_angle, LEFT_LIMIT, RIGHT_LIMIT)
+    steer_angle = clamp_steer(target_angle)
     _write_servo(steer_angle)
     log(f"STEER: {steer_angle:.1f} deg | CENTER: {CENTER_ANGLE} deg")
 
@@ -245,10 +246,11 @@ def steer_from_axis(axis_value):
         steer_center()
         return
 
+    left, right = get_limits()
     if axis_value < 0:
-        target_angle = CENTER_ANGLE + axis_value * (CENTER_ANGLE - LEFT_LIMIT)
+        target_angle = CENTER_ANGLE + axis_value * (CENTER_ANGLE - left)
     else:
-        target_angle = CENTER_ANGLE + axis_value * (RIGHT_LIMIT - CENTER_ANGLE)
+        target_angle = CENTER_ANGLE + axis_value * (right - CENTER_ANGLE)
 
     apply_steering(target_angle)
 
@@ -336,13 +338,22 @@ def update_axis_state(device, event):
             adjust_center(-1)
 
 
+_last_drive_log = None
+
 def process_controls():
+    global _last_drive_log
     drive_value = axis_state[DRIVE_AXIS]
 
     if INVERT_DRIVE_AXIS:
         drive_value = -drive_value
 
     drive_value = apply_deadzone(drive_value, DRIVE_DEADZONE)
+
+    # Debug: log when drive value changes
+    log_key = f"drive={drive_value:.3f} raw={axis_state[DRIVE_AXIS]:.3f}"
+    if log_key != _last_drive_log:
+        log(f"DRIVE: {log_key}")
+        _last_drive_log = log_key
 
     if BUTTON_LOCK in pressed_buttons:
         lock_base()
@@ -389,8 +400,9 @@ def main():
     print("START = quit")
     print("Ctrl+C = emergency exit")
     print("")
+    left, right = get_limits()
     print(
-        f"Steering center={CENTER_ANGLE}, left={LEFT_LIMIT}, right={RIGHT_LIMIT}, "
+        f"Steering center={CENTER_ANGLE}, left={left}, right={right}, "
         f"steer_deadzone={STEER_DEADZONE}, drive_deadzone={DRIVE_DEADZONE}"
     )
     print("")

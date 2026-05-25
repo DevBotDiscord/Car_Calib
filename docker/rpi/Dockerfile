@@ -18,6 +18,7 @@ RUN apt-get update \
         make \
         python3-dev \
         wget \
+        mosquitto-clients \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-rpi.txt /tmp/requirements-rpi.txt
