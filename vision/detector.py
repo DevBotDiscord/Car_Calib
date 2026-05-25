@@ -840,6 +840,18 @@ class LineDetector:
             cv2.rectangle(grouped_vis, (x, y), (x + w, y + h), (255, 80, 80), 2)
             selected_y = int(self._group_max_y(groups[reference_idx])) if reference_idx is not None else y + h
             cv2.line(grouped_vis, (0, selected_y), (grouped_vis.shape[1] - 1, selected_y), (0, 255, 255), 2)
+            cv2.line(hough_vis, (0, selected_y), (hough_vis.shape[1] - 1, selected_y), (0, 255, 255), 2)
+            cv2.circle(hough_vis, (hough_vis.shape[1] // 2, selected_y), 6, (0, 255, 255), -1)
+            if theta_out is not None:
+                cv2.putText(
+                    hough_vis,
+                    f"selected_hough_y={selected_y} err={theta_out - 90.0:+.1f}deg",
+                    (10, max(28, selected_y - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 255, 255),
+                    2,
+                )
             cv2.putText(
                 grouped_vis,
                 "Selected Hough horizontal group",
@@ -870,12 +882,12 @@ class LineDetector:
                 2,
             )
 
-        # Corridor debug overlay on the grouped tile: frame center (white),
-        # detected left/right borders (cyan/magenta), corridor center
-        # (green), and lateral offset annotation.
+        # Corridor debug overlay on the grouped tile: detected left/right
+        # borders (cyan/magenta), corridor center (green), and lateral offset.
+        # Do not draw a vertical frame-center line here; selected Hough center
+        # is drawn inside the Hough Lines tile instead.
         h_dbg, w_dbg = grouped_vis.shape[:2]
         frame_cx = w_dbg / 2.0
-        cv2.line(grouped_vis, (int(frame_cx), 0), (int(frame_cx), h_dbg - 1), (255, 255, 255), 2)
         if corridor_debug.get("corridor_ok"):
             lx = int(corridor_debug["corridor_left_x"])
             rx = int(corridor_debug["corridor_right_x"])
