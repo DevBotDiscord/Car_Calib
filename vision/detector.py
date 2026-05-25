@@ -874,6 +874,48 @@ class LineDetector:
                 2,
             )
 
+        # Corridor debug overlay on the grouped tile: frame center (white),
+        # detected left/right borders (cyan/magenta), corridor center
+        # (green), and lateral offset annotation.
+        h_dbg, w_dbg = grouped_vis.shape[:2]
+        frame_cx = w_dbg / 2.0
+        cv2.line(grouped_vis, (int(frame_cx), 0), (int(frame_cx), h_dbg - 1), (255, 255, 255), 2)
+        if corridor_debug.get("corridor_ok"):
+            lx = int(corridor_debug["corridor_left_x"])
+            rx = int(corridor_debug["corridor_right_x"])
+            ccx = int(corridor_debug["corridor_center_x"])
+            offset = float(corridor_debug.get("corridor_offset_deg", 0.0))
+            cv2.line(grouped_vis, (lx, 0), (lx, h_dbg - 1), (255, 255, 0), 3)
+            cv2.line(grouped_vis, (rx, 0), (rx, h_dbg - 1), (255, 0, 255), 3)
+            cv2.line(grouped_vis, (ccx, 0), (ccx, h_dbg - 1), (80, 255, 80), 3)
+            cv2.arrowedLine(
+                grouped_vis,
+                (int(frame_cx), h_dbg - 28),
+                (ccx, h_dbg - 28),
+                (80, 255, 80),
+                2,
+                tipLength=0.12,
+            )
+            cv2.putText(
+                grouped_vis,
+                f"corridor: frame_c={frame_cx:.0f} center={ccx} offset={offset:+.1f}deg",
+                (10, h_dbg - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (80, 255, 80),
+                2,
+            )
+        else:
+            cv2.putText(
+                grouped_vis,
+                f"corridor: no lock ({corridor_debug.get('reason', '-')})",
+                (10, h_dbg - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (80, 80, 255),
+                2,
+            )
+
         debug_data: dict[str, Any] = {
             "gray": gray,
             "roi": roi,

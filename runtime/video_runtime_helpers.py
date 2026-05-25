@@ -214,14 +214,16 @@ def build_detector_debug_panel(
     # Put metadata on top of bottom-right tile.
     text_x = tile_w + 8
     text_y = tile_h + 42
+    corridor = detector_debug.get("corridor_debug", {}) or {}
     meta_lines = [
         f"lines={detector_debug['lines_count']} groups={detector_debug['groups_count']}",
-        f"ref_group={detector_debug['reference_group_index']}",
-        f"theta_candidate={detector_debug['theta_candidate']}",
+        f"source={detector_debug.get('theta_source')} ref_group={detector_debug['reference_group_index']}",
+        f"theta_candidate={detector_debug['theta_candidate']} theta_out={detector_debug['theta_output']}",
         f"horizontal_ok={detector_debug['horizontal_ok']} sanity_ok={detector_debug['sanity_ok']}",
-        f"theta_out={detector_debug['theta_output']}",
+        f"corridor_ok={corridor.get('corridor_ok')} reason={corridor.get('reason', '-')}",
+        f"corridor_l={corridor.get('corridor_left_x', '-')} r={corridor.get('corridor_right_x', '-')}",
+        f"corridor_center={corridor.get('corridor_center_x', '-')} off={corridor.get('corridor_offset_deg', '-')}",
         f"stale_output={detector_debug.get('stale_output', False)}",
-        f"min_group_len_px={detector_debug.get('min_group_total_length_px')}",
     ]
     for line in meta_lines:
         cv2.putText(panel, line, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (245, 245, 245), 1)
