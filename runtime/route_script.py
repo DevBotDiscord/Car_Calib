@@ -5,8 +5,8 @@ MQTT commands to ``car/base/command`` and ``car/servo/angle``. Wraps each run
 in a route session via ``car/control/route`` so the MiniPC vision loop logs
 the matching CSV + MP4 automatically.
 
-Action types (servo angles are in the legacy 60..120 vision range that the
-RPi bridge maps onto its physical servo limits):
+Action types (servo angles follow signed-angle convention used by gamepad
+control: more negative = LEFT, more positive = RIGHT):
 
 * ``forward``  / ``straight`` — base FORWARD, servo CENTER
 * ``backward``                 — base BACKWARD, servo CENTER
@@ -61,9 +61,10 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-SCRIPT_LEFT_ANGLE = _env_float("ROUTE_SCRIPT_LEFT_ANGLE", 60.0)
-SCRIPT_CENTER_ANGLE = _env_float("ROUTE_SCRIPT_CENTER_ANGLE", 90.0)
-SCRIPT_RIGHT_ANGLE = _env_float("ROUTE_SCRIPT_RIGHT_ANGLE", 120.0)
+SCRIPT_CENTER_ANGLE = _env_float("ROUTE_SCRIPT_CENTER_ANGLE", _env_float("SERVO_CENTER_ANGLE", -8.0))
+SCRIPT_MAX_STEER = _env_float("ROUTE_SCRIPT_MAX_STEER", _env_float("SERVO_MAX_ANGLE_DEG", 45.0))
+SCRIPT_LEFT_ANGLE = _env_float("ROUTE_SCRIPT_LEFT_ANGLE", SCRIPT_CENTER_ANGLE + SCRIPT_MAX_STEER)
+SCRIPT_RIGHT_ANGLE = _env_float("ROUTE_SCRIPT_RIGHT_ANGLE", SCRIPT_CENTER_ANGLE - SCRIPT_MAX_STEER)
 SCRIPT_REPUBLISH_HZ = _env_float("ROUTE_SCRIPT_REPUBLISH_HZ", 10.0)
 SCRIPT_MAX_DURATION_S = _env_float("ROUTE_SCRIPT_MAX_DURATION_S", 30.0)
 SCRIPT_MAX_STEPS = int(_env_float("ROUTE_SCRIPT_MAX_STEPS", 64))

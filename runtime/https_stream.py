@@ -722,6 +722,7 @@ _DASHBOARD_HTML = """<!doctype html>
         <input id=\"duration\" type=\"number\" min=\"0\" step=\"0.5\" value=\"2\">
         <span class=\"muted\">seconds</span>
         <button id=\"add\">+ add step</button>
+        <button id=\"cancelEdit\" style=\"display:none\">cancel edit</button>
         <button id=\"clear\">clear all</button>
       </div>
 
@@ -736,7 +737,7 @@ _DASHBOARD_HTML = """<!doctype html>
 
       <h3>Steps</h3>
       <table id=\"steps\">
-        <thead><tr><th style=\"width:50px\">#</th><th>Action</th><th style=\"width:120px\">Duration</th><th style=\"width:70px\"></th></tr></thead>
+        <thead><tr><th style=\"width:50px\">#</th><th>Action</th><th style=\"width:120px\">Duration</th><th style=\"width:160px\"></th></tr></thead>
         <tbody></tbody>
       </table>
 
@@ -780,8 +781,29 @@ const runPill = document.getElementById(\"runPill\");
 const runDetail = document.getElementById(\"runDetail\");
 const progressBar = document.getElementById(\"progressBar\");
 const telemetryGrid = document.getElementById(\"telemetryGrid\");
+const actionInput = document.getElementById(\"action\");
+const durationInput = document.getElementById(\"duration\");
+const addBtn = document.getElementById(\"add\");
+const cancelEditBtn = document.getElementById(\"cancelEdit\");
 let currentRunningStep = 0;
 let isRunning = false;
+let editingIndex = -1;
+
+function resetEditor() {
+  editingIndex = -1;
+  addBtn.textContent = \"+ add step\";
+  cancelEditBtn.style.display = \"none\";
+}
+
+function loadEditorFromStep(idx) {
+  const step = steps[idx];
+  if (!step) return;
+  editingIndex = idx;
+  actionInput.value = step.action;
+  durationInput.value = String(step.duration_s);
+  addBtn.textContent = \"save edit\";
+  cancelEditBtn.style.display = \"\";
+}
 
 function render() {
   tbody.innerHTML = \"\";
@@ -794,32 +816,57 @@ function render() {
       else if (i + 1 === currentRunningStep) tr.classList.add(\"active\");
       else tr.classList.add(\"pending\");
     }
-    tr.innerHTML = `<td class=\"idx\">${i+1}</td><td>${s.action}</td><td>${s.duration_s.toFixed(1)} s</td><td>${isRunning ? \"\" : `<button data-i=\"${i}\" class=\"rm\">×</button>`}</td>`;
+    tr.innerHTML = `<td class=\"idx\">${i+1}</td><td>${s.action}</td><td>${s.duration_s.toFixed(1)} s</td><td>${isRunning ? \"\" : `<button data-i=\"${i}\" class=\"edit\">edit</button> <button data-i=\"${i}\" class=\"rm\">×</button>`}</td>`;
     tbody.appendChild(tr);
   });
   preview.textContent = JSON.stringify({steps}, null, 2);
 }
 
-document.getElementById(\"add\").onclick = () => {
+addBtn.onclick = () => {
   if (isRunning) return;
-  const action = document.getElementById(\"action\").value;
-  const duration_s = parseFloat(document.getElementById(\"duration\").value || \"0\");
+  const action = actionInput.value;
+  const duration_s = parseFloat(durationInput.value || \"0\");
   if (!isFinite(duration_s) || duration_s < 0) return;
-  steps.push({action, duration_s});
+  if (editingIndex >= 0 && editingIndex < steps.length) {
+    steps[editingIndex] = {action, duration_s};
+    resetEditor();
+  } else {
+    steps.push({action, duration_s});
+  }
   render();
+};
+
+cancelEditBtn.onclick = () => {
+  if (isRunning) return;
+  resetEditor();
 };
 document.getElementById(\"clear\").onclick = () => {
   if (isRunning) return;
   steps.length = 0;
+  resetEditor();
   render();
 };
 tbody.onclick = (e) => {
   if (isRunning) return;
   const t = e.target;
-  if (t.classList.contains(\"rm\")) { steps.splice(parseInt(t.dataset.i, 10), 1); render(); }
+  const idx = parseInt(t.dataset.i, 10);
+  if (!Number.isFinite(idx)) return;
+
+  if (t.classList.contains(\"edit\")) {
+    loadEditorFromStep(idx);
+    return;
+  }
+
+  if (t.classList.contains(\"rm\")) {
+    steps.splice(idx, 1);
+    if (editingIndex === idx) resetEditor();
+    else if (editingIndex > idx) editingIndex -= 1;
+    render();
+  }
 };
 
 document.getElementById(\"run\").onclick = async () => {
+  if (editingIndex >= 0) { runDetail.textContent = \"save edit first\"; return; }
   if (steps.length === 0) { runDetail.textContent = \"add steps first\"; return; }
   runDetail.textContent = \"submitting…\";
   const presetSel = document.getElementById(\"presetSelect\");
@@ -1080,6 +1127,7 @@ document.getElementById(\"presetLoad\").onclick = async () => {
   steps.length = 0;
   (p.steps || []).forEach(s => steps.push({action: s.action, duration_s: Number(s.duration_s)}));
   presetName.value = p.name || name;
+  resetEditor();
   render();
 };
 document.getElementById(\"presetSave\").onclick = async () => {
