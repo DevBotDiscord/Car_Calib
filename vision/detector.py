@@ -33,13 +33,7 @@ from config.settings import (
     VISION_CLAHE_CLIP_LIMIT,
     VISION_CLAHE_TILE_GRID_H,
     VISION_CLAHE_TILE_GRID_W,
-    VISION_CORRIDOR_ENABLED,
-    VISION_CORRIDOR_LATERAL_GAIN_DEG,
-    VISION_CORRIDOR_MAX_THETA_OFFSET_DEG,
-    VISION_CORRIDOR_MIN_GROUP_LENGTH_PX,
-    VISION_CORRIDOR_VERTICAL_MAX_ERROR_DEG,
     VISION_DEBUG_MASK_FILE,
-    VISION_FILTER_ALPHA,
     VISION_HORIZONTAL_MAX_ERROR_DEG,
     VISION_HOUGH_MAX_LINE_GAP,
     VISION_HOUGH_MIN_LINE_LEN,
@@ -54,7 +48,6 @@ from config.settings import (
     VISION_ROI_EDGE_MARGIN_PX,
     VISION_SANITY_MAX_DELTA_DEG,
     VISION_MIN_GROUP_TOTAL_LENGTH_PX,
-    VISION_TEMPORAL_Y_WEIGHT,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,13 +89,6 @@ _SANITY_MAX_DELTA: float = VISION_SANITY_MAX_DELTA_DEG
 # Hard cap for horizontal-line acceptance. If the selected line group angle is
 # farther than this from 0°/180°, it is rejected.
 _HORIZONTAL_MAX_ERROR_DEG: float = VISION_HORIZONTAL_MAX_ERROR_DEG
-_TEMPORAL_Y_WEIGHT: float = VISION_TEMPORAL_Y_WEIGHT
-_CORRIDOR_ENABLED: bool = VISION_CORRIDOR_ENABLED
-_CORRIDOR_VERTICAL_MAX_ERROR_DEG: float = VISION_CORRIDOR_VERTICAL_MAX_ERROR_DEG
-_CORRIDOR_MIN_GROUP_LENGTH_PX: float = VISION_CORRIDOR_MIN_GROUP_LENGTH_PX
-_CORRIDOR_LATERAL_GAIN_DEG: float = VISION_CORRIDOR_LATERAL_GAIN_DEG
-_CORRIDOR_MAX_THETA_OFFSET_DEG: float = VISION_CORRIDOR_MAX_THETA_OFFSET_DEG
-_FILTER_ALPHA: float = max(0.0, min(1.0, VISION_FILTER_ALPHA))
 
 # Keep ROI boundary black so the mask edge is never detected as a line.
 _ROI_BORDER_BLACK_PX: int = VISION_ROI_BORDER_BLACK_PX
@@ -151,9 +137,6 @@ class LineDetector:
             tileGridSize=_CLAHE_TILE_GRID,
         )
         self._last_angle: Optional[float] = None
-        self._last_selected_y: Optional[float] = None
-        self._filtered_theta: Optional[float] = None
-        self._last_source: str = "none"
         self._debug_saved: bool = False
 
     # ---------------------------------------------------------------------- #
@@ -492,92 +475,16 @@ class LineDetector:
         """
         return (horizontal_angle + 90.0) % 180.0
 
-    @staticmethod
-    def _group_mean_x(
-        group: list[tuple[int, int, int, int, float, float, float, float]],
-    ) -> float:
-        """Return average x midpoint for a group."""
-        return sum(seg[6] for seg in group) / max(1, len(group))
-
-    def _group_vertical_error(
-        self,
-        group: list[tuple[int, int, int, int, float, float, float, float]],
-    ) -> float:
-        """Return distance (degrees) from perfect vertical (90°)."""
-        return _angle_diff(self._group_fit_angle(group), 90.0)
-
-    def _is_vertical_candidate(self, group: list[tuple[int, int, int, int, float, float, float, float]]) -> bool:
-        return (
-            self._group_vertical_error(group) <= _CORRIDOR_VERTICAL_MAX_ERROR_DEG
-            and self._group_total_length(group) >= _CORRIDOR_MIN_GROUP_LENGTH_PX
-        )
-
-    def _select_corridor_theta(
-        self,
-        groups: list[list[tuple[int, int, int, int, float, float, float, float]]],
-        frame_width: int,
-    ) -> tuple[Optional[float], dict[str, Any]]:
-        """Return theta from left/right vertical tile borders when available."""
-        if not _CORRIDOR_ENABLED:
-            return None, {"corridor_ok": False, "reason": "disabled"}
-        cx = frame_width / 2.0
-        vertical = [g for g in groups if self._is_vertical_candidate(g)]
-        left = [g for g in vertical if self._group_mean_x(g) < cx]
-        right = [g for g in vertical if self._group_mean_x(g) > cx]
-        if not left or not right:
-            return None, {
-                "corridor_ok": False,
-                "reason": "missing_side",
-                "vertical_groups": len(vertical),
-            }
-
-        left_group = max(left, key=self._group_mean_x)
-        right_group = min(right, key=self._group_mean_x)
-        lx = self._group_mean_x(left_group)
-        rx = self._group_mean_x(right_group)
-        if rx <= lx:
-            return None, {"corridor_ok": False, "reason": "invalid_pair"}
-
-        corridor_center_x = (lx + rx) / 2.0
-        lateral = (corridor_center_x - cx) / max(1.0, cx)
-        offset = max(
-            -_CORRIDOR_MAX_THETA_OFFSET_DEG,
-            min(_CORRIDOR_MAX_THETA_OFFSET_DEG, lateral * _CORRIDOR_LATERAL_GAIN_DEG),
-        )
-        return 90.0 + offset, {
-            "corridor_ok": True,
-            "corridor_left_x": lx,
-            "corridor_right_x": rx,
-            "corridor_center_x": corridor_center_x,
-            "corridor_offset_deg": offset,
-            "vertical_groups": len(vertical),
-        }
-
-    def _smooth_theta(self, theta: float) -> float:
-        """Low-pass theta to damp frame-to-frame jitter."""
-        if self._filtered_theta is None or _FILTER_ALPHA >= 1.0:
-            self._filtered_theta = theta
-        elif _FILTER_ALPHA <= 0.0:
-            pass
-        else:
-            self._filtered_theta = (_FILTER_ALPHA * theta) + ((1.0 - _FILTER_ALPHA) * self._filtered_theta)
-        return self._filtered_theta
-
     def _select_reference_group_index(
         self,
         groups: list[list[tuple[int, int, int, int, float, float, float, float]]],
     ) -> int:
-        """Pick nearest horizontal group, stabilized by previous selected y."""
+        """Pick the most horizontal group; break ties by nearest robot."""
         return min(
             range(len(groups)),
             key=lambda idx: (
-                -self._group_max_y(groups[idx]),
-                (
-                    abs(self._group_max_y(groups[idx]) - self._last_selected_y) * _TEMPORAL_Y_WEIGHT
-                    if self._last_selected_y is not None
-                    else 0.0
-                ),
                 self._group_horizontal_error(groups[idx]),
+                -self._group_max_y(groups[idx]),
             ),
         )
 
@@ -721,15 +628,12 @@ class LineDetector:
         ]
         if not horizontal_groups:
             logger.debug(
-                "No horizontal Hough candidate groups found (horizontal max error=%.1f°).",
+                "No horizontal candidate groups found (max error=%.1f°).",
                 _HORIZONTAL_MAX_ERROR_DEG,
             )
             return None
 
-        ref_idx = self._select_reference_group_index(horizontal_groups)
-        best_group = horizontal_groups[ref_idx]
-        theta_horizontal = self._group_fit_angle(best_group)
-        self._last_selected_y = self._group_max_y(best_group)
+        theta_horizontal = self._select_reference(horizontal_groups)
 
         if not self._is_horizontal_candidate(theta_horizontal):
             logger.debug(
@@ -740,18 +644,15 @@ class LineDetector:
             return None
 
         theta = self._horizontal_to_vertical_angle(theta_horizontal)
-        self._last_source = "hough_horizontal_near"
 
         if not self._sanity_check(theta):
             return None
 
-        theta = self._smooth_theta(theta)
         self._last_angle = theta
         logger.debug(
-            "Reference angle θ=%.2f°  error=%.2f°  source=%s  (groups=%d)",
+            "Reference angle θ=%.2f°  error=%.2f°  (groups=%d)",
             theta,
             theta - 90.0,
-            self._last_source,
             len(groups),
         )
         return theta
@@ -783,7 +684,6 @@ class LineDetector:
         theta_candidate: Optional[float] = None
         theta_horizontal: Optional[float] = None
         horizontal_ok = False
-        corridor_debug: dict[str, Any] = {"corridor_ok": False}
         sanity_ok = False
         stale_output = False
         theta_out: Optional[float] = None
@@ -797,29 +697,21 @@ class LineDetector:
                     if self._is_horizontal_candidate(self._group_fit_angle(group))
                     and self._group_total_length(group) >= _MIN_GROUP_TOTAL_LENGTH_PX
                 ]
-                _, corridor_debug = self._select_corridor_theta(groups, gray.shape[1])
                 horizontal_ok = len(horizontal_candidate_indices) > 0
                 if horizontal_ok:
                     reference_idx = min(
                         horizontal_candidate_indices,
                         key=lambda idx: (
-                            -self._group_max_y(groups[idx]),
-                            (
-                                abs(self._group_max_y(groups[idx]) - self._last_selected_y) * _TEMPORAL_Y_WEIGHT
-                                if self._last_selected_y is not None
-                                else 0.0
-                            ),
                             self._group_horizontal_error(groups[idx]),
+                            -self._group_max_y(groups[idx]),
                         ),
                     )
                     theta_horizontal = self._group_fit_angle(groups[reference_idx])
                     theta_candidate = self._horizontal_to_vertical_angle(theta_horizontal)
                     sanity_ok = self._sanity_check(theta_candidate)
                     if sanity_ok:
-                        self._last_selected_y = self._group_max_y(groups[reference_idx])
-                        theta_out = self._smooth_theta(theta_candidate)
-                        self._last_angle = theta_out
-                        self._last_source = "hough_horizontal_near"
+                        self._last_angle = theta_candidate
+                        theta_out = theta_candidate
                     else:
                         stale_output = self._last_angle is not None
                 else:
@@ -838,39 +730,15 @@ class LineDetector:
         if selected_group_bbox is not None:
             x, y, w, h = selected_group_bbox
             cv2.rectangle(grouped_vis, (x, y), (x + w, y + h), (255, 80, 80), 2)
-            selected_y = int(self._group_max_y(groups[reference_idx])) if reference_idx is not None else y + h
-            cv2.line(grouped_vis, (0, selected_y), (grouped_vis.shape[1] - 1, selected_y), (0, 255, 255), 2)
-            cv2.line(hough_vis, (0, selected_y), (hough_vis.shape[1] - 1, selected_y), (0, 255, 255), 2)
-            cv2.circle(hough_vis, (hough_vis.shape[1] // 2, selected_y), 6, (0, 255, 255), -1)
-            if theta_out is not None:
-                cv2.putText(
-                    hough_vis,
-                    f"selected_hough_y={selected_y} err={theta_out - 90.0:+.1f}deg",
-                    (10, max(28, selected_y - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    (0, 255, 255),
-                    2,
-                )
             cv2.putText(
                 grouped_vis,
-                "Selected Hough horizontal group",
+                "Selected horizontal group",
                 (x, max(18, y - 6)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
                 (255, 80, 80),
                 2,
             )
-            if theta_out is not None:
-                cv2.putText(
-                    grouped_vis,
-                    f"hough_theta={theta_horizontal:.1f} steer_theta={theta_out:.1f} error={theta_out - 90.0:+.1f}deg y={selected_y}",
-                    (10, max(42, selected_y - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    (0, 255, 255),
-                    2,
-                )
         elif stale_output:
             cv2.putText(
                 grouped_vis,
@@ -878,48 +746,6 @@ class LineDetector:
                 (10, 24),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
-                (80, 80, 255),
-                2,
-            )
-
-        # Corridor debug overlay on the grouped tile: detected left/right
-        # borders (cyan/magenta), corridor center (green), and lateral offset.
-        # Do not draw a vertical frame-center line here; selected Hough center
-        # is drawn inside the Hough Lines tile instead.
-        h_dbg, w_dbg = grouped_vis.shape[:2]
-        frame_cx = w_dbg / 2.0
-        if corridor_debug.get("corridor_ok"):
-            lx = int(corridor_debug["corridor_left_x"])
-            rx = int(corridor_debug["corridor_right_x"])
-            ccx = int(corridor_debug["corridor_center_x"])
-            offset = float(corridor_debug.get("corridor_offset_deg", 0.0))
-            cv2.line(grouped_vis, (lx, 0), (lx, h_dbg - 1), (255, 255, 0), 3)
-            cv2.line(grouped_vis, (rx, 0), (rx, h_dbg - 1), (255, 0, 255), 3)
-            cv2.line(grouped_vis, (ccx, 0), (ccx, h_dbg - 1), (80, 255, 80), 3)
-            cv2.arrowedLine(
-                grouped_vis,
-                (int(frame_cx), h_dbg - 28),
-                (ccx, h_dbg - 28),
-                (80, 255, 80),
-                2,
-                tipLength=0.12,
-            )
-            cv2.putText(
-                grouped_vis,
-                f"corridor: frame_c={frame_cx:.0f} center={ccx} offset={offset:+.1f}deg",
-                (10, h_dbg - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (80, 255, 80),
-                2,
-            )
-        else:
-            cv2.putText(
-                grouped_vis,
-                f"corridor: no lock ({corridor_debug.get('reason', '-')})",
-                (10, h_dbg - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
                 (80, 80, 255),
                 2,
             )
@@ -940,8 +766,6 @@ class LineDetector:
             "horizontal_ok": horizontal_ok,
             "sanity_ok": sanity_ok,
             "theta_output": theta_out,
-            "theta_source": self._last_source,
-            "corridor_debug": corridor_debug,
             "stale_output": stale_output,
             "horizontal_max_error": _HORIZONTAL_MAX_ERROR_DEG,
             "sanity_max_delta": _SANITY_MAX_DELTA,

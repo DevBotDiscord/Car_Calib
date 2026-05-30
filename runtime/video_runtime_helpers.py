@@ -177,61 +177,57 @@ def _draw_tile_label(tile: np.ndarray, label: str) -> None:
     cv2.putText(tile, label, (8, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 2)
 
 
-def build_detector_debug_composite(
-    main_frame: np.ndarray,
-    detector_debug: dict[str, Any],
-) -> np.ndarray:
-    """Build Mode-A debug layout: main video left, Grouped+Ref right."""
-    h, w = main_frame.shape[:2]
-    left_w = w // 2
-    right_w = w - left_w
-    top_h = h
-    bottom_h = max(h // 3, 220)
-    out = np.zeros((top_h + bottom_h, w, 3), dtype=np.uint8)
-
-    main_tile = _fit_to_tile(main_frame, left_w, top_h)
-    grouped_tile = _fit_to_tile(_to_bgr(detector_debug["grouped_vis"]), right_w, top_h)
-    roi_tile = _fit_to_tile(_to_bgr(detector_debug["roi"]), left_w, bottom_h)
-    hough_tile = _fit_to_tile(_to_bgr(detector_debug["hough_vis"]), right_w, bottom_h)
-
-    _draw_tile_label(main_tile, "Main Video")
-    _draw_tile_label(grouped_tile, "Grouped + Reference (selected Hough)")
-    _draw_tile_label(roi_tile, "ROI Masked")
-    _draw_tile_label(hough_tile, "Hough Lines + selected center")
-
-    out[0:top_h, 0:left_w] = main_tile
-    out[0:top_h, left_w:w] = grouped_tile
-    out[top_h:top_h + bottom_h, 0:left_w] = roi_tile
-    out[top_h:top_h + bottom_h, left_w:w] = hough_tile
-
-    corridor = detector_debug.get("corridor_debug", {}) or {}
-    meta_lines = [
-        f"lines={detector_debug['lines_count']} groups={detector_debug['groups_count']}",
-        f"source={detector_debug.get('theta_source')} ref_group={detector_debug['reference_group_index']}",
-        f"theta_candidate={detector_debug['theta_candidate']} theta_out={detector_debug['theta_output']}",
-        f"horizontal_ok={detector_debug['horizontal_ok']} sanity_ok={detector_debug['sanity_ok']}",
-        f"corridor_ok={corridor.get('corridor_ok')} reason={corridor.get('reason', '-')}",
-        f"corridor_l={corridor.get('corridor_left_x', '-')} r={corridor.get('corridor_right_x', '-')}",
-        f"corridor_center={corridor.get('corridor_center_x', '-')} off={corridor.get('corridor_offset_deg', '-')}",
-        f"stale_output={detector_debug.get('stale_output', False)}",
-    ]
-    text_x = left_w + 8
-    text_y = 44
-    for line in meta_lines:
-        cv2.putText(out, line, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (245, 245, 245), 2)
-        text_y += 24
-
-    return out
-
-
 def build_detector_debug_panel(
     frame_width: int,
     panel_height: int,
     detector_debug: dict[str, Any],
 ) -> np.ndarray:
-    """Backward-compatible wrapper for old call sites."""
-    dummy = np.zeros((panel_height * 2, frame_width, 3), dtype=np.uint8)
-    return build_detector_debug_composite(dummy, detector_debug)
+    """Build a compact debug panel with key detector stages only."""
+    panel = np.zeros((panel_height, frame_width, 3), dtype=np.uint8)
+    rows = 2
+    cols = 2
+    tile_h = panel_height // rows
+    tile_w = frame_width // cols
+
+    gray = _fit_to_tile(_to_bgr(detector_debug["gray"]), tile_w, tile_h)
+    roi = _fit_to_tile(_to_bgr(detector_debug["roi"]), tile_w, tile_h)
+    hough_vis = _fit_to_tile(_to_bgr(detector_debug["hough_vis"]), tile_w, tile_h)
+    grouped_vis = _fit_to_tile(_to_bgr(detector_debug["grouped_vis"]), tile_w, tile_h)
+
+    tiles = [
+        (gray, "Gray"),
+        (roi, "ROI Masked"),
+        (hough_vis, "Hough Lines"),
+        (grouped_vis, "Grouped + Reference"),
+    ]
+
+    for idx, (tile, label) in enumerate(tiles):
+        r = idx // cols
+        c = idx % cols
+        _draw_tile_label(tile, label)
+        y0 = r * tile_h
+        y1 = y0 + tile_h
+        x0 = c * tile_w
+        x1 = x0 + tile_w
+        panel[y0:y1, x0:x1] = tile
+
+    # Put metadata on top of bottom-right tile.
+    text_x = tile_w + 8
+    text_y = tile_h + 42
+    meta_lines = [
+        f"lines={detector_debug['lines_count']} groups={detector_debug['groups_count']}",
+        f"ref_group={detector_debug['reference_group_index']}",
+        f"theta_candidate={detector_debug['theta_candidate']}",
+        f"horizontal_ok={detector_debug['horizontal_ok']} sanity_ok={detector_debug['sanity_ok']}",
+        f"theta_out={detector_debug['theta_output']}",
+        f"stale_output={detector_debug.get('stale_output', False)}",
+        f"min_group_len_px={detector_debug.get('min_group_total_length_px')}",
+    ]
+    for line in meta_lines:
+        cv2.putText(panel, line, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (245, 245, 245), 1)
+        text_y += 20
+
+    return panel
 
 
 def draw_overlay(

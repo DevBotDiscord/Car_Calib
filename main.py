@@ -72,7 +72,7 @@ from models.robot_state import RobotState
 from runtime.https_stream import HttpsMjpegServer, SharedFrameStore, ensure_self_signed_cert
 from runtime.route_logging import RouteSession
 from runtime.video_runtime_helpers import (
-    build_detector_debug_composite,
+    build_detector_debug_panel,
     build_main_arg_parser,
     configure_terminal_logging,
     draw_overlay,
@@ -505,10 +505,16 @@ def main() -> None:
                     route_mode=current_route_mode,
                 )
                 if args.show_detector_debug and detector_debug is not None:
-                    output_frame = build_detector_debug_composite(
-                        main_frame=annotated,
+                    frame_height, frame_width = annotated.shape[:2]
+                    debug_panel_height = max(frame_height // 3, 220)
+                    if debug_panel_height % 2 != 0:
+                        debug_panel_height += 1
+                    detector_panel = build_detector_debug_panel(
+                        frame_width=frame_width,
+                        panel_height=debug_panel_height,
                         detector_debug=detector_debug,
                     )
+                    output_frame = cv2.vconcat([annotated, detector_panel])
                 else:
                     output_frame = annotated
             elif args.stream_enabled or args.write_debug_video or route_session is not None:
