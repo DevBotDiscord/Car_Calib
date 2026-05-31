@@ -1,6 +1,4 @@
-"""Unit tests for vision/detector.py (LineDetector)."""
-
-import math
+"""Unit tests for vision/detector.py (LineDetector) — V2 vanishing-point pipeline."""
 
 import numpy as np
 import pytest
@@ -11,82 +9,14 @@ from vision.detector import LineDetector, _angle_diff
 
 @pytest.fixture()
 def state():
-    """RobotState with roi_height_pct=0.4, roi_top_width_pct=0.6, roi_bottom_width_pct=1.0."""
     s = RobotState()
     s.roi_height_pct = 0.4
-    s.roi_top_width_pct = 0.6
-    s.roi_bottom_width_pct = 1.0
     return s
 
 
 @pytest.fixture()
 def detector(state):
     return LineDetector(state)
-
-
-class TestTrapezoidMask:
-    def test_build_trapezoid_pts_shape(self, detector):
-        """_build_trapezoid_pts must return an array of shape (1, 4, 2)."""
-        pts = detector._build_trapezoid_pts(100, 200)
-        assert pts.shape == (1, 4, 2)
-
-    def test_top_y_at_roi_boundary(self, detector):
-        """Top vertices must sit at h - roi_h = 100 - 40 = 60."""
-        pts = detector._build_trapezoid_pts(100, 200)
-        top_left_y = pts[0][0][1]
-        top_right_y = pts[0][1][1]
-        assert top_left_y == 60
-        assert top_right_y == 60
-
-    def test_bottom_y_at_frame_edge(self, detector):
-        """Bottom vertices must sit at h - 1 = 99."""
-        pts = detector._build_trapezoid_pts(100, 200)
-        bot_left_y = pts[0][3][1]
-        bot_right_y = pts[0][2][1]
-        assert bot_left_y == 99
-        assert bot_right_y == 99
-
-    def test_roi_is_centred(self, detector):
-        """Top and bottom vertices must be horizontally centred (cx = w//2 = 100)."""
-        pts = detector._build_trapezoid_pts(100, 200)
-        cx = 200 // 2
-        top_cx = (pts[0][0][0] + pts[0][1][0]) // 2
-        bot_cx = (pts[0][3][0] + pts[0][2][0]) // 2
-        assert top_cx == cx
-        assert bot_cx == cx
-
-    def test_apply_roi_preserves_shape(self, detector):
-        """_apply_roi must return an array with the same shape as the input."""
-        gray = np.zeros((100, 200), dtype=np.uint8)
-        result = detector._apply_roi(gray)
-        assert result.shape == gray.shape
-
-    def test_apply_roi_zeroes_outside_trapezoid(self, detector):
-        """Pixels well above the ROI boundary should be zeroed."""
-        # A fully-white frame – the top rows must be zeroed by the mask
-        gray = np.full((100, 200), 255, dtype=np.uint8)
-        result = detector._apply_roi(gray)
-        # Row 0 is above the trapezoid, so it must be zero
-        assert result[0, 100] == 0
-
-    def test_apply_roi_keeps_inside_pixels(self, detector):
-        """Pixels inside the trapezoid should retain their original value."""
-        gray = np.full((100, 200), 128, dtype=np.uint8)
-        result = detector._apply_roi(gray)
-        # Use a point well inside the ROI (away from top/side/bottom borders).
-        assert result[90, 100] == 128
-
-
-class TestPreprocessing:
-    def test_preprocess_output_shape(self, detector):
-        roi = np.random.randint(0, 256, (100, 200), dtype=np.uint8)
-        result = detector._preprocess(roi)
-        assert result.shape == roi.shape
-
-    def test_preprocess_returns_uint8(self, detector):
-        roi = np.random.randint(0, 256, (100, 200), dtype=np.uint8)
-        result = detector._preprocess(roi)
-        assert result.dtype == np.uint8
 
 
 class TestAngleDiff:
@@ -103,79 +33,119 @@ class TestAngleDiff:
         assert _angle_diff(30.0, 50.0) == pytest.approx(_angle_diff(50.0, 30.0))
 
 
+class TestSelectOppositeSlopes:
+    def test_returns_none_when_no_negative_line(self, detector):
+        """Only positive-slope lines present → no opposite pair."""
+        lines = [(0, 0, 10, 10), (0, 0, 20, 30)]  # both positive slope
+        assert detector._select_opposite_slopes(lines) is None
+
+    def test_returns_none_when_no_positive_line(self, detector):
+        lines = [(0, 10, 10, 0), (0, 30, 20, 0)]  # both negative slope
+        assert detector._select_opposite_slopes(lines) is None
+
+    def test_filters_near_horizontal_lines(self, detector):
+        """abs(slope) < VISION_MIN_ABS_SLOPE (0.3) is rejected."""
+        lines = [(0, 0, 100, 5), (0, 5, 100, 0)]  # slope ±0.05, below threshold
+        assert detector._select_opposite_slopes(lines) is None
+
+    def test_picks_longest_per_sign(self, detector):
+        """Longest negative + longest positive slope line are selected."""
+        neg_short = (0, 10, 5, 0)      # slope -2, len ~11
+        neg_long = (0, 100, 50, 0)     # slope -2, len ~111
+        pos_short = (0, 0, 5, 10)      # slope +2, len ~11
+        pos_long = (0, 0, 50, 100)     # slope +2, len ~111
+        selected = detector._select_opposite_slopes(
+            [neg_short, pos_short, neg_long, pos_long]
+        )
+        assert selected is not None
+        best_neg, best_pos = selected
+        assert best_neg == neg_long
+        assert best_pos == pos_long
+
+    def test_skips_vertical_lines(self, detector):
+        """dx == 0 (vertical) is skipped without ZeroDivisionError."""
+        lines = [(5, 0, 5, 100), (0, 10, 10, 0), (0, 0, 10, 10)]
+        selected = detector._select_opposite_slopes(lines)
+        assert selected is not None  # neg + pos pair still found
+
+
+class TestIntersection:
+    def test_crossing_lines_return_point(self, detector):
+        line1 = (0, 0, 10, 10)   # y = x
+        line2 = (0, 10, 10, 0)   # y = 10 - x
+        vp = detector._intersection(line1, line2)
+        assert vp == (5, 5)
+
+    def test_parallel_lines_return_none(self, detector):
+        line1 = (0, 0, 10, 10)
+        line2 = (0, 5, 10, 15)  # same slope, parallel
+        assert detector._intersection(line1, line2) is None
+
+
+class TestXAtY:
+    def test_interpolates_along_line(self, detector):
+        line = (0, 0, 10, 100)  # x grows 0→10 as y grows 0→100
+        assert detector._x_at_y(line, 50) == 5
+
+    def test_horizontal_line_returns_x1(self, detector):
+        line = (3, 20, 40, 20)  # y2 == y1
+        assert detector._x_at_y(line, 99) == 3
+
+
 class TestGetReferenceAngle:
     def test_returns_none_on_blank_frame(self, detector):
-        """A completely uniform frame should yield no edges or lines."""
         frame = np.zeros((200, 200, 3), dtype=np.uint8)
-        result = detector.get_reference_angle(frame)
-        assert result is None
+        assert detector.get_reference_angle(frame) is None
 
-    def test_returns_float_on_valid_frame(self, detector):
-        """A frame with a clear horizontal line should return a float."""
+    def test_grayscale_frame_accepted(self, detector):
+        frame = np.zeros((200, 200), dtype=np.uint8)
+        assert detector.get_reference_angle(frame) is None
+
+    def test_returns_float_in_range_on_valid_frame(self, detector):
+        """Two opposite-slope lanes converging → VP-derived theta in [0,180)."""
         frame = np.zeros((200, 200, 3), dtype=np.uint8)
-        frame[140:145, :] = 255
+        # Left lane (positive slope downward-left) + right lane (negative slope)
+        import cv2
+
+        cv2.line(frame, (40, 199), (90, 60), (255, 255, 255), 3)
+        cv2.line(frame, (160, 199), (110, 60), (255, 255, 255), 3)
         result = detector.get_reference_angle(frame)
         if result is not None:
             assert isinstance(result, float)
             assert 0.0 <= result < 180.0
 
-    def test_grayscale_frame_accepted(self, detector):
-        """Detector should accept 2-D (grayscale) input without crashing."""
-        frame = np.zeros((200, 200), dtype=np.uint8)
-        result = detector.get_reference_angle(frame)
-        assert result is None
+    def test_last_theta_updated_on_valid_detection(self, detector):
+        import cv2
 
-    def test_last_angle_updated_on_valid_detection(self, detector):
-        """After a valid detection, _last_angle should be updated."""
         frame = np.zeros((200, 200, 3), dtype=np.uint8)
-        frame[140:145, :] = 255
+        cv2.line(frame, (40, 199), (90, 60), (255, 255, 255), 3)
+        cv2.line(frame, (160, 199), (110, 60), (255, 255, 255), 3)
         result = detector.get_reference_angle(frame)
         if result is not None:
-            assert detector._last_angle == pytest.approx(result)
+            assert detector._last_theta == pytest.approx(result)
 
 
-class TestReferenceSelection:
-    def test_select_reference_prefers_most_horizontal_group(self, detector):
-        """Selection should prefer angle nearest 0°/180° over vertical groups."""
-        near_vertical_group = [
-            (0, 0, 0, 10, 90.0, 10.0, 5.0, 80.0),
-        ]
-        near_horizontal_group = [
-            (0, 0, 10, 1, 5.0, 10.0, 5.0, 40.0),
-        ]
-
-        theta = detector._select_reference([near_vertical_group, near_horizontal_group])
-        assert theta == pytest.approx(5.0)
-
-    def test_horizontal_cap_rejects_vertical_angle(self, detector):
-        """A near-vertical candidate must fail horizontal acceptance."""
-        assert detector._is_horizontal_candidate(90.0) is False
-
-    def test_horizontal_to_vertical_angle_transform(self, detector):
-        """Selected horizontal angle must map to vertical-equivalent heading."""
-        assert detector._horizontal_to_vertical_angle(0.0) == pytest.approx(90.0)
-        assert detector._horizontal_to_vertical_angle(180.0) == pytest.approx(90.0)
-        assert detector._horizontal_to_vertical_angle(20.0) == pytest.approx(110.0)
-        assert detector._horizontal_to_vertical_angle(160.0) == pytest.approx(70.0)
-
-
-class TestHorizontalCapIntegration:
-    def test_get_reference_angle_rejects_non_horizontal_candidate(
-        self,
-        detector,
-        monkeypatch: pytest.MonkeyPatch,
-    ):
-        """End-to-end path should return None when selected angle is non-horizontal."""
-        vertical_group = [
-            (0, 0, 0, 20, 90.0, 20.0, 10.0, 80.0),
-        ]
-
-        monkeypatch.setattr(
-            detector,
-            "_detect_lines",
-            lambda _edges: np.array([[[0, 0, 1, 1]]], dtype=np.int32),
-        )
-        monkeypatch.setattr(detector, "_group_lines", lambda _lines: [vertical_group])
-
+class TestDebugContract:
+    def test_blank_frame_debug_has_v2_keys(self, detector):
         frame = np.zeros((200, 200, 3), dtype=np.uint8)
-        assert detector.get_reference_angle(frame) is None
+        theta, debug = detector.get_reference_angle_debug(frame)
+        assert theta is None
+        for key in (
+            "selected_lines",
+            "vp_x",
+            "vp_y",
+            "left_intercept",
+            "right_intercept",
+            "theta_output",
+            "theta_horizontal",
+            "lines_count",
+            "groups_count",
+        ):
+            assert key in debug
+
+    def test_blank_frame_debug_values_neutral(self, detector):
+        frame = np.zeros((200, 200, 3), dtype=np.uint8)
+        _theta, debug = detector.get_reference_angle_debug(frame)
+        assert debug["selected_lines"] is None
+        assert debug["vp_x"] is None
+        assert debug["groups_count"] == 0
