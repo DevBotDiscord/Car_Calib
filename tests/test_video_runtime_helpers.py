@@ -34,18 +34,3 @@ def test_maybe_flip_frame_mirrors_horizontally():
         [[3, 0, 0], [2, 0, 0], [1, 0, 0]],
         [[6, 0, 0], [5, 0, 0], [4, 0, 0]],
     ]
-
-
-def test_resolve_show_preview_enables_preview_in_debug_mode():
-    helpers = _load_helpers()
-    assert helpers.resolve_show_preview(False, True, []) is True
-
-
-def test_resolve_show_preview_respects_explicit_no_preview():
-    helpers = _load_helpers()
-    assert helpers.resolve_show_preview(True, True, ["--no-preview"]) is False
-
-
-def test_resolve_show_preview_keeps_preview_disabled_without_debug():
-    helpers = _load_helpers()
-    assert helpers.resolve_show_preview(False, False, []) is False

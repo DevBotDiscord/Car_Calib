@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>car-calib route dashboard</title>
+  <link rel="stylesheet" href="/dashboard/static/style.css">
+</head>
+<body>
+  <h1>car-calib · route dashboard</h1>
+  <div class="layout">
+    <div class="panel">
+      <h2>Live stream</h2>
+      <img id="stream" class="stream" alt="camera stream">
+      <h3>Telemetry</h3>
+      <div class="telemetry-grid" id="telemetryGrid"></div>
+    </div>
+    <div class="panel">
+      <h2>Route script builder</h2>
+      <div class="row">
+        <select id="action">
+          <option value="forward">forward (FORWARD + center)</option>
+          <option value="backward">backward (BACKWARD + center)</option>
+          <option value="left">left (FORWARD + max left)</option>
+          <option value="right">right (FORWARD + max right)</option>
+          <option value="turn_left">turn left (base 1 0 0)</option>
+          <option value="turn_right">turn right (base 0 1 1)</option>
+          <option value="straight">straight (alias)</option>
+          <option value="stop">stop / pause</option>
+        </select>
+        <input id="duration" type="number" min="0" step="0.5" value="2">
+        <span class="muted">seconds</span>
+        <button id="add">+ add step</button>
+        <button id="cancelEdit" style="display:none">cancel edit</button>
+        <button id="clear">clear all</button>
+      </div>
+
+      <div class="row" style="margin-top:6px;border-top:1px solid #2a2c30;padding-top:10px">
+        <span class="muted">presets:</span>
+        <select id="presetSelect" style="min-width:200px"><option value="">— select preset —</option></select>
+        <button id="presetLoad">load</button>
+        <button id="presetDelete" class="rm" style="padding:9px 12px">delete</button>
+        <input id="presetName" type="text" placeholder="preset name" style="flex:1;min-width:140px">
+        <button id="presetSave">save current</button>
+      </div>
+
+      <h3>Steps</h3>
+      <table id="steps">
+        <thead><tr><th style="width:50px">#</th><th>Action</th><th style="width:120px">Duration</th><th style="width:160px"></th></tr></thead>
+        <tbody></tbody>
+      </table>
+
+      <div class="row" style="margin-top:18px">
+        <button id="run" class="primary">▶ run script (auto-record)</button>
+        <button id="stop" class="danger">■ stop</button>
+        <span id="runPill" class="pill pill-idle">idle</span>
+        <span id="runDetail" class="muted"></span>
+      </div>
+      <div class="progress"><div id="progressBar" style="width:0%"></div></div>
+
+      <h3>JSON preview</h3>
+      <pre id="preview">{
+  "steps": []
+}</pre>
+    </div>
+  </div>
+  <div class="panel" style="margin-top:20px">
+    <h2>Recent routes</h2>
+    <div class="row"><button id="refreshRoutes">↻ refresh</button><button id="deleteAllRoutes" class="danger" style="padding:9px 14px;font-size:13px">🗑 delete all</button><span class="muted" id="routesMuted">click row for full info · auto-refresh 5s</span></div>
+    <table id="routesTable">
+      <thead><tr><th>Route ID</th><th>Mode</th><th>Preset</th><th>Status</th><th>Frames</th><th>Elapsed</th><th>Zip size</th><th>Ended (UTC)</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div id="summaryModal" class="modal-bg">
+    <div class="modal">
+      <button class="close" id="summaryClose">✕ close</button>
+      <h2 id="summaryTitle">Route summary</h2>
+      <div id="summaryBody"></div>
+    </div>
+  </div>
+  <script>
+    window.DASHBOARD_CONFIG = {
+      TOKEN: "__TOKEN__",
+      STREAM: "__STREAM_PATH__",
+      STATUS: "__STATUS_PATH__"
+    };
+  </script>
+  <script src="/dashboard/static/script.js"></script>
+</body>
+</html>
