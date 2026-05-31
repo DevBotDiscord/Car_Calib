@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 
 from . import config
+from .logging_utils import get_logger
 from .mqtt_client import publish_mode, publish_route_control
 
-logger = logging.getLogger(__name__)
+logger = get_logger("controls")
 
 _RELAY_BLINK_HOLD_THRESHOLD = 0.3
 
