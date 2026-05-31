@@ -17,3 +17,24 @@ def angle_within_limits(value: float, left_limit: float, right_limit: float) -> 
     return lower <= value <= upper
 
 
+def angle_to_pulse_us(
+    angle: float,
+    left_limit: float,
+    right_limit: float,
+    min_pulse_us: int,
+    max_pulse_us: int,
+) -> int:
+    """Map angle between limits to servo pulse width in microseconds."""
+    lower, upper = angle_bounds(left_limit, right_limit)
+    clamped = clamp_angle(angle, left_limit, right_limit)
+    span = upper - lower
+    if span == 0:
+        return int(min_pulse_us)
+
+    ratio = (clamped - lower) / span
+    if left_limit > right_limit:
+        ratio = 1.0 - ratio
+    pulse = min_pulse_us + ratio * (max_pulse_us - min_pulse_us)
+    return int(round(pulse))
+
+
