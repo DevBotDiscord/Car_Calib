@@ -1,6 +1,5 @@
-"""Control package for the autonomous robot heading-stability system."""
+"""Control package for the autonomous robot calibration system."""
 
-from control.heading_controller import HeadingController
-from control.servo_pid import ServoPID
+from control.steering_controller import SteeringController
 
-__all__ = ["HeadingController", "ServoPID"]
+__all__ = ["SteeringController"]
