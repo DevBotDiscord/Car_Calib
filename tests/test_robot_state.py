@@ -18,13 +18,21 @@ from config.settings import (
 
 class TestFSMState:
     def test_enum_members_exist(self):
-        assert FSMState.SEARCHING
-        assert FSMState.LOCKED
         assert FSMState.GAPPING
+        assert FSMState.DANGER_LEFT
+        assert FSMState.DANGER_RIGHT
+        assert FSMState.TRACKING_COAST
+        assert FSMState.TRACKING_PD
 
     def test_distinct_values(self):
-        states = {FSMState.SEARCHING, FSMState.LOCKED, FSMState.GAPPING}
-        assert len(states) == 3
+        states = {
+            FSMState.GAPPING,
+            FSMState.DANGER_LEFT,
+            FSMState.DANGER_RIGHT,
+            FSMState.TRACKING_COAST,
+            FSMState.TRACKING_PD,
+        }
+        assert len(states) == 5
 
 
 class TestPIDConstants:
@@ -47,30 +55,30 @@ class TestRobotState:
         assert state.servo_center_angle == pytest.approx(SERVO_CENTER_ANGLE)
         assert state.max_steering_offset == pytest.approx(MAX_STEERING_OFFSET)
         assert state.last_valid_servo_angle == pytest.approx(SERVO_CENTER_ANGLE)
-        assert state.last_valid_command == pytest.approx(0.0)
+        assert state.last_valid_command == pytest.approx(SERVO_CENTER_ANGLE)
         assert state.roi_height_pct == pytest.approx(ROI_HEIGHT_PCT)
         assert state.roi_top_width_pct == pytest.approx(ROI_TOP_WIDTH_PCT)
         assert state.roi_bottom_width_pct == pytest.approx(ROI_BOTTOM_WIDTH_PCT)
         assert state.debug_mode is ROBOT_DEBUG_MODE
-        assert state.fsm_state == FSMState.SEARCHING
+        assert state.fsm_state == FSMState.GAPPING
         assert state.pid_integral == pytest.approx(0.0)
         assert state.pid_last_error == pytest.approx(0.0)
 
     def test_transition_changes_state(self):
         state = RobotState()
-        state.transition_to(FSMState.LOCKED)
-        assert state.fsm_state == FSMState.LOCKED
+        state.transition_to(FSMState.TRACKING_PD)
+        assert state.fsm_state == FSMState.TRACKING_PD
 
     def test_transition_same_state_is_noop(self):
         state = RobotState()
-        state.transition_to(FSMState.SEARCHING)
-        assert state.fsm_state == FSMState.SEARCHING
-
-    def test_transition_to_gapping(self):
-        state = RobotState()
-        state.transition_to(FSMState.LOCKED)
         state.transition_to(FSMState.GAPPING)
         assert state.fsm_state == FSMState.GAPPING
+
+    def test_transition_to_danger(self):
+        state = RobotState()
+        state.transition_to(FSMState.TRACKING_COAST)
+        state.transition_to(FSMState.DANGER_LEFT)
+        assert state.fsm_state == FSMState.DANGER_LEFT
 
     def test_reset_pid_integral(self):
         state = RobotState()

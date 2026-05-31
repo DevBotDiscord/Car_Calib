@@ -26,16 +26,18 @@ addition to the standard text log. When a route session is active a parallel
 from __future__ import annotations
 
 import logging
-import sys
 import time
 from datetime import datetime, timezone
 from typing import Any
 
 import cv2
+import paho.mqtt.client as mqtt
 
 from config.settings import (
     CTRL_HYSTERESIS_HIGH,
     CTRL_HYSTERESIS_LOW,
+    DANGER_MARGIN_PX,
+    DANGER_NUDGE_DEG,
     MAIN_CAMERA_INDEX,
     MAIN_CAMERA_RETRY_LIMIT,
     MAIN_CSV_LOG_FILE,
@@ -64,11 +66,18 @@ from config.settings import (
     MAIN_VIDEO_OUTPUT_FPS,
     MAIN_VIDEO_RETRY_LIMIT,
     MAIN_WRITE_DEBUG_VIDEO,
+    MQTT_BASE_COMMAND_TOPIC,
+    MQTT_BROKER_HOST,
+    MQTT_BROKER_PORT,
+    MQTT_CLIENT_ID_PREFIX,
+    MQTT_KEEPALIVE_S,
+    MQTT_PASSWORD,
+    MQTT_USERNAME,
 )
-from control.servo_pid import ServoPID
+from control.steering_controller import SteeringController
 from drivers.mqtt_control_client import MQTTControlClient
 from drivers.servo_driver import ServoDriver
-from models.robot_state import RobotState
+from models.robot_state import FSMState, RobotState
 from runtime.https_stream import HttpsMjpegServer, SharedFrameStore, ensure_self_signed_cert
 from runtime.route_logging import RouteSession
 from runtime.video_runtime_helpers import (
@@ -175,7 +184,15 @@ def main() -> None:
 
     state = RobotState()
     detector = LineDetector(state)
-    controller = ServoPID(state)
+    controller = SteeringController(
+        pid_constants=state.pid,
+        danger_margin=DANGER_MARGIN_PX,
+        nudge_deg=DANGER_NUDGE_DEG,
+        inner_thresh=CTRL_HYSTERESIS_LOW,
+        outer_thresh=CTRL_HYSTERESIS_HIGH,
+        center_angle=state.servo_center_angle,
+        max_offset=state.max_steering_offset,
+    )
     servo = ServoDriver()
     csv_writer, csv_file = init_csv_logger(args.csv_output, _CSV_FIELDNAMES)
 
@@ -184,6 +201,7 @@ def main() -> None:
     stream_server = None
     frame_store = SharedFrameStore()
     frame_num = 0
+    base_stop_client: mqtt.Client | None = None
     last_known_theta: float | None = None
     consecutive_hw_errors = 0
     consecutive_video_errors = 0
@@ -273,6 +291,33 @@ def main() -> None:
         current_route_mode = payload
         logger.info("MODE: received from RPi: %s", payload)
 
+    def setup_base_stop_client() -> mqtt.Client | None:
+        client_id = f"{MQTT_CLIENT_ID_PREFIX}-camera-watchdog"
+        callback_api_version = getattr(mqtt, "CallbackAPIVersion", None)
+        if callback_api_version is not None:
+            client = mqtt.Client(
+                callback_api_version=callback_api_version.VERSION1,
+                client_id=client_id,
+            )
+        else:
+            client = mqtt.Client(client_id=client_id)
+        if MQTT_USERNAME:
+            client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+        client.reconnect_delay_set(min_delay=1, max_delay=5)
+        client.connect_async(MQTT_BROKER_HOST, MQTT_BROKER_PORT, keepalive=MQTT_KEEPALIVE_S)
+        client.loop_start()
+        return client
+
+    def publish_base_stop(reason: str) -> None:
+        if base_stop_client is None:
+            logger.warning("Cannot publish base STOP (%s): MQTT base client unavailable", reason)
+            return
+        try:
+            base_stop_client.publish(MQTT_BASE_COMMAND_TOPIC, "STOP", qos=0)
+            logger.warning("Published base STOP: %s", reason)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Base STOP publish failed (%s): %s", reason, exc)
+
     mqtt_control_client: MQTTControlClient | None = None
     try:
         mqtt_control_client = MQTTControlClient(
@@ -283,6 +328,12 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("MQTT control client setup failed: %s", exc)
         mqtt_control_client = None
+
+    try:
+        base_stop_client = setup_base_stop_client()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("MQTT base STOP client setup failed: %s", exc)
+        base_stop_client = None
 
     script_runner = None
     if args.stream_enabled:
@@ -320,31 +371,31 @@ def main() -> None:
         if idx not in camera_candidates:
             camera_candidates.append(idx)
 
-    opened_index: int | None = None
-    last_camera_error: RuntimeError | None = None
-    for candidate in camera_candidates:
-        try:
-            cap = init_camera_with_retries(
-                candidate,
-                retries=max(0, args.camera_retry_limit),
-                logger=logger,
+    def acquire_camera_blocking(reason: str) -> tuple[cv2.VideoCapture, int]:
+        publish_base_stop(reason)
+        while True:
+            last_camera_error: RuntimeError | None = None
+            for candidate in camera_candidates:
+                try:
+                    found_cap = init_camera_with_retries(
+                        candidate,
+                        retries=max(0, args.camera_retry_limit),
+                        logger=logger,
+                    )
+                    logger.info("Camera initialised (index=%d).", candidate)
+                    return found_cap, candidate
+                except RuntimeError as exc:
+                    last_camera_error = exc
+                    logger.warning("Camera probe failed at index=%d: %s", candidate, exc)
+            logger.error(
+                "Camera unavailable across %s. Last error: %s. Retrying; base remains STOP.",
+                camera_candidates,
+                last_camera_error,
             )
-            opened_index = candidate
-            break
-        except RuntimeError as exc:
-            last_camera_error = exc
-            logger.warning("Camera probe failed at index=%d: %s", candidate, exc)
+            publish_base_stop("camera_unavailable_retry")
+            time.sleep(1.0)
 
-    if cap is None or opened_index is None:
-        logger.critical(
-            "Camera auto-probe failed across %s. Last error: %s",
-            camera_candidates,
-            last_camera_error,
-        )
-        servo.center()
-        sys.exit(1)
-
-    logger.info("Camera initialised (index=%d).", opened_index)
+    cap, opened_index = acquire_camera_blocking("camera_startup_unavailable")
 
     logger.info("Starting heading-hold control loop at %.0f Hz.", _TARGET_HZ)
     try:
@@ -353,18 +404,21 @@ def main() -> None:
             frame_num += 1
 
             ret, frame = cap.read()
-            if not ret:
-                logger.warning("Frame capture failed; skipping cycle.")
+            if not ret or frame is None:
+                logger.warning("Frame capture failed; publishing base STOP and re-scanning cameras.")
+                publish_base_stop("camera_capture_failed")
+                try:
+                    cap.release()
+                except Exception:  # noqa: BLE001
+                    pass
+                cap, opened_index = acquire_camera_blocking("camera_capture_failed_reacquire")
                 sleep_remainder(loop_start, _LOOP_PERIOD, logger)
                 continue
 
             frame = maybe_flip_frame(frame, args.flip_frame)
 
-            detector_debug: dict[str, Any] | None = None
-            if args.debug_mode:
-                theta, detector_debug = detector.get_reference_angle_debug(frame)
-            else:
-                theta = detector.get_reference_angle(frame)
+            detector_debug: dict[str, Any] | None
+            theta, detector_debug = detector.get_reference_angle_debug(frame)
 
             theta_source = "live" if theta is not None else "none"
             if theta is not None:
@@ -387,7 +441,20 @@ def main() -> None:
             pid_d_term = 0.0 if theta is None else state.pid.kd * ((pid_error - state.pid_last_error) / dt_est)
 
             try:
-                servo_angle = controller.update(theta)
+                frame_h, frame_w = frame.shape[:2]
+                vp_angle = detector_debug.get("raw_vp_angle") if detector_debug else None
+                left_intercept = detector_debug.get("left_intercept") if detector_debug else None
+                right_intercept = detector_debug.get("right_intercept") if detector_debug else None
+                servo_angle, fsm_state_str = controller.compute_steering(
+                    vp_angle=vp_angle,
+                    left_intercept=left_intercept,
+                    right_intercept=right_intercept,
+                    frame_width=frame_w,
+                )
+                state.transition_to(FSMState(fsm_state_str))
+                state.calibration_active = fsm_state_str == "TRACKING_PD"
+                state.last_valid_servo_angle = servo_angle
+                state.pid_last_error = pid_error if theta is not None else state.pid_last_error
             except Exception as ctrl_exc:  # noqa: BLE001
                 logger.error(
                     "Controller error: %s - centering servo and stopping.",
@@ -408,7 +475,16 @@ def main() -> None:
 
             try:
                 send_start = time.monotonic()
-                servo.send_angle(servo_angle)
+                # Suppress recenter publishes while a route is active so the
+                # servo holds its last steered angle instead of flip-flopping
+                # to CENTER on every GAPPING/COAST frame. Final recenter is
+                # emitted by servo.center() in the finally/finalize block.
+                suppress_send = route_session is not None and fsm_state_str in (
+                    "GAPPING",
+                    "TRACKING_COAST",
+                )
+                if not suppress_send:
+                    servo.send_angle(servo_angle)
                 hardware_send_latency_ms = (time.monotonic() - send_start) * 1000.0
                 consecutive_hw_errors = 0
             except OSError as hw_exc:
@@ -503,6 +579,7 @@ def main() -> None:
                     overlay_scale=args.overlay_scale,
                     route_id=route_session.route_id if route_session is not None else None,
                     route_mode=current_route_mode,
+                    detector_debug=detector_debug,
                 )
                 if args.show_detector_debug and detector_debug is not None:
                     frame_height, frame_width = annotated.shape[:2]
@@ -532,6 +609,7 @@ def main() -> None:
                     overlay_scale=args.overlay_scale,
                     route_id=route_session.route_id if route_session is not None else None,
                     route_mode=current_route_mode,
+                    detector_debug=detector_debug,
                 )
 
             if args.frame_scale > 1.0:
@@ -647,6 +725,15 @@ def main() -> None:
         if mqtt_control_client is not None:
             try:
                 mqtt_control_client.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if base_stop_client is not None:
+            try:
+                base_stop_client.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                base_stop_client.loop_stop()
             except Exception:  # noqa: BLE001
                 pass
         if cap is not None:
