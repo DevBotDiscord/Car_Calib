@@ -6,6 +6,9 @@ import json
 
 from . import config
 from .config import _angle_within_limits, _clamp as _clamp_angle
+from .logging_utils import get_logger
+
+logger = get_logger("steering")
 
 
 # Absolute angle scale used to map degrees -> servo pulse, matching the
@@ -54,14 +57,19 @@ def apply_steering(target_angle: float, source: str) -> None:
 
     config.steer_angle = target
     _write_servo(target)
-    print(f"STEER[{source}]: {config.steer_angle:.1f} deg | CENTER: {config.CENTER_ANGLE:.1f} deg")
+    logger.debug(
+        "[STEER] %s angle=%.1f center=%.1f",
+        source,
+        config.steer_angle,
+        config.CENTER_ANGLE,
+    )
     config.last_steer_angle = config.steer_angle
     config.last_steer_source = source
 
 
 def release_servo(reason: str = "IDLE") -> None:
     _servo_off()
-    print(f"STEER[RELEASE]: servo PWM off ({reason})")
+    logger.info("[STEER][RELEASE] reason=%s", reason)
 
 
 def steer_center(source: str) -> None:

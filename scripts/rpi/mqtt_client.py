@@ -7,7 +7,22 @@ import time
 
 from . import config
 from .base import set_base
+from .logging_utils import get_logger
 from .steering import apply_steering, resolve_remote_servo_angle
+
+logger = get_logger("mqtt")
+
+BASE_STATES: dict[str, tuple[tuple[int, int, int], str]] = {
+    "FORWARD": ((0, 1, 0), "FORWARD"),
+    "BACKWARD": ((0, 0, 1), "BACKWARD"),
+    "STOP": ((0, 0, 0), "STOP"),
+    "LOCK": ((1, 0, 1), "LOCK"),
+    "UNLOCK": ((1, 1, 0), "UNLOCK"),
+    "TURN_LEFT": ((1, 0, 0), "TURN_LEFT"),
+    "LEFT": ((1, 0, 0), "TURN_LEFT"),
+    "TURN_RIGHT": ((0, 1, 1), "TURN_RIGHT"),
+    "RIGHT": ((0, 1, 1), "TURN_RIGHT"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -27,6 +42,7 @@ def publish_status(state: str) -> None:
         "ts": time.time(),
     })
     config.mqtt_client.publish(config.MQTT_STATUS_TOPIC, payload, retain=False)
+    logger.info("[MQTT][TX][STATUS] state=%s topic=%s", state, config.MQTT_STATUS_TOPIC)
 
 
 def publish_route_control(command: str) -> None:
@@ -34,7 +50,7 @@ def publish_route_control(command: str) -> None:
     if config.mqtt_client is None or not config.mqtt_connected:
         return
     config.mqtt_client.publish("car/control/route", command, qos=1)
-    print(f"MQTT: published route control: {command}")
+    logger.info("[MQTT][TX][ROUTE] command=%s topic=car/control/route", command)
 
 
 def publish_mode(mode: str) -> None:
@@ -43,7 +59,7 @@ def publish_mode(mode: str) -> None:
         return
     config.mqtt_client.publish("car/control/mode", mode, qos=1, retain=True)
     config.current_route_mode = mode
-    print(f"MQTT: published mode: {mode}")
+    logger.info("[MQTT][TX][MODE] mode=%s topic=car/control/mode", mode)
 
 
 # ---------------------------------------------------------------------------
@@ -55,37 +71,35 @@ def handle_servo_message(payload_text: str) -> None:
     # active. Vision PID stream and stray publishers are ignored otherwise
     # so manual gamepad/keyboard control stays exclusive on the RPi.
     if not config.script_active:
+        logger.warning("[MQTT][RX][SERVO] ignored script_active=OFF raw=%s", payload_text)
         return
     angle = resolve_remote_servo_angle(payload_text)
     apply_steering(angle, "MQTT")
+    logger.info("[MQTT][RX][SERVO] apply angle=%.2f raw=%s", angle, payload_text)
 
 
 def handle_script_active_message(payload_text: str) -> None:
     cmd = payload_text.strip().upper()
     if cmd in ("ON", "1", "TRUE", "START"):
         config.script_active = True
-        print("MQTT: script_active=ON (route script driving)")
+        logger.info("[MQTT][RX][SCRIPT] script_active=ON")
     elif cmd in ("OFF", "0", "FALSE", "STOP"):
         config.script_active = False
-        print("MQTT: script_active=OFF")
+        logger.info("[MQTT][RX][SCRIPT] script_active=OFF")
     else:
-        print(f"MQTT: unknown script_active payload: {cmd}")
+        logger.warning("[MQTT][RX][SCRIPT] unknown payload=%s", cmd)
 
 
 def handle_base_message(payload_text: str) -> None:
     cmd = payload_text.strip().upper()
-    if cmd == "FORWARD":
-        set_base(0, 1, 0, "MQTT-FORWARD")
-    elif cmd == "BACKWARD":
-        set_base(0, 0, 1, "MQTT-BACKWARD")
-    elif cmd == "STOP":
-        set_base(0, 0, 0, "MQTT-STOP")
-    elif cmd == "LOCK":
-        set_base(1, 0, 1, "MQTT-LOCK")
-    elif cmd == "UNLOCK":
-        set_base(1, 1, 0, "MQTT-UNLOCK")
-    else:
-        print(f"MQTT: unknown base command: {cmd}")
+    entry = BASE_STATES.get(cmd)
+    if entry is None:
+        logger.warning("[MQTT][RX][BASE] unknown command=%s", cmd)
+        return
+
+    state, label = entry
+    set_base(*state, f"MQTT-{label}")
+    logger.info("[MQTT][RX][BASE] %s state=%d,%d,%d", label, *state)
 
 
 def handle_relay_message(payload_text: str) -> None:
@@ -93,13 +107,13 @@ def handle_relay_message(payload_text: str) -> None:
     if cmd == "ON":
         config.gpio.write(config.RELAY_PIN, 1)
         config.relay_on = True
-        print("RELAY: ON (MQTT)")
+        logger.info("[MQTT][RX][RELAY] ON pin=%s", config.RELAY_PIN)
     elif cmd == "OFF":
         config.gpio.write(config.RELAY_PIN, 0)
         config.relay_on = False
-        print("RELAY: OFF (MQTT)")
+        logger.info("[MQTT][RX][RELAY] OFF pin=%s", config.RELAY_PIN)
     else:
-        print(f"MQTT: unknown relay command: {cmd}")
+        logger.warning("[MQTT][RX][RELAY] unknown command=%s", cmd)
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +123,7 @@ def handle_relay_message(payload_text: str) -> None:
 def on_mqtt_connect(client, userdata, flags, rc, properties=None) -> None:
     del userdata, flags, properties
     if rc != 0:
-        print(f"MQTT: connect failed rc={rc}")
+        logger.error("[MQTT][CONN] connect failed rc=%s", rc)
         config.mqtt_connected = False
         return
     config.mqtt_connected = True
@@ -117,8 +131,17 @@ def on_mqtt_connect(client, userdata, flags, rc, properties=None) -> None:
     client.subscribe(config.MQTT_BASE_COMMAND_TOPIC)
     client.subscribe(config.MQTT_RELAY_TOPIC)
     client.subscribe("car/control/script_active")
-    print(f"MQTT: connected to {config.MQTT_BROKER_HOST}:{config.MQTT_BROKER_PORT}")
-    print(f"  topics: {config.MQTT_SERVO_TOPIC}, {config.MQTT_BASE_COMMAND_TOPIC}, {config.MQTT_RELAY_TOPIC}, car/control/script_active")
+    logger.info(
+        "[MQTT][CONN] connected host=%s port=%s",
+        config.MQTT_BROKER_HOST,
+        config.MQTT_BROKER_PORT,
+    )
+    logger.info(
+        "[MQTT][CONN] topics=%s,%s,%s,car/control/script_active",
+        config.MQTT_SERVO_TOPIC,
+        config.MQTT_BASE_COMMAND_TOPIC,
+        config.MQTT_RELAY_TOPIC,
+    )
     publish_status("online")
 
 
@@ -126,7 +149,7 @@ def on_mqtt_disconnect(client, userdata, rc, properties=None) -> None:
     del client, userdata, properties
     config.mqtt_connected = False
     if config.running:
-        print(f"MQTT: disconnected rc={rc}")
+        logger.warning("[MQTT][CONN] disconnected rc=%s", rc)
 
 
 def on_mqtt_message(client, userdata, message) -> None:
@@ -134,7 +157,7 @@ def on_mqtt_message(client, userdata, message) -> None:
     try:
         payload_text = message.payload.decode("utf-8")
     except UnicodeDecodeError as exc:
-        print(f"MQTT: invalid payload encoding on {message.topic}: {exc}")
+        logger.warning("[MQTT][RX] invalid encoding topic=%s error=%s", message.topic, exc)
         return
 
     topic = message.topic
@@ -148,9 +171,9 @@ def on_mqtt_message(client, userdata, message) -> None:
         elif topic == "car/control/script_active":
             handle_script_active_message(payload_text)
         else:
-            print(f"MQTT: unhandled topic: {topic}")
+            logger.warning("[MQTT][RX] unhandled topic=%s", topic)
     except (ValueError, json.JSONDecodeError) as exc:
-        print(f"MQTT: invalid payload on {topic}: {exc}")
+        logger.warning("[MQTT][RX] invalid payload topic=%s error=%s raw=%s", topic, exc, payload_text)
 
 
 # ---------------------------------------------------------------------------

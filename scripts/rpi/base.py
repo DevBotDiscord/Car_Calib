@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from . import config
+from .logging_utils import get_logger
+
+logger = get_logger("base")
 
 FORWARD_STATE = (0, 1, 0)
 BACKWARD_STATE = (0, 0, 1)
@@ -25,9 +28,9 @@ def set_base(b1: int, b2: int, b3: int, label: str | None = None) -> None:
     config.gpio.write(config.OUT3, 1 if b3 else 0)
 
     if label:
-        print(f"BASE: {label} -> {state}")
+        logger.debug("[BASE] %s state=%d,%d,%d", label, *state)
     else:
-        print(f"BASE: {state}")
+        logger.debug("[BASE] state=%d,%d,%d", *state)
     config.last_base_state = state
 
 
@@ -56,4 +59,4 @@ def toggle_relay() -> None:
         raise RuntimeError("pigpio is not initialized.")
     config.relay_on = not config.relay_on
     config.gpio.write(config.RELAY_PIN, 1 if config.relay_on else 0)
-    print(f"RELAY: {'ON' if config.relay_on else 'OFF'} (pin {config.RELAY_PIN})")
+    logger.info("[RELAY] %s pin=%d", "ON" if config.relay_on else "OFF", config.RELAY_PIN)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from evdev import InputDevice, ecodes, list_devices
@@ -12,7 +11,9 @@ from scripts.input_device_helpers import (
     open_optional_input_device,
 )
 
-logger = logging.getLogger(__name__)
+from .logging_utils import get_logger
+
+logger = get_logger("input")
 
 
 def _clamp(value: float, low: float, high: float) -> float:
