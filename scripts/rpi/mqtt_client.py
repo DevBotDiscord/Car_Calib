@@ -84,6 +84,10 @@ def handle_base_message(payload_text: str) -> None:
         set_base(1, 0, 1, "MQTT-LOCK")
     elif cmd == "UNLOCK":
         set_base(1, 1, 0, "MQTT-UNLOCK")
+    elif cmd in ("TURN_LEFT", "LEFT"):
+        set_base(1, 0, 0, "MQTT-TURN_LEFT")
+    elif cmd in ("TURN_RIGHT", "RIGHT"):
+        set_base(0, 1, 1, "MQTT-TURN_RIGHT")
     else:
         print(f"MQTT: unknown base command: {cmd}")
 

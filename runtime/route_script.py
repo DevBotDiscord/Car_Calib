@@ -12,6 +12,8 @@ control: more negative = LEFT, more positive = RIGHT):
 * ``backward``                 — base BACKWARD, servo CENTER
 * ``left``                     — base FORWARD, servo LEFT  (max permissible)
 * ``right``                    — base FORWARD, servo RIGHT (max permissible)
+* ``turn_left``                — base TURN_LEFT (GPIO 1 0 0), no servo pin
+* ``turn_right``               — base TURN_RIGHT (GPIO 0 1 1), no servo pin
 * ``stop`` / ``pause``         — base STOP
 
 Re-publishes the servo angle at ``REPUBLISH_HZ`` so the vision PID stream does
@@ -48,7 +50,7 @@ from config.settings import (
 logger = logging.getLogger(__name__)
 
 
-_VALID_ACTIONS = {"forward", "backward", "straight", "left", "right", "stop", "pause"}
+_VALID_ACTIONS = {"forward", "backward", "straight", "left", "right", "turn_left", "turn_right", "stop", "pause"}
 
 
 def _env_float(name: str, default: float) -> float:
@@ -254,6 +256,12 @@ class RouteScriptRunner:
         elif action == "right":
             base_cmd = "FORWARD"
             angle = SCRIPT_RIGHT_ANGLE
+        elif action == "turn_left":
+            base_cmd = "TURN_LEFT"
+            angle = None
+        elif action == "turn_right":
+            base_cmd = "TURN_RIGHT"
+            angle = None
         else:  # stop / pause
             base_cmd = "STOP"
             angle = None

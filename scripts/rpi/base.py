@@ -9,6 +9,8 @@ BACKWARD_STATE = (0, 0, 1)
 STOP_STATE = (0, 0, 0)
 LOCK_STATE = (1, 0, 1)
 UNLOCK_STATE = (1, 1, 0)
+TURN_LEFT_STATE = (1, 0, 0)
+TURN_RIGHT_STATE = (0, 1, 1)
 
 
 def set_base(b1: int, b2: int, b3: int, label: str | None = None) -> None:
@@ -49,6 +51,14 @@ def lock_base() -> None:
 
 def unlock_base() -> None:
     set_base(*UNLOCK_STATE, "UNLOCK")
+
+
+def turn_left() -> None:
+    set_base(*TURN_LEFT_STATE, "TURN_LEFT")
+
+
+def turn_right() -> None:
+    set_base(*TURN_RIGHT_STATE, "TURN_RIGHT")
 
 
 def toggle_relay() -> None:
