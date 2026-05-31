@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from control.input_controller import InputController
+from scripts.rpi.controls import InputController
 
 
 class _FakeHandler:
