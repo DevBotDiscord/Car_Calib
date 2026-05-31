@@ -14,8 +14,11 @@ from . import config
 from .base import backward, forward, lock_base, stop_base, unlock_base
 from .controls import InputController
 from .input_handler import InputDeviceHandler
-from .steering import apply_steering, release_servo
+from .logging_utils import get_logger, setup_rpi_logging
 from .mqtt_client import close_mqtt, publish_status, setup_mqtt
+from .steering import apply_steering, release_servo
+
+logger = get_logger("bridge")
 
 
 def setup_gpio() -> None:
@@ -58,19 +61,38 @@ def _signal_handler(sig, frame) -> None:
 
 
 def _print_banner() -> None:
-    print("=== RPI MQTT ACTUATOR BRIDGE ===")
-    print(f"MQTT broker: {config.MQTT_BROKER_HOST}:{config.MQTT_BROKER_PORT}")
-    print(f"  servo:  {config.MQTT_SERVO_TOPIC}")
-    print(f"  base:   {config.MQTT_BASE_COMMAND_TOPIC}")
-    print(f"  relay:  {config.MQTT_RELAY_TOPIC}")
-    print(f"pigpio: {config.PIGPIO_HOST}:{config.PIGPIO_PORT}")
-    print(f"Servo pin: {config.SERVO_PIN}  Base pins: {config.OUT1},{config.OUT2},{config.OUT3}  Relay pin: {config.RELAY_PIN}")
-    print(f"Steering center={config.CENTER_ANGLE:.1f} deg  limits=[{config.LEFT_LIMIT:.1f}, {config.RIGHT_LIMIT:.1f}]")
-    print(f"Release idle={config.SERVO_RELEASE_IDLE}  Hold last={config.REMOTE_SERVO_HOLD_LAST}")
-    print("")
+    logger.info("[BRIDGE][BOOT] RPI MQTT ACTUATOR BRIDGE")
+    logger.info("[BRIDGE][BOOT] mqtt host=%s port=%s", config.MQTT_BROKER_HOST, config.MQTT_BROKER_PORT)
+    logger.info(
+        "[BRIDGE][BOOT] topics servo=%s base=%s relay=%s",
+        config.MQTT_SERVO_TOPIC,
+        config.MQTT_BASE_COMMAND_TOPIC,
+        config.MQTT_RELAY_TOPIC,
+    )
+    logger.info("[BRIDGE][BOOT] pigpio host=%s port=%s", config.PIGPIO_HOST, config.PIGPIO_PORT)
+    logger.info(
+        "[BRIDGE][BOOT] pins servo=%s base=%s,%s,%s relay=%s",
+        config.SERVO_PIN,
+        config.OUT1,
+        config.OUT2,
+        config.OUT3,
+        config.RELAY_PIN,
+    )
+    logger.info(
+        "[BRIDGE][BOOT] steering center=%.1f limits=%.1f,%.1f",
+        config.CENTER_ANGLE,
+        config.LEFT_LIMIT,
+        config.RIGHT_LIMIT,
+    )
+    logger.info(
+        "[BRIDGE][BOOT] servo release_idle=%s hold_last=%s",
+        config.SERVO_RELEASE_IDLE,
+        config.REMOTE_SERVO_HOLD_LAST,
+    )
 
 
 def main() -> None:
+    setup_rpi_logging()
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
@@ -93,11 +115,15 @@ def main() -> None:
         input_handler.setup()
         if input_handler.has_gamepad or input_handler.has_keyboard:
             input_controller = InputController(input_handler)
-            print(f"INPUT: gamepad={input_handler.has_gamepad} keyboard={input_handler.has_keyboard}")
+            logger.info(
+                "[BRIDGE][INPUT] gamepad=%s keyboard=%s",
+                input_handler.has_gamepad,
+                input_handler.has_keyboard,
+            )
         else:
-            print("INPUT: no devices found, control disabled")
+            logger.info("[BRIDGE][INPUT] no devices found control=disabled")
     except Exception as exc:
-        print(f"INPUT: setup failed: {exc}")
+        logger.warning("[BRIDGE][INPUT] setup failed error=%s", exc)
         input_handler = None
         input_controller = None
 
@@ -163,9 +189,9 @@ def main() -> None:
                         # Resource temporarily unavailable; retry next loop tick.
                         pass
                     else:
-                        print(f"Control error (OSError): {ctrl_exc}")
+                        logger.error("[BRIDGE][CONTROL] os_error=%s", ctrl_exc)
                 except Exception as ctrl_exc:
-                    print(f"Control error: {ctrl_exc}")
+                    logger.error("[BRIDGE][CONTROL] error=%s", ctrl_exc)
 
             # Periodic heartbeat
             if (now - last_heartbeat) >= heartbeat_interval:
@@ -175,16 +201,16 @@ def main() -> None:
             time.sleep(0.01)  # ~100Hz loop
 
     except KeyboardInterrupt:
-        print("\nEXIT: Ctrl+C")
+        logger.info("[BRIDGE][EXIT] keyboard_interrupt")
     finally:
-        print("Cleaning up...")
+        logger.info("[BRIDGE][CLEANUP] start")
         if input_handler is not None:
             try:
                 input_handler.close()
             except Exception:
                 pass
         cleanup()
-        print("Done.")
+        logger.info("[BRIDGE][CLEANUP] done")
 
 
 if __name__ == "__main__":
