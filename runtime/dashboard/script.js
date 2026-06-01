@@ -115,10 +115,23 @@ document.getElementById("stop").onclick = async () => {
 
 async function setLight(on) {
   const sep = qp ? "&" : "?";
-  await fetch("/route/relay" + qp + sep + "on=" + (on ? 1 : 0), {method: "POST"});
+  const toggle = document.getElementById("lightToggle");
+  const label = document.getElementById("lightLabel");
+  try {
+    const r = await fetch("/route/relay" + qp + sep + "on=" + (on ? 1 : 0), {method: "POST"});
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      label.textContent = "light error: " + (j.detail || j.error || r.status);
+      toggle.checked = !on;  // revert switch on failure
+      return;
+    }
+    label.textContent = on ? "light on" : "light off";
+  } catch (e) {
+    label.textContent = "light error: network";
+    toggle.checked = !on;
+  }
 }
-document.getElementById("lightOn").onclick = () => setLight(true);
-document.getElementById("lightOff").onclick = () => setLight(false);
+document.getElementById("lightToggle").onchange = (e) => setLight(e.target.checked);
 
 function setPill(klass, text) {
   runPill.className = "pill " + klass;
