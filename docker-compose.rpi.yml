@@ -8,6 +8,7 @@ services:
     image: ${RPI_IMAGE_NAME:-car-calib-rpi-mqtt-bridge:latest}
     restart: unless-stopped
     network_mode: host
+    pid: host
     privileged: true
     env_file:
       - .env
@@ -17,6 +18,9 @@ services:
       PIGPIO_PORT: 8888
     devices:
       - /dev/input:/dev/input
+      - /dev/vcio:/dev/vcio
+      - /dev/gpiomem:/dev/gpiomem
+      - /dev/mem:/dev/mem
     volumes:
       - /dev/input:/dev/input:ro
     command:

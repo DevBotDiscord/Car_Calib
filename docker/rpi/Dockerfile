@@ -48,6 +48,7 @@ RUN apt-get update \
         avahi-utils \
         avahi-daemon \
         dbus \
+        procps \
     && rm -rf /var/lib/apt/lists/* \
     && sed -i 's/^hosts:.*/hosts:          files mdns4_minimal [NOTFOUND=return] dns/' /etc/nsswitch.conf \
     && mkdir -p /run/dbus /run/avahi-daemon \
