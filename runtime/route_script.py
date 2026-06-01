@@ -313,7 +313,7 @@ class RouteScriptRunner:
 
     def _publish_base(self, command: str) -> None:
         try:
-            self._mqtt.publish(MQTT_BASE_COMMAND_TOPIC, command, qos=0)
+            self._mqtt.publish(MQTT_BASE_COMMAND_TOPIC, command, qos=1)
         except Exception as exc:  # noqa: BLE001
             logger.error("RouteScriptRunner base publish failed: %s", exc)
 
