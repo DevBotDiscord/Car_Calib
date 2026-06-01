@@ -43,6 +43,7 @@ from config.settings import (
     MQTT_CLIENT_ID_PREFIX,
     MQTT_KEEPALIVE_S,
     MQTT_PASSWORD,
+    MQTT_RELAY_TOPIC,
     MQTT_SERVO_TOPIC,
     MQTT_USERNAME,
 )
@@ -315,6 +316,14 @@ class RouteScriptRunner:
             self._mqtt.publish(MQTT_BASE_COMMAND_TOPIC, command, qos=0)
         except Exception as exc:  # noqa: BLE001
             logger.error("RouteScriptRunner base publish failed: %s", exc)
+
+    def publish_relay(self, on: bool) -> None:
+        """Publish a relay ON/OFF command (dashboard light toggle)."""
+        command = "ON" if on else "OFF"
+        try:
+            self._mqtt.publish(MQTT_RELAY_TOPIC, command, qos=1)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("RouteScriptRunner relay publish failed: %s", exc)
 
     def _publish_angle(self, angle: float) -> None:
         payload = json.dumps({"angle": int(round(angle))})

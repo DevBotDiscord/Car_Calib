@@ -113,6 +113,13 @@ document.getElementById("stop").onclick = async () => {
   runDetail.textContent = "stopping…";
 };
 
+async function setLight(on) {
+  const sep = qp ? "&" : "?";
+  await fetch("/route/relay" + qp + sep + "on=" + (on ? 1 : 0), {method: "POST"});
+}
+document.getElementById("lightOn").onclick = () => setLight(true);
+document.getElementById("lightOff").onclick = () => setLight(false);
+
 function setPill(klass, text) {
   runPill.className = "pill " + klass;
   runPill.textContent = text;
