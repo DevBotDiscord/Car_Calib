@@ -291,6 +291,12 @@ class RouteScriptRunner:
                 if angle is not None:
                     self._publish_angle(angle)
         finally:
+            # Recenter the servo to home angle after a steering step so the
+            # wheels do not stay locked at full lock between steps. Publish
+            # while still pinned (vision PID backed off) so the center target
+            # lands before control is released.
+            if action in ("left", "right"):
+                self._publish_angle(SCRIPT_CENTER_ANGLE)
             script_lock.set_pinned(False)
 
     def _publish_neutral(self) -> None:
