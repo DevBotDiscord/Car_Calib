@@ -30,19 +30,51 @@ BASE_STATES: dict[str, tuple[tuple[int, int, int], str]] = {
 # ---------------------------------------------------------------------------
 
 def publish_status(state: str) -> None:
+    """Publish detailed health telemetry retained on MQTT."""
+    if config.mqtt_client is None or not config.mqtt_connected:
+        return
+    now = time.time()
+    uptime_sec = max(0.0, now - config.bridge_started_at)
+    pigpio_status = "online" if config.pigpio_connected else "offline"
+    payload = json.dumps({
+        "rpi_online": True,
+        "state": state,
+        "pigpio_connected": bool(config.pigpio_connected),
+        "pigpio_status": pigpio_status,
+        "mqtt_connected": True,
+        "mqtt_status": "connected",
+        "estop_active": bool(config.estop_active),
+        "steer_angle": round(config.steer_angle, 2),
+        "center_angle": round(config.CENTER_ANGLE, 2),
+        "base_state": getattr(config, "last_base_label", "STOP"),
+        "relay_on": bool(config.relay_on),
+        "script_active": config.script_active,
+        "current_route_mode": config.current_route_mode,
+        "hostname": config.RPI_HOSTNAME,
+        "uptime_sec": round(uptime_sec, 1),
+        "uptime_s": round(uptime_sec, 1),
+        "servo_pin": config.SERVO_PIN,
+        "pigpio_host": config.PIGPIO_HOST,
+        "ts": now,
+    })
+    config.mqtt_client.publish(config.MQTT_STATUS_TOPIC, payload, qos=1, retain=True)
+    logger.debug(
+        "[MQTT][TX][STATUS] state=%s pigpio=%s base=%s",
+        state, pigpio_status, getattr(config, "last_base_label", "STOP"),
+    )
+
+
+def publish_estop(active: bool) -> None:
+    """Publish retained E-stop latch state to MQTT_ESTOP_TOPIC."""
     if config.mqtt_client is None or not config.mqtt_connected:
         return
     payload = json.dumps({
-        "source": "rpi-mqtt-bridge",
-        "state": state,
-        "steer_angle": round(config.steer_angle, 2),
-        "center_angle": round(config.CENTER_ANGLE, 2),
-        "servo_pin": config.SERVO_PIN,
-        "pigpio_host": config.PIGPIO_HOST,
+        "active": bool(active),
+        "latched_at": config.estop_latched_at,
         "ts": time.time(),
     })
-    config.mqtt_client.publish(config.MQTT_STATUS_TOPIC, payload, retain=False)
-    logger.info("[MQTT][TX][STATUS] state=%s topic=%s", state, config.MQTT_STATUS_TOPIC)
+    config.mqtt_client.publish(config.MQTT_ESTOP_TOPIC, payload, qos=1, retain=True)
+    logger.warning("[MQTT][TX][ESTOP] active=%s topic=%s", active, config.MQTT_ESTOP_TOPIC)
 
 
 def publish_route_control(command: str) -> None:
@@ -199,6 +231,17 @@ def setup_mqtt() -> None:
     client.on_disconnect = on_mqtt_disconnect
     client.on_message = on_mqtt_message
     client.reconnect_delay_set(min_delay=1, max_delay=5)
+
+    # Last Will and Testament — broker republishes this retained payload
+    # to MQTT_STATUS_TOPIC if the RPi disconnects ungracefully.
+    lwt_payload = json.dumps({
+        "rpi_online": False,
+        "mqtt_connected": False,
+        "mqtt_status": "disconnected",
+        "reason": "mqtt_lwt",
+    })
+    client.will_set(config.MQTT_STATUS_TOPIC, lwt_payload, qos=1, retain=True)
+
     client.connect_async(config.MQTT_BROKER_HOST, config.MQTT_BROKER_PORT, keepalive=config.MQTT_KEEPALIVE_S)
     client.loop_start()
     config.mqtt_client = client
