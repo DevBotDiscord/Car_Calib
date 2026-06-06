@@ -329,6 +329,14 @@ def main() -> None:
         logger.warning("MQTT control client setup failed: %s", exc)
         mqtt_control_client = None
 
+    def _rpi_status_provider() -> dict[str, Any] | None:
+        if mqtt_control_client is None:
+            return None
+        try:
+            return mqtt_control_client.get_rpi_status()
+        except Exception:  # noqa: BLE001
+            return None
+
     try:
         base_stop_client = setup_base_stop_client()
     except Exception as exc:  # noqa: BLE001
@@ -361,6 +369,7 @@ def main() -> None:
             key_file=MAIN_HTTPS_KEY_FILE,
             frame_store=frame_store,
             script_runner=script_runner,
+            rpi_status_provider=_rpi_status_provider,
         )
         stream_server.start()
         logger.info("HTTPS MJPEG stream online: %s", stream_server.stream_url())

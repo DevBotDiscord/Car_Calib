@@ -61,6 +61,7 @@ class HttpsMjpegServer:
         key_file: str,
         frame_store: SharedFrameStore,
         script_runner: Any | None = None,
+        rpi_status_provider: Any | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -72,6 +73,7 @@ class HttpsMjpegServer:
         self._key_file = key_file
         self._frame_store = frame_store
         self._script_runner = script_runner
+        self._rpi_status_provider = rpi_status_provider
 
         self._server: Any = None
         self._thread: threading.Thread | None = None
@@ -140,12 +142,20 @@ class HttpsMjpegServer:
         def status(token: str = "") -> Any:
             _check_token(token)
             _, ts, telemetry = self._frame_store.snapshot()
+            rpi_status: dict[str, Any] | None = None
+            provider = self._rpi_status_provider
+            if provider is not None:
+                try:
+                    rpi_status = provider()
+                except Exception:  # noqa: BLE001
+                    rpi_status = None
             return JSONResponse(
                 {
                     "ok": True,
                     "has_frame": ts is not None,
                     "last_frame_unix": ts,
                     "telemetry": telemetry,
+                    "rpi_status": rpi_status,
                 }
             )
 
