@@ -246,6 +246,14 @@ tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
 /* F6 route comparison table */
 .cmp-table td, .cmp-table th { text-align: center; }
 .cmp-table .cmp-metric { text-align: left; color: var(--tx-1); font-weight: 600; }
+
+/* F9 estop reset button (inside health banner) */
+.estop-reset-btn {
+  background: var(--bad); color: #0b0c0e; border: none;
+  padding: 4px 14px; border-radius: var(--r-sm);
+  font-weight: 700; cursor: pointer; margin-left: var(--sp-2);
+}
+.estop-reset-btn:hover { background: #fff; }
 .metric-cell {
   background: var(--bg-2); border-radius: var(--r-sm);
   padding: var(--sp-2) var(--sp-3);

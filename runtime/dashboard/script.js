@@ -1004,13 +1004,32 @@ function renderHealthBanner(rpi) {
   const estop = !!payload.estop_active;
   if (estop) {
     el.className = "health-banner show bad";
-    el.textContent = "⛔ E-STOP ACTIVE — vehicle latched safe. Reset required.";
+    el.innerHTML = "";
+    const span = document.createElement("span");
+    span.textContent = "⛔ E-STOP ACTIVE — vehicle latched safe. ";
+    const btn = document.createElement("button");
+    btn.textContent = "Reset E-stop";
+    btn.className = "estop-reset-btn";
+    btn.onclick = estopReset;
+    el.appendChild(span);
+    el.appendChild(btn);
   } else if (stale) {
     el.className = "health-banner show warn";
     el.textContent = "⚠ RPi telemetry stale — connection lost or bridge offline.";
   } else {
     el.className = "health-banner";
     el.textContent = "";
+  }
+}
+
+async function estopReset() {
+  if (!confirm("Reset E-stop? This only clears if the physical button is released (safe).")) return;
+  try {
+    const r = await fetch("/control/estop_reset" + qp, {method: "POST"});
+    if (!r.ok) { alert("reset request failed: " + r.status); return; }
+    addEvent("info", "E-stop reset requested");
+  } catch (e) {
+    alert("reset network error");
   }
 }
 

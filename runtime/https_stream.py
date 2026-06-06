@@ -365,6 +365,14 @@ class HttpsMjpegServer:
             self._script_runner.publish_relay(bool(on))
             return JSONResponse({"ok": True, "relay": "ON" if on else "OFF"})
 
+        @app.post("/control/estop_reset")
+        def control_estop_reset(token: str = "") -> Any:
+            _check_token(token)
+            if self._script_runner is None:
+                raise HTTPException(status_code=503, detail="script_runner_disabled")
+            self._script_runner.publish_estop_reset()
+            return JSONResponse({"ok": True, "requested": True})
+
         @app.get("/routes/list")
         def routes_list(token: str = "", limit: int = 30) -> Any:
             _check_token(token)

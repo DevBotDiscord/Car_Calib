@@ -122,6 +122,18 @@ def handle_script_active_message(payload_text: str) -> None:
         logger.warning("[MQTT][RX][SCRIPT] unknown payload=%s", cmd)
 
 
+def handle_estop_reset_message(payload_text: str) -> None:
+    """Attempt to clear the E-stop latch (hardware safety check still applies)."""
+    del payload_text
+    try:
+        from .estop import try_reset
+
+        ok = try_reset("dashboard")
+        logger.warning("[MQTT][RX][ESTOP_RESET] try_reset -> %s", ok)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[MQTT][RX][ESTOP_RESET] failed: %s", exc)
+
+
 def handle_base_message(payload_text: str) -> None:
     cmd = payload_text.strip().upper()
     entry = BASE_STATES.get(cmd)
@@ -163,6 +175,7 @@ def on_mqtt_connect(client, userdata, flags, rc, properties=None) -> None:
     client.subscribe(config.MQTT_BASE_COMMAND_TOPIC)
     client.subscribe(config.MQTT_RELAY_TOPIC)
     client.subscribe("car/control/script_active")
+    client.subscribe("car/control/estop_reset")
     logger.info(
         "[MQTT][CONN] connected host=%s port=%s",
         config.MQTT_BROKER_HOST,
@@ -202,6 +215,8 @@ def on_mqtt_message(client, userdata, message) -> None:
             handle_relay_message(payload_text)
         elif topic == "car/control/script_active":
             handle_script_active_message(payload_text)
+        elif topic == "car/control/estop_reset":
+            handle_estop_reset_message(payload_text)
         else:
             logger.warning("[MQTT][RX] unhandled topic=%s", topic)
     except (ValueError, json.JSONDecodeError) as exc:

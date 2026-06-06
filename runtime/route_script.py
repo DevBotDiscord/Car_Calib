@@ -337,6 +337,13 @@ class RouteScriptRunner:
         except Exception as exc:  # noqa: BLE001
             logger.error("RouteScriptRunner relay publish failed: %s", exc)
 
+    def publish_estop_reset(self) -> None:
+        """Request the RPi to clear its E-stop latch (hardware check still applies)."""
+        try:
+            self._mqtt.publish("car/control/estop_reset", "RESET", qos=1)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("RouteScriptRunner estop_reset publish failed: %s", exc)
+
     def _publish_angle(self, angle: float) -> None:
         payload = json.dumps({"angle": int(round(angle))})
         try:
