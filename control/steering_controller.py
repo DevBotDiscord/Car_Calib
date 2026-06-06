@@ -66,11 +66,11 @@ class SteeringController:
         if left_intercept > left_margin:
             self._tracking_active = False
             self._last_error = 0.0
-            return center - self._nudge_deg, "DANGER_RIGHT"
+            return center + self._nudge_deg, "DANGER_RIGHT"
         if right_intercept < right_margin:
             self._tracking_active = False
             self._last_error = 0.0
-            return center + self._nudge_deg, "DANGER_LEFT"
+            return center - self._nudge_deg, "DANGER_LEFT"
 
         # Stage 2: Tracking with hysteresis
         error = float(vp_angle) - 90.0
