@@ -124,3 +124,27 @@ tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
 }
 .switch input:checked + .slider { background: #2e9e44; }
 .switch input:checked + .slider::before { transform: translateX(22px); }
+
+/* status bar — 4-cell horizontal panel */
+.status-grid { display: flex; gap: 6px; flex-wrap: wrap; }
+.status-cell { flex: 1 1 100px; background: #1a1c20; border-radius: 8px; padding: 8px 12px; min-width: 100px; text-align: center; }
+.status-cell .label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+.status-cell .value { font-size: 18px; font-weight: 700; margin-top: 1px; }
+.status-cell .sub { font-size: 11px; color: #888; margin-top: 1px; }
+.text-ok { color: #48e07f; }
+.text-warn { color: #ffd166; }
+.text-bad { color: #ff6b6b; }
+
+/* compact data tables (Live Vision, RPi Actuator) */
+.data-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+.data-table caption { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; text-align: left; padding-bottom: 2px; }
+.data-table th { padding: 4px 8px; font-size: 11px; color: #888; border-bottom: 1px solid #2a2c30; }
+.data-table td { padding: 6px 8px; font-size: 14px; border-bottom: 1px solid #232427; font-weight: 600; }
+
+/* event log */
+.event-log { background: #1a1c20; border-radius: 6px; padding: 4px; max-height: 110px; overflow-y: auto; font-size: 12px; }
+.event-item { padding: 3px 6px; border-left: 3px solid transparent; margin: 1px 0; font-size: 13px; }
+.event-item.error { border-left-color: #ff6b6b; color: #ff6b6b; }
+.event-item.ok { border-left-color: #48e07f; color: #48e07f; }
+.event-item.info { border-left-color: #60a5fa; color: #b0c4de; }
+.event-item.warn { border-left-color: #ffd166; color: #ffd166; }

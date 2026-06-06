@@ -10,7 +10,6 @@ const preview = document.getElementById("preview");
 const runPill = document.getElementById("runPill");
 const runDetail = document.getElementById("runDetail");
 const progressBar = document.getElementById("progressBar");
-const telemetryGrid = document.getElementById("telemetryGrid");
 const actionInput = document.getElementById("action");
 const durationInput = document.getElementById("duration");
 const addBtn = document.getElementById("add");
@@ -138,24 +137,99 @@ function setPill(klass, text) {
   runPill.textContent = text;
 }
 
-function buildTile(k, v) {
-  const el = document.createElement("div");
-  el.className = "tile";
-  el.innerHTML = `<div class="k">${k}</div><div class="v">${v ?? '-'}</div>`;
-  return el;
+function safeText(v) {
+  if (v === null || v === undefined || v === "") return "-";
+  return String(v).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 }
 
-function renderTelemetry(t) {
-  telemetryGrid.innerHTML = "";
-  const fields = [
-    ["route_id", t.route_id],
-    ["mode", t.route_mode],
-    ["fsm", t.fsm_state],
-    ["theta", t.theta != null ? Number(t.theta).toFixed(2) + "°" : null],
-    ["servo", t.servo_angle != null ? Number(t.servo_angle).toFixed(2) + "°" : null],
-    ["frame", t.frame_num],
-  ];
-  fields.forEach(([k, v]) => telemetryGrid.appendChild(buildTile(k, v)));
+function fmtAge(s) {
+  if (s == null || !Number.isFinite(Number(s))) return "-";
+  const v = Number(s);
+  if (v < 1) return Math.round(v * 1000) + " ms";
+  if (v < 60) return v.toFixed(1) + " s";
+  return Math.floor(v / 60) + "m " + Math.floor(v % 60) + "s";
+}
+
+function fmtUptime(seconds) {
+  if (seconds == null || !Number.isFinite(Number(seconds))) return "-";
+  const total = Math.max(0, Math.floor(Number(seconds)));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+}
+
+function renderStatusBar(rpi) {
+  const payload = (rpi && rpi.payload) || {};
+  const stale = !rpi || !!rpi.stale;
+  const online = !!(rpi && rpi.online);
+  const estop = !!payload.estop_active;
+  const estopCls = estop ? "text-bad" : "text-ok";
+  const estopTxt = estop ? "ACTIVE" : "CLEAR";
+  const rpiCls = online ? "text-ok" : "text-bad";
+  const rpiTxt = online ? "ONLINE" : "OFFLINE";
+  const rpiSub = fmtAge(rpi && rpi.age_s);
+  const mqttConnected = payload.mqtt_connected !== false && !stale;
+  const mqttTxt = stale ? "stale" : (mqttConnected ? "connected" : "disconnected");
+  const mqttCls = mqttConnected ? "text-ok" : "text-bad";
+  const pigpio = payload.pigpio_connected;
+  const pigpioTxt = stale ? "unknown" : (pigpio ? "ok" : "error");
+  const pigpioCls = !stale && pigpio ? "text-ok" : "text-bad";
+
+  document.getElementById("statusBar").innerHTML = `
+    <div class="status-grid">
+      <div class="status-cell"><div class="label">E-stop</div><div class="value ${estopCls}">${estopTxt}</div></div>
+      <div class="status-cell"><div class="label">RPi</div><div class="value ${rpiCls}">${rpiTxt}</div><div class="sub">${rpiSub}</div></div>
+      <div class="status-cell"><div class="label">MQTT</div><div class="value ${mqttCls}">${mqttTxt}</div></div>
+      <div class="status-cell"><div class="label">pigpio</div><div class="value ${pigpioCls}">${pigpioTxt}</div></div>
+    </div>
+    <div style="margin-top:4px;font-size:12px;color:#666;text-align:center">
+      ${fmtUptime(payload.uptime_s ?? payload.uptime_sec)} · ${safeText(payload.hostname)}
+    </div>`;
+}
+
+function renderVisionTable(t) {
+  const fsm = safeText(t.fsm_state);
+  const theta = t.theta != null ? Number(t.theta).toFixed(2) + "°" : "-";
+  const servo = t.servo_angle != null ? Number(t.servo_angle).toFixed(1) + "°" : "-";
+  const frame = safeText(t.frame_num);
+  const route = safeText(t.route_id || t.route_mode || "-");
+  document.getElementById("liveVisionTable").innerHTML = `
+    <table class="data-table">
+      <caption>Live Vision</caption>
+      <thead><tr><th>FSM</th><th>Theta</th><th>Servo</th><th>Frame</th><th>Route</th></tr></thead>
+      <tbody><tr><td>${fsm}</td><td>${theta}</td><td>${servo}</td><td>${frame}</td><td>${route}</td></tr></tbody>
+    </table>`;
+}
+
+function renderActuatorTable(p) {
+  const base = safeText(p && p.base_state);
+  const steer = (p && p.steer_angle != null) ? Number(p.steer_angle).toFixed(1) + "°" : "-";
+  const relay = (p && p.relay_on) ? "ON" : "OFF";
+  const mode = safeText(p && p.current_route_mode);
+  const modeCls = mode === "AUTO" ? "text-ok" : "text-warn";
+  document.getElementById("actuatorStatus").innerHTML = `
+    <table class="data-table">
+      <caption>RPi Actuator</caption>
+      <thead><tr><th>Base</th><th>Steer</th><th>Relay</th><th>Mode</th></tr></thead>
+      <tbody><tr><td>${base}</td><td>${steer}</td><td>${relay}</td><td class="${modeCls}">${mode}</td></tr></tbody>
+    </table>`;
+}
+
+const _eventLog = [];
+const MAX_EVENTS = 8;
+function addEvent(kind, msg) {
+  const ts = new Date().toLocaleTimeString();
+  _eventLog.unshift({kind, msg, ts});
+  if (_eventLog.length > MAX_EVENTS) _eventLog.pop();
+  renderEventLog();
+}
+function renderEventLog() {
+  document.getElementById("eventLog").innerHTML = `
+    <div style="font-size:12px;color:#888;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px">Events</div>
+    <div class="event-log">
+      ${_eventLog.map(e => `<div class="event-item ${e.kind}">[${e.ts}] ${e.msg}</div>`).join("")}
+    </div>`;
 }
 
 let lastRouteId;
@@ -194,12 +268,18 @@ async function pollStatus() {
     if (r2.ok) {
       const j2 = await r2.json();
       const tel = j2.telemetry || {};
+      const rpi = j2.rpi_status || null;
+      const rpiPayload = (rpi && rpi.payload) || {};
+
+      renderStatusBar(rpi);
+      renderVisionTable(tel);
+      renderActuatorTable(rpiPayload);
+
       const newRid = tel.route_id || null;
       if (lastRouteId !== undefined && lastRouteId !== newRid) {
         setTimeout(() => { refreshRoutes(); reloadStream(); }, 600);
       }
       lastRouteId = newRid;
-      renderTelemetry(tel);
     }
   } catch (e) {}
 }
@@ -212,7 +292,10 @@ function reloadStream() {
 }
 setInterval(pollStatus, 500);
 render();
-renderTelemetry({});
+renderStatusBar(null);
+renderVisionTable({});
+renderActuatorTable(null);
+renderEventLog();
 
 const routesTbody = document.querySelector("#routesTable tbody");
 function fmtBytes(n) {
