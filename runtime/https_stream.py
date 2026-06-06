@@ -62,6 +62,7 @@ class HttpsMjpegServer:
         frame_store: SharedFrameStore,
         script_runner: Any | None = None,
         rpi_status_provider: Any | None = None,
+        steering_controller: Any | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -74,6 +75,7 @@ class HttpsMjpegServer:
         self._frame_store = frame_store
         self._script_runner = script_runner
         self._rpi_status_provider = rpi_status_provider
+        self._steering_controller = steering_controller
 
         self._server: Any = None
         self._thread: threading.Thread | None = None
@@ -166,6 +168,34 @@ class HttpsMjpegServer:
             if jpeg is None:
                 return Response(status_code=503, content=b"No frame available")
             return Response(content=jpeg, media_type="image/jpeg")
+
+        @app.get("/control/params")
+        def get_control_params(token: str = "") -> Any:
+            _check_token(token)
+            ctrl = self._steering_controller
+            if ctrl is None:
+                return JSONResponse({"available": False, "params": None, "bounds": None})
+            return JSONResponse({
+                "available": True,
+                "params": ctrl.get_params(),
+                "bounds": ctrl.PARAM_BOUNDS,
+            })
+
+        @app.post("/control/params")
+        async def post_control_params(request: Request, token: str = "") -> Any:
+            _check_token(token)
+            ctrl = self._steering_controller
+            if ctrl is None:
+                raise HTTPException(status_code=503, detail="steering controller not available")
+            try:
+                body = await request.json()
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}")
+            try:
+                new_params = ctrl.update_params(body)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            return JSONResponse({"params": new_params, "bounds": ctrl.PARAM_BOUNDS})
 
         @app.get(self._stream_path)
         def stream(token: str = "") -> Any:

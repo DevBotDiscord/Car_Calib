@@ -537,3 +537,108 @@ document.getElementById("presetDelete").onclick = async () => {
 };
 refreshPresets();
 setInterval(refreshPresets, 10000);
+
+// ---------- tune panel (steering controller params) ----------
+const TUNE_LABELS = {
+  kp: "Kp (proportional)",
+  ki: "Ki (integral)",
+  kd: "Kd (derivative)",
+  danger_margin: "Danger margin (px)",
+  nudge_deg: "Danger nudge (°)",
+  inner_thresh: "Inner threshold (°)",
+  outer_thresh: "Outer threshold (°)",
+  max_offset: "Max steer offset (°)",
+};
+const TUNE_STEPS = {
+  kp: 0.01, ki: 0.01, kd: 0.01,
+  danger_margin: 1, nudge_deg: 0.5,
+  inner_thresh: 0.1, outer_thresh: 0.1, max_offset: 1,
+};
+let _tuneBounds = null;
+let _tuneOriginal = null;
+let _tuneInputs = {};
+
+async function loadTune() {
+  const errEl = document.getElementById("tuneError");
+  const fields = document.getElementById("tuneFields");
+  errEl.style.display = "none";
+  try {
+    const r = await fetch("/control/params" + qp);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const j = await r.json();
+    if (!j.available) {
+      fields.innerHTML = '<div class="muted">Steering controller not available (vision side disabled).</div>';
+      return;
+    }
+    _tuneBounds = j.bounds || {};
+    _tuneOriginal = _tuneOriginal || {...j.params};
+    renderTuneFields(j.params);
+  } catch (e) {
+    errEl.textContent = "Load failed: " + e.message;
+    errEl.style.display = "block";
+  }
+}
+
+function renderTuneFields(params) {
+  const fields = document.getElementById("tuneFields");
+  fields.innerHTML = "";
+  _tuneInputs = {};
+  Object.keys(TUNE_LABELS).forEach(key => {
+    if (params[key] === undefined) return;
+    const [lo, hi] = (_tuneBounds && _tuneBounds[key]) || [0, 1];
+    const step = TUNE_STEPS[key] || 0.01;
+    const wrap = document.createElement("div");
+    wrap.className = "tune-field";
+    wrap.innerHTML = `
+      <label>${TUNE_LABELS[key]}</label>
+      <input type="range" data-k="${key}" min="${lo}" max="${hi}" step="${step}" value="${params[key]}">
+      <input type="number" data-k="${key}" min="${lo}" max="${hi}" step="${step}" value="${params[key]}">
+      <div class="tune-meta">range ${lo} … ${hi}</div>`;
+    fields.appendChild(wrap);
+    const slider = wrap.querySelector('input[type=range]');
+    const num = wrap.querySelector('input[type=number]');
+    slider.oninput = () => { num.value = slider.value; };
+    num.oninput = () => { slider.value = num.value; };
+    _tuneInputs[key] = num;
+  });
+}
+
+async function applyTune() {
+  const status = document.getElementById("tuneStatus");
+  const errEl = document.getElementById("tuneError");
+  errEl.style.display = "none";
+  const patch = {};
+  Object.entries(_tuneInputs).forEach(([k, el]) => { patch[k] = Number(el.value); });
+  status.textContent = "applying…";
+  try {
+    const r = await fetch("/control/params" + qp, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(patch),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
+    status.textContent = "applied";
+    setTimeout(() => { status.textContent = ""; }, 1500);
+    renderTuneFields(j.params);
+  } catch (e) {
+    status.textContent = "";
+    errEl.textContent = "Apply failed: " + e.message;
+    errEl.style.display = "block";
+  }
+}
+
+document.getElementById("tuneApply").onclick = applyTune;
+document.getElementById("tuneReset").onclick = async () => {
+  if (!_tuneOriginal) return;
+  if (!confirm("Reset all params to values at page load?")) return;
+  Object.entries(_tuneInputs).forEach(([k, el]) => {
+    if (_tuneOriginal[k] !== undefined) el.value = _tuneOriginal[k];
+    const slider = el.parentElement.querySelector('input[type=range]');
+    if (slider) slider.value = el.value;
+  });
+};
+
+// load on first switch to Tune tab
+document.querySelector('.tab[data-tab="tune"]').addEventListener("click", () => {
+  if (!_tuneOriginal) loadTune();
+});

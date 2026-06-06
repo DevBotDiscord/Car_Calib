@@ -95,3 +95,63 @@ class SteeringController:
         derivative = error - self._last_error
         self._last_error = error
         return (self._pid.kp * error) + (self._pid.kd * derivative)
+
+    # ------------------------------------------------------------------ #
+    # Runtime parameter API (used by dashboard /control/params)
+    # ------------------------------------------------------------------ #
+    PARAM_BOUNDS: dict[str, tuple[float, float]] = {
+        "kp": (0.0, 5.0),
+        "ki": (0.0, 2.0),
+        "kd": (0.0, 5.0),
+        "danger_margin": (0.0, 400.0),
+        "nudge_deg": (0.0, 45.0),
+        "inner_thresh": (0.0, 30.0),
+        "outer_thresh": (0.0, 60.0),
+        "max_offset": (0.0, 90.0),
+    }
+
+    def get_params(self) -> dict[str, float]:
+        return {
+            "kp": float(self._pid.kp),
+            "ki": float(self._pid.ki),
+            "kd": float(self._pid.kd),
+            "danger_margin": float(self._danger_margin),
+            "nudge_deg": float(self._nudge_deg),
+            "inner_thresh": float(self._inner_thresh),
+            "outer_thresh": float(self._outer_thresh),
+            "max_offset": float(self._max_offset),
+        }
+
+    def update_params(self, patch: dict[str, float]) -> dict[str, float]:
+        """Apply a partial update; clamps every value to PARAM_BOUNDS. Returns new params."""
+        if not isinstance(patch, dict):
+            raise ValueError("params patch must be a JSON object")
+        for key, raw in patch.items():
+            if key not in self.PARAM_BOUNDS:
+                raise ValueError(f"unknown param: {key}")
+            try:
+                value = float(raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"param {key} must be numeric: {exc}") from exc
+            lo, hi = self.PARAM_BOUNDS[key]
+            value = max(lo, min(hi, value))
+            if key == "kp":
+                self._pid.kp = value
+            elif key == "ki":
+                self._pid.ki = value
+            elif key == "kd":
+                self._pid.kd = value
+            elif key == "danger_margin":
+                self._danger_margin = max(0, int(value))
+            elif key == "nudge_deg":
+                self._nudge_deg = value
+            elif key == "inner_thresh":
+                self._inner_thresh = abs(value)
+            elif key == "outer_thresh":
+                self._outer_thresh = abs(value)
+            elif key == "max_offset":
+                self._max_offset = abs(value)
+        # keep outer_thresh >= inner_thresh after a partial update
+        if self._outer_thresh < self._inner_thresh:
+            self._outer_thresh = self._inner_thresh
+        return self.get_params()

@@ -370,6 +370,7 @@ def main() -> None:
             frame_store=frame_store,
             script_runner=script_runner,
             rpi_status_provider=_rpi_status_provider,
+            steering_controller=controller,
         )
         stream_server.start()
         logger.info("HTTPS MJPEG stream online: %s", stream_server.stream_url())
