@@ -99,9 +99,24 @@
   </div>
   <div class="panel" style="margin-top:20px">
     <h2>Recent routes</h2>
-    <div class="row"><button id="refreshRoutes">↻ refresh</button><button id="deleteAllRoutes" class="danger" style="padding:9px 14px;font-size:13px">🗑 delete all</button><span class="muted" id="routesMuted">click row for full info · auto-refresh 5s</span></div>
+    <div class="row routes-toolbar">
+      <div class="filter-chips" id="routeFilterChips">
+        <button class="chip active" data-filter="all">All</button>
+        <button class="chip" data-filter="accepted">Accepted</button>
+        <button class="chip" data-filter="rejected">Rejected</button>
+      </div>
+      <select id="routeSort" title="sort">
+        <option value="recent">Recent</option>
+        <option value="longest">Longest elapsed</option>
+        <option value="frames">Most frames</option>
+      </select>
+      <input id="routeSearch" type="text" placeholder="search route_id…" style="flex:1;min-width:140px">
+      <button id="refreshRoutes">↻</button>
+      <button id="deleteSelected" class="danger" style="padding:9px 14px;font-size:13px" disabled>🗑 selected</button>
+      <button id="deleteAllRoutes" class="danger" style="padding:9px 14px;font-size:13px">🗑 all</button>
+    </div>
     <table id="routesTable">
-      <thead><tr><th>Route ID</th><th>Mode</th><th>Preset</th><th>Status</th><th>Frames</th><th>Elapsed</th><th>Zip size</th><th>Ended (UTC)</th><th></th></tr></thead>
+      <thead><tr><th style="width:24px"><input type="checkbox" id="routeSelectAll"></th><th>Route ID</th><th>Mode</th><th>Preset</th><th>Status</th><th>Frames</th><th>Elapsed</th><th>Zip size</th><th>Ended (UTC)</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </div>

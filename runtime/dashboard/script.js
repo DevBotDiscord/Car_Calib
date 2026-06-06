@@ -353,6 +353,14 @@ renderMetricGrid({}, null);
 renderEventLog();
 
 const routesTbody = document.querySelector("#routesTable tbody");
+const routeFilterChips = document.getElementById("routeFilterChips");
+const routeSortSel = document.getElementById("routeSort");
+const routeSearchInput = document.getElementById("routeSearch");
+const routeSelectAll = document.getElementById("routeSelectAll");
+const deleteSelectedBtn = document.getElementById("deleteSelected");
+let _routesAll = [];
+let _routeFilter = "all";
+const _selectedRoutes = new Set();
 function fmtBytes(n) {
   if (n == null) return "-";
   if (n < 1024) return n + " B";
@@ -372,20 +380,86 @@ async function refreshRoutes() {
     const r = await fetch("/routes/list?limit=50" + (TOKEN ? ("&token=" + encodeURIComponent(TOKEN)) : ""));
     if (!r.ok) return;
     const j = await r.json();
-    const list = j.routes || [];
-    routesTbody.innerHTML = "";
-    list.forEach(r => {
-      const tr = document.createElement("tr");
-      tr.className = "route-clickable";
-      tr.dataset.name = r.route_id;
-      const dl = r.has_zip ? `<a class="pill pill-running" style="text-decoration:none;padding:4px 10px;margin-right:6px" href="/routes/download/${encodeURIComponent(r.route_id)}${qp}" onclick="event.stopPropagation()">⬇</a>` : `<span class="muted" style="margin-right:6px">no zip</span>`;
-      const del = `<button class="rm route-del" data-name="${r.route_id}" style="padding:4px 10px">🗑</button>`;
-      const presetCol = r.preset_name ? `<span class="badge badge-ok">${r.preset_name}</span>` : (r.script_source ? `<span class="muted">${r.script_source}</span>` : `<span class="muted">-</span>`);
-      tr.innerHTML = `<td>${r.route_id}</td><td>${r.route_mode||'-'}</td><td>${presetCol}</td><td>${r.status||'-'}${r.accepted===false?' ✗':''}${r.accepted===true?' ✓':''}</td><td>${r.total_frames??'-'}</td><td>${fmtElapsed(r.elapsed_s)}</td><td>${fmtBytes(r.zip_size)}</td><td>${fmtTs(r.end_timestamp_utc)}</td><td>${dl}${del}</td>`;
-      routesTbody.appendChild(tr);
-    });
+    _routesAll = j.routes || [];
+    renderRoutes();
   } catch (e) {}
 }
+
+function renderRoutes() {
+  const filtered = applyRouteFilters(_routesAll);
+  routesTbody.innerHTML = "";
+  filtered.forEach(rr => {
+    const tr = document.createElement("tr");
+    tr.className = "route-clickable";
+    tr.dataset.name = rr.route_id;
+    const checked = _selectedRoutes.has(rr.route_id) ? "checked" : "";
+    const dl = rr.has_zip
+      ? `<a class="pill pill-running" style="text-decoration:none;padding:4px 10px;margin-right:6px" href="/routes/download/${encodeURIComponent(rr.route_id)}${qp}" onclick="event.stopPropagation()">⬇</a>`
+      : `<span class="muted" style="margin-right:6px">no zip</span>`;
+    const del = `<button class="rm route-del" data-name="${rr.route_id}" style="padding:4px 10px">🗑</button>`;
+    const presetCol = rr.preset_name
+      ? `<span class="badge badge-ok">${safeText(rr.preset_name)}</span>`
+      : (rr.script_source ? `<span class="muted">${safeText(rr.script_source)}</span>` : `<span class="muted">-</span>`);
+    const acceptedMark = rr.accepted === false ? " ✗" : (rr.accepted === true ? " ✓" : "");
+    tr.innerHTML = `
+      <td><input type="checkbox" class="route-pick" data-name="${rr.route_id}" ${checked} onclick="event.stopPropagation()"></td>
+      <td>${safeText(rr.route_id)}</td>
+      <td>${safeText(rr.route_mode || '-')}</td>
+      <td>${presetCol}</td>
+      <td>${safeText(rr.status || '-')}${acceptedMark}</td>
+      <td>${rr.total_frames ?? '-'}</td>
+      <td>${fmtElapsed(rr.elapsed_s)}</td>
+      <td>${fmtBytes(rr.zip_size)}</td>
+      <td>${fmtTs(rr.end_timestamp_utc)}</td>
+      <td>${dl}${del}</td>`;
+    routesTbody.appendChild(tr);
+  });
+  updateSelectionUI();
+}
+
+function applyRouteFilters(list) {
+  let out = list.slice();
+  if (_routeFilter === "accepted") out = out.filter(r => r.accepted === true);
+  else if (_routeFilter === "rejected") out = out.filter(r => r.accepted === false);
+  const q = (routeSearchInput && routeSearchInput.value || "").trim().toLowerCase();
+  if (q) out = out.filter(r => (r.route_id || "").toLowerCase().includes(q));
+  const sort = routeSortSel ? routeSortSel.value : "recent";
+  if (sort === "longest") out.sort((a, b) => (b.elapsed_s || 0) - (a.elapsed_s || 0));
+  else if (sort === "frames") out.sort((a, b) => (b.total_frames || 0) - (a.total_frames || 0));
+  else out.sort((a, b) => (b.end_timestamp_utc || "").localeCompare(a.end_timestamp_utc || ""));
+  return out;
+}
+
+function updateSelectionUI() {
+  if (!deleteSelectedBtn) return;
+  const n = _selectedRoutes.size;
+  deleteSelectedBtn.disabled = n === 0;
+  deleteSelectedBtn.textContent = n ? `🗑 selected (${n})` : "🗑 selected";
+}
+
+if (routeFilterChips) routeFilterChips.onclick = (e) => {
+  if (!e.target.classList.contains("chip")) return;
+  routeFilterChips.querySelectorAll(".chip").forEach(c => c.classList.toggle("active", c === e.target));
+  _routeFilter = e.target.dataset.filter || "all";
+  renderRoutes();
+};
+if (routeSortSel) routeSortSel.onchange = renderRoutes;
+if (routeSearchInput) routeSearchInput.oninput = renderRoutes;
+if (routeSelectAll) routeSelectAll.onchange = (e) => {
+  const want = e.target.checked;
+  applyRouteFilters(_routesAll).forEach(r => want ? _selectedRoutes.add(r.route_id) : _selectedRoutes.delete(r.route_id));
+  renderRoutes();
+};
+if (deleteSelectedBtn) deleteSelectedBtn.onclick = async () => {
+  const n = _selectedRoutes.size;
+  if (!n) return;
+  if (!confirm(`Delete ${n} selected route(s)? This removes directories + zips.`)) return;
+  for (const id of Array.from(_selectedRoutes)) {
+    try { await fetch(`/routes/${encodeURIComponent(id)}${qp}`, {method: "DELETE"}); } catch (e) {}
+  }
+  _selectedRoutes.clear();
+  refreshRoutes();
+};
 document.getElementById("refreshRoutes").onclick = refreshRoutes;
 setInterval(refreshRoutes, 5000);
 refreshRoutes();
