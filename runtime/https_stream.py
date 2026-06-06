@@ -282,6 +282,33 @@ class HttpsMjpegServer:
                 raise HTTPException(status_code=409, detail="script_already_running")
             return JSONResponse({"ok": True, "status": self._script_runner.status()})
 
+        @app.post("/route/script/step")
+        async def route_script_step(request: _FastAPIRequest, token: str = "") -> Any:
+            """Run a single step without opening a route session (no recording)."""
+            _check_token(token)
+            if self._script_runner is None:
+                raise HTTPException(status_code=503, detail="script_runner_disabled")
+            try:
+                payload = await request.json()
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"invalid_json: {exc}") from exc
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=400, detail="payload must be a JSON object")
+
+            from runtime.route_script import validate_steps  # local import to avoid cycle
+
+            try:
+                steps = validate_steps([{
+                    "action": payload.get("action"),
+                    "duration_s": payload.get("duration_s"),
+                }])
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+            if not self._script_runner.submit(steps, preset_name=None, description="single_step", record=False):
+                raise HTTPException(status_code=409, detail="script_already_running")
+            return JSONResponse({"ok": True, "status": self._script_runner.status()})
+
         @app.post("/route/script/stop")
         def route_script_stop(token: str = "") -> Any:
             _check_token(token)

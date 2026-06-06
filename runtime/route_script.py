@@ -190,7 +190,7 @@ class RouteScriptRunner:
             snap["step_elapsed_s"] = 0.0
         return snap
 
-    def submit(self, steps: list[dict[str, Any]], preset_name: str | None = None, description: str | None = None) -> bool:
+    def submit(self, steps: list[dict[str, Any]], preset_name: str | None = None, description: str | None = None, record: bool = True) -> bool:
         with self._lock:
             if self._state["running"]:
                 return False
@@ -202,14 +202,14 @@ class RouteScriptRunner:
             self._state["last_error"] = None
         with self._meta_lock:
             self._pending_meta = {
-                "source": "dashboard_script_runner",
+                "source": "dashboard_script_runner" if record else "dashboard_single_step",
                 "preset_name": preset_name,
                 "description": description,
                 "steps": list(steps),
                 "submitted_at_unix": time.time(),
             }
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, args=(steps,), daemon=True)
+        self._thread = threading.Thread(target=self._run, args=(steps, record), daemon=True)
         self._thread.start()
         return True
 
@@ -220,10 +220,11 @@ class RouteScriptRunner:
     # Worker
     # ------------------------------------------------------------------ #
 
-    def _run(self, steps: list[dict[str, Any]]) -> None:
-        logger.info("Route script start (%d steps)", len(steps))
+    def _run(self, steps: list[dict[str, Any]], record: bool = True) -> None:
+        logger.info("Route script start (%d steps, record=%s)", len(steps), record)
         self._publish_script_active("ON")
-        self._publish_route("START")
+        if record:
+            self._publish_route("START")
         try:
             for idx, step in enumerate(steps):
                 if self._stop_event.is_set():
@@ -241,7 +242,8 @@ class RouteScriptRunner:
                 self._state["last_error"] = str(exc)
             self._publish_neutral()
         finally:
-            self._publish_route("STOP")
+            if record:
+                self._publish_route("STOP")
             self._publish_script_active("OFF")
             with self._lock:
                 self._state["running"] = False

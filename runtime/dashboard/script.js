@@ -66,7 +66,7 @@ function render() {
       else if (i + 1 === currentRunningStep) tr.classList.add("active");
       else tr.classList.add("pending");
     }
-    tr.innerHTML = `<td class="idx">${i+1}</td><td>${s.action}</td><td>${s.duration_s.toFixed(1)} s</td><td>${isRunning ? "" : `<button data-i="${i}" class="edit">edit</button> <button data-i="${i}" class="rm">×</button>`}</td>`;
+    tr.innerHTML = `<td class="idx">${i+1}</td><td>${safeText(s.action)}</td><td>${s.duration_s.toFixed(1)} s</td><td>${isRunning ? "" : `<button data-i="${i}" class="play" title="run only this step">▶</button> <button data-i="${i}" class="edit">edit</button> <button data-i="${i}" class="rm">×</button>`}</td>`;
     tbody.appendChild(tr);
   });
   preview.textContent = JSON.stringify({steps}, null, 2);
@@ -102,6 +102,11 @@ tbody.onclick = (e) => {
   const idx = parseInt(t.dataset.i, 10);
   if (!Number.isFinite(idx)) return;
 
+  if (t.classList.contains("play")) {
+    playSingleStep(idx);
+    return;
+  }
+
   if (t.classList.contains("edit")) {
     loadEditorFromStep(idx);
     return;
@@ -114,6 +119,27 @@ tbody.onclick = (e) => {
     render();
   }
 };
+
+async function playSingleStep(idx) {
+  const step = steps[idx];
+  if (!step) return;
+  if (editingIndex >= 0) { runDetail.textContent = "save edit first"; return; }
+  runDetail.textContent = `step ${idx + 1}: starting…`;
+  try {
+    const r = await fetch("/route/script/step" + qp, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({action: step.action, duration_s: step.duration_s}),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      runDetail.textContent = "step error: " + (j.detail || r.status);
+      return;
+    }
+    runDetail.textContent = "";
+  } catch (e) {
+    runDetail.textContent = "step network error";
+  }
+}
 
 document.getElementById("run").onclick = async () => {
   if (editingIndex >= 0) { runDetail.textContent = "save edit first"; return; }

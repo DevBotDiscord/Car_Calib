@@ -63,6 +63,8 @@ button.primary:hover { background: #34a36b; }
 button.danger { background: #8c2a2a; border-color: #b34040; color: #fff; padding: 13px 22px; font-size: 18px; }
 button.danger:hover { background: #a33434; }
 button.rm { background: #2a2c30; border-color: #4a4c50; color: #f88; padding: 6px 12px; font-size: 16px; }
+button.play { background: var(--ok-dim); border-color: var(--ok); color: var(--ok); padding: 4px 10px; font-size: 14px; }
+button.play:hover { background: var(--ok); color: #0b0c0e; }
 table { width: 100%; border-collapse: collapse; margin-top: 12px; }
 th { text-align: left; padding: 10px 12px; border-bottom: 2px solid #2a2c30; font-size: 14px; color: #888; text-transform: uppercase; letter-spacing: 0.6px; }
 td { padding: 11px 12px; border-bottom: 1px solid #232427; font-size: 17px; }
