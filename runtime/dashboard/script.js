@@ -412,29 +412,86 @@ function renderRoutes() {
     const tr = document.createElement("tr");
     tr.className = "route-clickable";
     tr.dataset.name = rr.route_id;
-    const checked = _selectedRoutes.has(rr.route_id) ? "checked" : "";
-    const dl = rr.has_zip
-      ? `<a class="pill pill-running" style="text-decoration:none;padding:4px 10px;margin-right:6px" href="/routes/download/${encodeURIComponent(rr.route_id)}${qp}" onclick="event.stopPropagation()">⬇</a>`
-      : `<span class="muted" style="margin-right:6px">no zip</span>`;
-    const del = `<button class="rm route-del" data-name="${rr.route_id}" style="padding:4px 10px">🗑</button>`;
-    const presetCol = rr.preset_name
-      ? `<span class="badge badge-ok">${safeText(rr.preset_name)}</span>`
-      : (rr.script_source ? `<span class="muted">${safeText(rr.script_source)}</span>` : `<span class="muted">-</span>`);
-    const acceptedMark = rr.accepted === false ? " ✗" : (rr.accepted === true ? " ✓" : "");
-    tr.innerHTML = `
-      <td><input type="checkbox" class="route-pick" data-name="${rr.route_id}" ${checked} onclick="event.stopPropagation()"></td>
-      <td>${safeText(rr.route_id)}</td>
-      <td>${safeText(rr.route_mode || '-')}</td>
-      <td>${presetCol}</td>
-      <td>${safeText(rr.status || '-')}${acceptedMark}</td>
-      <td>${rr.total_frames ?? '-'}</td>
-      <td>${fmtElapsed(rr.elapsed_s)}</td>
-      <td>${fmtBytes(rr.zip_size)}</td>
-      <td>${fmtTs(rr.end_timestamp_utc)}</td>
-      <td>${dl}${del}</td>`;
+    tr.appendChild(makeCheckCell(rr.route_id));
+    tr.appendChild(makeTextCell(rr.route_id));
+    tr.appendChild(makeTextCell(rr.route_mode || '-'));
+    tr.appendChild(makePresetCell(rr));
+    tr.appendChild(makeStatusCell(rr));
+    tr.appendChild(makeTextCell(rr.total_frames != null ? String(rr.total_frames) : '-'));
+    tr.appendChild(makeTextCell(fmtElapsed(rr.elapsed_s)));
+    tr.appendChild(makeTextCell(fmtBytes(rr.zip_size)));
+    tr.appendChild(makeTextCell(fmtTs(rr.end_timestamp_utc)));
+    tr.appendChild(makeActionsCell(rr));
     routesTbody.appendChild(tr);
   });
   updateSelectionUI();
+}
+
+function makeTextCell(text) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  return td;
+}
+function makeCheckCell(routeId) {
+  const td = document.createElement("td");
+  const cb = document.createElement("input");
+  cb.type = "checkbox"; cb.className = "route-pick";
+  cb.dataset.name = routeId;
+  cb.checked = _selectedRoutes.has(routeId);
+  cb.addEventListener("click", e => e.stopPropagation());
+  td.appendChild(cb);
+  return td;
+}
+function makePresetCell(rr) {
+  const td = document.createElement("td");
+  if (rr.preset_name) {
+    const span = document.createElement("span");
+    span.className = "badge badge-ok";
+    span.textContent = rr.preset_name;
+    td.appendChild(span);
+  } else if (rr.script_source) {
+    const span = document.createElement("span");
+    span.className = "muted";
+    span.textContent = rr.script_source;
+    td.appendChild(span);
+  } else {
+    const span = document.createElement("span");
+    span.className = "muted";
+    span.textContent = "-";
+    td.appendChild(span);
+  }
+  return td;
+}
+function makeStatusCell(rr) {
+  const td = document.createElement("td");
+  const accepted = rr.accepted === false ? " ✗" : (rr.accepted === true ? " ✓" : "");
+  td.textContent = (rr.status || '-') + accepted;
+  return td;
+}
+function makeActionsCell(rr) {
+  const td = document.createElement("td");
+  if (rr.has_zip) {
+    const a = document.createElement("a");
+    a.className = "pill pill-running";
+    a.style.cssText = "text-decoration:none;padding:4px 10px;margin-right:6px";
+    a.href = `/routes/download/${encodeURIComponent(rr.route_id)}${qp}`;
+    a.textContent = "⬇";
+    a.addEventListener("click", e => e.stopPropagation());
+    td.appendChild(a);
+  } else {
+    const span = document.createElement("span");
+    span.className = "muted";
+    span.style.marginRight = "6px";
+    span.textContent = "no zip";
+    td.appendChild(span);
+  }
+  const btn = document.createElement("button");
+  btn.className = "rm route-del";
+  btn.dataset.name = rr.route_id;
+  btn.style.padding = "4px 10px";
+  btn.textContent = "🗑";
+  td.appendChild(btn);
+  return td;
 }
 
 function applyRouteFilters(list) {

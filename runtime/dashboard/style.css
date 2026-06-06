@@ -110,6 +110,7 @@ tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
   .layout { grid-template-columns: 1fr; gap: 14px; }
   .panel { padding: 14px; border-radius: 10px; }
   img.stream { width: 100%; max-width: 100%; }
+  .stream-wrap { max-width: 100%; }
   select, input, button { padding: 10px 12px; font-size: 16px; }
   select { min-width: 0; flex: 1 1 100%; }
   input[type=number] { width: 100%; flex: 1 1 100%; }
@@ -123,24 +124,34 @@ tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
   td { font-size: 14px; padding: 9px 6px; }
   .telemetry-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
   .tile .v { font-size: 15px; }
+  .metric-grid { grid-template-columns: repeat(2, 1fr); }
+  .tune-field { grid-template-columns: 1fr; gap: 4px; }
+  .tune-field input[type=number] { width: 100%; }
+  .app-header { padding: 0 var(--sp-3); }
+  .app-header .brand { font-size: var(--fs-md); }
+  .h-pill .lbl { font-size: var(--fs-xs); }
+  .h-pill .sub { display: none; }
   pre { font-size: 12px; max-height: 180px; }
   /* hide less critical columns on narrow screens */
-  #routesTable th:nth-child(4),
-  #routesTable td:nth-child(4),
   #routesTable th:nth-child(5),
   #routesTable td:nth-child(5),
-  #routesTable th:nth-child(7),
-  #routesTable td:nth-child(7) { display: none; }
+  #routesTable th:nth-child(6),
+  #routesTable td:nth-child(6),
+  #routesTable th:nth-child(8),
+  #routesTable td:nth-child(8) { display: none; }
 }
 @media (max-width: 480px) {
   body { padding: 10px; font-size: 15px; }
   h1 { font-size: 20px; }
   .panel { padding: 12px; }
   .telemetry-grid { grid-template-columns: 1fr 1fr; }
-  #routesTable th:nth-child(2),
-  #routesTable td:nth-child(2),
-  #routesTable th:nth-child(6),
-  #routesTable td:nth-child(6) { display: none; }
+  .metric-grid { grid-template-columns: 1fr 1fr; }
+  .h-pill .lbl { display: none; }
+  /* phone: header pills become dots only */
+  #routesTable th:nth-child(3),
+  #routesTable td:nth-child(3),
+  #routesTable th:nth-child(7),
+  #routesTable td:nth-child(7) { display: none; }
 }
 
 /* relay light toggle switch */

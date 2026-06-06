@@ -227,9 +227,24 @@ class HttpsMjpegServer:
                 .replace("__STATUS_PATH__", self._status_path)
                 .replace("__TOKEN__", self._token)
             )
+            csp = (
+                "default-src 'self'; "
+                "img-src 'self' data: blob:; "
+                "style-src 'self' 'unsafe-inline'; "
+                "script-src 'self' 'unsafe-inline'; "
+                "connect-src 'self'; "
+                "frame-ancestors 'none'; "
+                "base-uri 'self'"
+            )
             return Response(
                 content=html,
                 media_type="text/html; charset=utf-8",
+                headers={
+                    "Content-Security-Policy": csp,
+                    "X-Frame-Options": "DENY",
+                    "X-Content-Type-Options": "nosniff",
+                    "Referrer-Policy": "no-referrer",
+                },
             )
 
         @app.get("/route/script/status")
