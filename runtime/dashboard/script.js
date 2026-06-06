@@ -176,6 +176,11 @@ function renderStatusBar(rpi) {
   const pigpioTxt = stale ? "unknown" : (pigpio ? "ok" : "error");
   const pigpioCls = !stale && pigpio ? "text-ok" : "text-bad";
 
+  // sticky header pills (always visible)
+  setHeaderPill("hPillEstop", estop ? "bad" : "ok", "E-stop", estopTxt);
+  setHeaderPill("hPillRpi", online ? "ok" : "bad", "RPi", rpiTxt, rpiSub);
+  setHeaderPill("hPillMqtt", mqttConnected ? "ok" : "bad", "MQTT", mqttTxt);
+
   document.getElementById("statusBar").innerHTML = `
     <div class="status-grid">
       <div class="status-cell"><div class="label">E-stop</div><div class="value ${estopCls}">${estopTxt}</div></div>
@@ -186,6 +191,16 @@ function renderStatusBar(rpi) {
     <div style="margin-top:4px;font-size:12px;color:#666;text-align:center">
       ${fmtUptime(payload.uptime_s ?? payload.uptime_sec)} · ${safeText(payload.hostname)}
     </div>`;
+}
+
+function setHeaderPill(id, cls, label, value, sub) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = "h-pill " + (cls || "");
+  const lbl = el.querySelector(".lbl");
+  if (lbl) lbl.textContent = `${label} ${value}`;
+  const subEl = el.querySelector(".sub");
+  if (subEl) subEl.textContent = sub || "";
 }
 
 function renderVisionTable(t) {

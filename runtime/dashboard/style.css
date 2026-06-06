@@ -1,3 +1,49 @@
+:root {
+  /* spacing — 8px grid */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px;
+  --sp-4: 16px; --sp-5: 24px; --sp-6: 32px; --sp-8: 48px;
+  /* typography */
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --fs-xs: 11px; --fs-sm: 13px; --fs-md: 15px; --fs-lg: 18px; --fs-xl: 24px;
+  /* surfaces */
+  --bg-0: #0b0c0e; --bg-1: #15171b; --bg-2: #1c1f24; --bg-3: #262a31;
+  /* text */
+  --tx-0: #ececec; --tx-1: #a8acb3; --tx-2: #6b6f78;
+  /* state */
+  --ok: #4ade80; --ok-dim: #1f3d2c;
+  --warn: #fbbf24; --warn-dim: #3d3520;
+  --bad: #f87171; --bad-dim: #3d2024;
+  --info: #60a5fa; --info-dim: #1e2d44;
+  /* radius + chrome */
+  --r-sm: 6px; --r-md: 10px; --r-lg: 14px;
+  --header-h: 56px;
+  --tr: 0.15s ease;
+}
+
+/* sticky header */
+.app-header {
+  position: sticky; top: 0; z-index: 50;
+  height: var(--header-h);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 var(--sp-5);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--bg-3);
+  margin: calc(-1 * var(--sp-5)) calc(-1 * var(--sp-5)) var(--sp-4) calc(-1 * var(--sp-5));
+}
+.app-header .brand { font-size: var(--fs-lg); font-weight: 700; letter-spacing: 0.4px; }
+.app-header .pills { display: flex; gap: var(--sp-2); align-items: center; }
+.h-pill {
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: 999px; background: var(--bg-2);
+  font-size: var(--fs-sm); font-weight: 600;
+}
+.h-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--tx-2); transition: background var(--tr); }
+.h-pill.ok .dot { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.h-pill.bad .dot { background: var(--bad); box-shadow: 0 0 6px var(--bad); }
+.h-pill.warn .dot { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+.h-pill .sub { color: var(--tx-2); font-weight: 400; font-size: var(--fs-xs); margin-left: var(--sp-1); }
+
 * { box-sizing: border-box; }
 body { font-family: system-ui, sans-serif; background: #0d0d0f; color: #eee; margin: 0; padding: 24px; font-size: 18px; }
 h1 { margin: 0 0 20px; font-size: 28px; letter-spacing: 0.4px; }
