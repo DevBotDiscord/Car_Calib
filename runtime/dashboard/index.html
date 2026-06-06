@@ -124,7 +124,17 @@
     <div class="modal">
       <button class="close" id="summaryClose">✕ close</button>
       <h2 id="summaryTitle">Route summary</h2>
-      <div id="summaryBody"></div>
+      <div class="modal-actions">
+        <a id="summaryDownload" class="pill pill-running" style="text-decoration:none;padding:6px 14px;display:none">⬇ download zip</a>
+      </div>
+      <div class="tabs modal-tabs" role="tablist">
+        <button class="tab active" data-mtab="overview" role="tab">Overview</button>
+        <button class="tab" data-mtab="script" role="tab">Script</button>
+        <button class="tab" data-mtab="json" role="tab">Raw JSON</button>
+      </div>
+      <div class="tab-pane active" data-mpane="overview"><div id="summaryOverview"></div></div>
+      <div class="tab-pane" data-mpane="script"><div id="summaryScript"></div></div>
+      <div class="tab-pane" data-mpane="json"><pre id="summaryJson"></pre></div>
     </div>
   </div>
   <script>

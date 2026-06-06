@@ -90,6 +90,9 @@ pre { background: #0a0a0c; padding: 12px; border-radius: 7px; max-height: 264px;
 .modal { background: #16171a; border: 1px solid #2a2c30; border-radius: 12px; padding: 24px; max-width: 880px; width: 100%; box-shadow: 0 12px 40px rgba(0,0,0,0.6); }
 .modal h2 { margin: 0; font-size: 22px; }
 .modal .close { float: right; background: #2a2c30; border-color: #4a4c50; padding: 6px 12px; }
+.modal-actions { margin-top: var(--sp-2); }
+.modal-tabs { margin-top: var(--sp-3); margin-bottom: var(--sp-3); }
+.modal pre { max-height: 50vh; overflow: auto; }
 .kv { display: grid; grid-template-columns: 200px 1fr; gap: 6px 14px; margin-top: 14px; font-size: 16px; }
 .kv .k { color: #888; }
 .kv .v { color: #eee; word-break: break-all; }

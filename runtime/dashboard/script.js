@@ -481,67 +481,93 @@ routesTbody.onclick = async (e) => {
 };
 
 async function openSummary(name) {
-  const body = document.getElementById("summaryBody");
+  const overview = document.getElementById("summaryOverview");
+  const scriptDiv = document.getElementById("summaryScript");
+  const jsonPre = document.getElementById("summaryJson");
+  const dlBtn = document.getElementById("summaryDownload");
   const title = document.getElementById("summaryTitle");
-  body.innerHTML = `<div class="muted" style="margin-top:14px">loading…</div>`;
+  overview.innerHTML = `<div class="muted" style="margin-top:14px">loading…</div>`;
+  scriptDiv.innerHTML = "";
+  jsonPre.textContent = "";
+  if (dlBtn) dlBtn.style.display = "none";
   title.textContent = `Route summary · ${name}`;
   document.getElementById("summaryModal").classList.add("show");
+  // reset to Overview tab on open
+  document.querySelectorAll(".modal-tabs .tab").forEach(t => t.classList.toggle("active", t.dataset.mtab === "overview"));
+  document.querySelectorAll(".tab-pane[data-mpane]").forEach(p => p.classList.toggle("active", p.dataset.mpane === "overview"));
   try {
     const r = await fetch(`/routes/${encodeURIComponent(name)}/summary${qp}`);
     if (!r.ok) {
-      body.innerHTML = `<div class="muted" style="margin-top:14px;color:#f88">load failed (${r.status})</div>`;
+      overview.innerHTML = `<div class="muted" style="margin-top:14px;color:var(--bad)">load failed (${r.status})</div>`;
       return;
     }
     const j = await r.json();
-    body.innerHTML = renderSummary(j.summary || {});
+    const s = j.summary || {};
+    overview.innerHTML = renderSummaryOverview(s);
+    scriptDiv.innerHTML = renderSummaryScript(s);
+    jsonPre.textContent = JSON.stringify(s, null, 2);
+    if (dlBtn) {
+      const matched = _routesAll.find(rr => rr.route_id === name);
+      if (matched && matched.has_zip) {
+        dlBtn.href = `/routes/download/${encodeURIComponent(name)}${qp}`;
+        dlBtn.style.display = "";
+      }
+    }
   } catch (e) {
-    body.innerHTML = `<div class="muted" style="margin-top:14px;color:#f88">network error</div>`;
+    overview.innerHTML = `<div class="muted" style="margin-top:14px;color:var(--bad)">network error</div>`;
   }
 }
 
-function renderSummary(s) {
-  const accepted = s.accepted === true ? '<span class="badge badge-ok">accepted ✓</span>' : (s.accepted === false ? '<span class="badge badge-fail">rejected ✗</span>' : '-');
-  const extra = s.extra_meta || {};
-  const script = extra.script || {};
-  const stepsRows = (script.steps || []).map((st, i) => `<tr><td>${i+1}</td><td>${st.action}</td><td>${Number(st.duration_s).toFixed(1)} s</td></tr>`).join("");
-  const stepsTable = stepsRows
-    ? `<table style="margin-top:6px"><thead><tr><th>#</th><th>Action</th><th>Duration</th></tr></thead><tbody>${stepsRows}</tbody></table>`
-    : `<div class="muted">no script steps recorded</div>`;
-  const submittedAt = script.submitted_at_unix ? new Date(script.submitted_at_unix * 1000).toISOString() : null;
-
+function renderSummaryOverview(s) {
+  const accepted = s.accepted === true ? '<span class="badge badge-ok">accepted ✓</span>'
+    : (s.accepted === false ? '<span class="badge badge-fail">rejected ✗</span>' : '-');
   return `
     <div class="kv">
-      <div class="k">Route ID</div><div class="v">${s.route_id || '-'}</div>
-      <div class="k">Mode</div><div class="v">${s.route_mode || '-'}</div>
-      <div class="k">Status</div><div class="v">${s.status || '-'} ${accepted}</div>
-      <div class="k">Rejection reason</div><div class="v">${s.rejection_reason || '-'}</div>
-      <div class="k">Started (UTC)</div><div class="v">${s.start_timestamp_utc || '-'}</div>
-      <div class="k">Ended (UTC)</div><div class="v">${s.end_timestamp_utc || '-'}</div>
+      <div class="k">Route ID</div><div class="v">${safeText(s.route_id)}</div>
+      <div class="k">Mode</div><div class="v">${safeText(s.route_mode)}</div>
+      <div class="k">Status</div><div class="v">${safeText(s.status)} ${accepted}</div>
+      <div class="k">Rejection reason</div><div class="v">${safeText(s.rejection_reason)}</div>
+      <div class="k">Started (UTC)</div><div class="v">${safeText(s.start_timestamp_utc)}</div>
+      <div class="k">Ended (UTC)</div><div class="v">${safeText(s.end_timestamp_utc)}</div>
       <div class="k">Elapsed</div><div class="v">${s.total_elapsed_seconds != null ? Number(s.total_elapsed_seconds).toFixed(2) + ' s' : '-'}</div>
       <div class="k">Total frames</div><div class="v">${s.total_frames ?? '-'}</div>
       <div class="k">Frames with theta</div><div class="v">${s.frames_with_theta ?? '-'}</div>
       <div class="k">Gap ratio</div><div class="v">${s.gap_ratio != null ? Number(s.gap_ratio).toFixed(3) : '-'}</div>
       <div class="k">HW errors</div><div class="v">${s.hardware_error_count ?? '-'}</div>
       <div class="k">Abstract steps</div><div class="v">${s.abstract_steps ?? '-'}</div>
-    </div>
-    <h3>Script source</h3>
+    </div>`;
+}
+
+function renderSummaryScript(s) {
+  const extra = s.extra_meta || {};
+  const script = extra.script || {};
+  const stepsRows = (script.steps || []).map((st, i) =>
+    `<tr><td>${i+1}</td><td>${safeText(st.action)}</td><td>${Number(st.duration_s).toFixed(1)} s</td></tr>`
+  ).join("");
+  const stepsTable = stepsRows
+    ? `<table style="margin-top:6px"><thead><tr><th>#</th><th>Action</th><th>Duration</th></tr></thead><tbody>${stepsRows}</tbody></table>`
+    : `<div class="muted">no script steps recorded</div>`;
+  const submittedAt = script.submitted_at_unix ? new Date(script.submitted_at_unix * 1000).toISOString() : null;
+  return `
     <div class="kv">
-      <div class="k">Source</div><div class="v">${script.source || '-'}</div>
-      <div class="k">Preset name</div><div class="v">${script.preset_name || '-'}</div>
-      <div class="k">Description</div><div class="v">${script.description || '-'}</div>
-      <div class="k">Submitted (UTC)</div><div class="v">${submittedAt || '-'}</div>
+      <div class="k">Source</div><div class="v">${safeText(script.source)}</div>
+      <div class="k">Preset name</div><div class="v">${safeText(script.preset_name)}</div>
+      <div class="k">Description</div><div class="v">${safeText(script.description)}</div>
+      <div class="k">Submitted (UTC)</div><div class="v">${safeText(submittedAt)}</div>
       <div class="k">Step count</div><div class="v">${(script.steps || []).length}</div>
     </div>
     <h3>Steps</h3>
-    ${stepsTable}
-    <h3>Raw JSON</h3>
-    <pre>${escapeHtml(JSON.stringify(s, null, 2))}</pre>
-  `;
+    ${stepsTable}`;
 }
 
-function escapeHtml(str) {
-  return String(str).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
-}
+// modal tabs handler
+document.querySelectorAll(".modal-tabs .tab").forEach(btn => {
+  btn.onclick = () => {
+    const target = btn.dataset.mtab;
+    document.querySelectorAll(".modal-tabs .tab").forEach(t => t.classList.toggle("active", t.dataset.mtab === target));
+    document.querySelectorAll(".tab-pane[data-mpane]").forEach(p => p.classList.toggle("active", p.dataset.mpane === target));
+  };
+});
 
 document.getElementById("summaryClose").onclick = () => document.getElementById("summaryModal").classList.remove("show");
 document.getElementById("summaryModal").addEventListener("click", (e) => {
