@@ -1,3 +1,23 @@
+// =====================================================================
+// car-calib dashboard frontend
+// Sections (search by banner):
+//   §1  Config + DOM refs
+//   §2  Script step editor (form, render, edit/remove)
+//   §3  Run/Stop + relay light
+//   §4  Status renderers (header pills, status bar, metric grid)
+//   §5  Event log
+//   §6  Tabs (zone-2 + modal)
+//   §7  Progress + step elapsed
+//   §8  Polling (status / route_script status)
+//   §9  Routes table (filter / sort / search / bulk)
+//  §10  Route summary modal
+//  §11  Presets CRUD
+//  §12  Tune panel (steering controller params)
+// =====================================================================
+(function () {
+"use strict";
+
+// §1 ─────────────────────────────────────────────────────────────────
 const TOKEN = window.DASHBOARD_CONFIG.TOKEN;
 const STREAM = window.DASHBOARD_CONFIG.STREAM;
 const STATUS = window.DASHBOARD_CONFIG.STATUS;
@@ -742,3 +762,5 @@ document.getElementById("tuneReset").onclick = async () => {
 document.querySelector('.tab[data-tab="tune"]').addEventListener("click", () => {
   if (!_tuneOriginal) loadTune();
 });
+
+})();
