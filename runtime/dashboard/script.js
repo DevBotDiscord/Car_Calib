@@ -376,6 +376,10 @@ async function pollStatus() {
 
       renderStatusBar(rpi);
       renderMetricGrid(tel, rpiPayload);
+      pushTelemetryHistory(tel);
+      renderTrendChart();
+      renderFsmStrip();
+      renderHealthBanner(rpi);
 
       const newRid = tel.route_id || null;
       if (lastRouteId !== undefined && lastRouteId !== newRid) {
@@ -908,5 +912,101 @@ document.getElementById("tunePresetDelete").onclick = async () => {
   tunePresetSelect.value = "";
   refreshTunePresets();
 };
+
+// §13 ─ Telemetry trends (F1 chart), FSM strip (F2), health banner (F3) ──
+const _telHistory = [];           // {t, theta, servo, fsm}
+const TEL_HISTORY_MS = 30000;     // keep last 30s
+const FSM_COLORS = {
+  GAPPING: "#6b6f78",
+  DANGER_LEFT: "#f87171",
+  DANGER_RIGHT: "#fbbf24",
+  TRACKING_COAST: "#60a5fa",
+  TRACKING_PD: "#4ade80",
+};
+
+function pushTelemetryHistory(tel) {
+  const now = Date.now();
+  _telHistory.push({
+    t: now,
+    theta: (tel && tel.theta != null) ? Number(tel.theta) : null,
+    servo: (tel && tel.servo_angle != null) ? Number(tel.servo_angle) : null,
+    fsm: (tel && tel.fsm_state) || null,
+  });
+  const cutoff = now - TEL_HISTORY_MS;
+  while (_telHistory.length && _telHistory[0].t < cutoff) _telHistory.shift();
+}
+
+function _sparkPath(points, getY, x0, span, yMin, yMax, h) {
+  if (points.length < 2 || yMax === yMin) return "";
+  return points.map((p, i) => {
+    const x = ((p.t - x0) / span) * 100;
+    const y = h - ((getY(p) - yMin) / (yMax - yMin)) * h;
+    return `${i === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`;
+  }).join(" ");
+}
+
+function renderTrendChart() {
+  const el = document.getElementById("trendChart");
+  if (!el) return;
+  const pts = _telHistory.filter(p => p.theta != null || p.servo != null);
+  if (pts.length < 2) { el.innerHTML = '<div class="muted" style="font-size:11px">collecting…</div>'; return; }
+  const x0 = pts[0].t;
+  const span = Math.max(1, pts[pts.length - 1].t - x0);
+  const h = 48;
+  const thetaPts = pts.filter(p => p.theta != null);
+  const servoPts = pts.filter(p => p.servo != null);
+  // shared Y scale across both series so they're comparable
+  const allY = pts.flatMap(p => [p.theta, p.servo]).filter(v => v != null);
+  const yMin = Math.min(...allY), yMax = Math.max(...allY);
+  const thetaPath = _sparkPath(thetaPts, p => p.theta, x0, span, yMin, yMax, h);
+  const servoPath = _sparkPath(servoPts, p => p.servo, x0, span, yMin, yMax, h);
+  el.innerHTML = `
+    <div class="metric-section-label">Theta / Servo (last 30s)</div>
+    <svg viewBox="0 0 100 ${h}" preserveAspectRatio="none" class="trend-svg">
+      <path d="${servoPath}" fill="none" stroke="var(--warn)" stroke-width="0.8" vector-effect="non-scaling-stroke"/>
+      <path d="${thetaPath}" fill="none" stroke="var(--info)" stroke-width="0.8" vector-effect="non-scaling-stroke"/>
+    </svg>
+    <div class="trend-legend"><span class="text-warn">■ servo</span> <span style="color:var(--info)">■ theta</span> <span class="muted">${yMin.toFixed(0)}…${yMax.toFixed(0)}°</span></div>`;
+}
+
+function renderFsmStrip() {
+  const el = document.getElementById("fsmStrip");
+  if (!el) return;
+  const pts = _telHistory.filter(p => p.fsm);
+  if (!pts.length) { el.innerHTML = ""; return; }
+  const x0 = pts[0].t;
+  const span = Math.max(1, Date.now() - x0);
+  let segs = "";
+  for (let i = 0; i < pts.length; i++) {
+    const start = pts[i].t;
+    const end = (i + 1 < pts.length) ? pts[i + 1].t : Date.now();
+    const left = ((start - x0) / span) * 100;
+    const w = ((end - start) / span) * 100;
+    const color = FSM_COLORS[pts[i].fsm] || "#444";
+    segs += `<div class="fsm-seg" style="left:${left.toFixed(2)}%;width:${w.toFixed(2)}%;background:${color}" title="${safeText(pts[i].fsm)}"></div>`;
+  }
+  const cur = pts[pts.length - 1].fsm;
+  el.innerHTML = `
+    <div class="metric-section-label">FSM state (last 30s) · now: <span style="color:${FSM_COLORS[cur] || '#888'}">${safeText(cur)}</span></div>
+    <div class="fsm-track">${segs}</div>`;
+}
+
+function renderHealthBanner(rpi) {
+  const el = document.getElementById("healthBanner");
+  if (!el) return;
+  const payload = (rpi && rpi.payload) || {};
+  const stale = !rpi || !!rpi.stale;
+  const estop = !!payload.estop_active;
+  if (estop) {
+    el.className = "health-banner show bad";
+    el.textContent = "⛔ E-STOP ACTIVE — vehicle latched safe. Reset required.";
+  } else if (stale) {
+    el.className = "health-banner show warn";
+    el.textContent = "⚠ RPi telemetry stale — connection lost or bridge offline.";
+  } else {
+    el.className = "health-banner";
+    el.textContent = "";
+  }
+}
 
 })();
