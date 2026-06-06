@@ -203,32 +203,42 @@ function setHeaderPill(id, cls, label, value, sub) {
   if (subEl) subEl.textContent = sub || "";
 }
 
-function renderVisionTable(t) {
+function renderMetricGrid(tel, rpiPayload) {
+  const t = tel || {};
+  const p = rpiPayload || {};
   const fsm = safeText(t.fsm_state);
   const theta = t.theta != null ? Number(t.theta).toFixed(2) + "°" : "-";
-  const servo = t.servo_angle != null ? Number(t.servo_angle).toFixed(1) + "°" : "-";
+  const visionServo = t.servo_angle != null ? Number(t.servo_angle).toFixed(1) + "°" : "-";
   const frame = safeText(t.frame_num);
-  const route = safeText(t.route_id || t.route_mode || "-");
-  document.getElementById("liveVisionTable").innerHTML = `
-    <table class="data-table">
-      <caption>Live Vision</caption>
-      <thead><tr><th>FSM</th><th>Theta</th><th>Servo</th><th>Frame</th><th>Route</th></tr></thead>
-      <tbody><tr><td>${fsm}</td><td>${theta}</td><td>${servo}</td><td>${frame}</td><td>${route}</td></tr></tbody>
-    </table>`;
-}
+  const base = safeText(p.base_state);
+  const rpiSteer = (p.steer_angle != null) ? Number(p.steer_angle).toFixed(1) + "°" : "-";
+  const relay = p.relay_on ? "ON" : "OFF";
+  const relayCls = p.relay_on ? "text-warn" : "";
+  const mode = safeText(p.current_route_mode || t.route_mode);
+  const modeCls = mode === "AUTO" ? "text-ok" : (mode === "-" ? "" : "text-warn");
+  const route = safeText(t.route_id || "-");
 
-function renderActuatorTable(p) {
-  const base = safeText(p && p.base_state);
-  const steer = (p && p.steer_angle != null) ? Number(p.steer_angle).toFixed(1) + "°" : "-";
-  const relay = (p && p.relay_on) ? "ON" : "OFF";
-  const mode = safeText(p && p.current_route_mode);
-  const modeCls = mode === "AUTO" ? "text-ok" : "text-warn";
-  document.getElementById("actuatorStatus").innerHTML = `
-    <table class="data-table">
-      <caption>RPi Actuator</caption>
-      <thead><tr><th>Base</th><th>Steer</th><th>Relay</th><th>Mode</th></tr></thead>
-      <tbody><tr><td>${base}</td><td>${steer}</td><td>${relay}</td><td class="${modeCls}">${mode}</td></tr></tbody>
-    </table>`;
+  const cells = [
+    {label: "FSM", value: fsm},
+    {label: "Theta", value: theta},
+    {label: "Servo (vision)", value: visionServo},
+    {label: "Steer (RPi)", value: rpiSteer},
+    {label: "Base", value: base},
+    {label: "Relay", value: relay, cls: relayCls},
+    {label: "Mode", value: mode, cls: modeCls},
+    {label: "Frame", value: frame},
+    {label: "Route", value: route, full: true},
+  ];
+
+  document.getElementById("metricGrid").innerHTML = `
+    <div class="metric-section-label">Live Metrics</div>
+    <div class="metric-grid">
+      ${cells.map(c => `
+        <div class="metric-cell ${c.full ? 'metric-cell-full' : ''}">
+          <div class="metric-label">${c.label}</div>
+          <div class="metric-value ${c.cls || ''}">${c.value}</div>
+        </div>`).join("")}
+    </div>`;
 }
 
 const _eventLog = [];
@@ -287,8 +297,7 @@ async function pollStatus() {
       const rpiPayload = (rpi && rpi.payload) || {};
 
       renderStatusBar(rpi);
-      renderVisionTable(tel);
-      renderActuatorTable(rpiPayload);
+      renderMetricGrid(tel, rpiPayload);
 
       const newRid = tel.route_id || null;
       if (lastRouteId !== undefined && lastRouteId !== newRid) {
@@ -308,8 +317,7 @@ function reloadStream() {
 setInterval(pollStatus, 500);
 render();
 renderStatusBar(null);
-renderVisionTable({});
-renderActuatorTable(null);
+renderMetricGrid({}, null);
 renderEventLog();
 
 const routesTbody = document.querySelector("#routesTable tbody");

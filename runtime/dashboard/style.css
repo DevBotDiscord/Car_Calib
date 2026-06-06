@@ -177,9 +177,47 @@ tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
 .status-cell .label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
 .status-cell .value { font-size: 18px; font-weight: 700; margin-top: 1px; }
 .status-cell .sub { font-size: 11px; color: #888; margin-top: 1px; }
-.text-ok { color: #48e07f; }
-.text-warn { color: #ffd166; }
-.text-bad { color: #ff6b6b; }
+.text-ok { color: var(--ok); }
+.text-warn { color: var(--warn); }
+.text-bad { color: var(--bad); }
+
+/* stream wrap — locked 16:9, no distortion regardless of source size */
+.stream-wrap {
+  width: 100%; max-width: 960px;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border: 1px solid var(--bg-3);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.stream-wrap > img.stream { width: 100%; height: 100%; object-fit: cover; display: block; border: none; border-radius: 0; }
+
+/* unified metric grid (replaces separate Live Vision + Actuator tables) */
+.metric-section-label {
+  font-size: var(--fs-xs); color: var(--tx-2);
+  text-transform: uppercase; letter-spacing: 0.6px;
+  margin-bottom: var(--sp-2);
+}
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--sp-2);
+}
+.metric-cell {
+  background: var(--bg-2); border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid var(--bg-3);
+  transition: border-color var(--tr);
+}
+.metric-cell-full { grid-column: 1 / -1; }
+.metric-label {
+  font-size: 10px; color: var(--tx-2);
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.metric-value {
+  font-family: var(--font-mono); font-size: var(--fs-md);
+  font-weight: 700; margin-top: 2px; word-break: break-all;
+}
 
 /* compact data tables (Live Vision, RPi Actuator) */
 .data-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
