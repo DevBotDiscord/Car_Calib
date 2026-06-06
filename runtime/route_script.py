@@ -124,6 +124,7 @@ class RouteScriptRunner:
         self._mqtt = self._build_client()
         self._pending_meta: dict[str, Any] | None = None
         self._meta_lock = threading.Lock()
+        self._step_started_at: float | None = None  # monotonic, for step_elapsed_s
 
     def consume_pending_meta(self) -> dict[str, Any] | None:
         """Atomic getter for the most recent script-meta blob (and clear it)."""
@@ -179,7 +180,15 @@ class RouteScriptRunner:
 
     def status(self) -> dict[str, Any]:
         with self._lock:
-            return dict(self._state)
+            snap = dict(self._state)
+        # Compute step_elapsed_s outside the lock — based on a monotonic
+        # marker so it tracks current step progress for the dashboard.
+        started = self._step_started_at
+        if snap.get("running") and started is not None:
+            snap["step_elapsed_s"] = max(0.0, time.monotonic() - started)
+        else:
+            snap["step_elapsed_s"] = 0.0
+        return snap
 
     def submit(self, steps: list[dict[str, Any]], preset_name: str | None = None, description: str | None = None) -> bool:
         with self._lock:
@@ -223,6 +232,7 @@ class RouteScriptRunner:
                 with self._lock:
                     self._state["current_step"] = idx + 1
                     self._state["step"] = dict(step)
+                self._step_started_at = time.monotonic()
                 self._execute_step(step)
             self._publish_neutral()
         except Exception as exc:  # noqa: BLE001

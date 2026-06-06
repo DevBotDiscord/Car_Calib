@@ -214,10 +214,46 @@ tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
   font-size: 10px; color: var(--tx-2);
   text-transform: uppercase; letter-spacing: 0.5px;
 }
-.metric-value {
-  font-family: var(--font-mono); font-size: var(--fs-md);
-  font-weight: 700; margin-top: 2px; word-break: break-all;
+/* tabs (Zone 2 local) */
+.tabs { display: flex; gap: var(--sp-1); border-bottom: 1px solid var(--bg-3); margin-bottom: var(--sp-4); }
+.tab {
+  background: transparent; border: none; color: var(--tx-1);
+  padding: var(--sp-3) var(--sp-4); font-size: var(--fs-md);
+  cursor: pointer; border-bottom: 2px solid transparent;
+  border-radius: 0; transition: color var(--tr), border-color var(--tr);
 }
+.tab:hover { color: var(--tx-0); background: transparent; }
+.tab.active { color: var(--ok); border-bottom-color: var(--ok); font-weight: 600; }
+.tab-pane { display: none; }
+.tab-pane.active { display: block; }
+
+/* segmented progress bar (per-step) */
+.progress-segments {
+  display: grid; gap: 3px; height: 8px; margin-top: var(--sp-2);
+}
+.progress-segments .seg {
+  background: var(--bg-2); border-radius: 3px; overflow: hidden; position: relative;
+}
+.progress-segments .seg.done { background: var(--ok-dim); }
+.progress-segments .seg.done::after {
+  content: ""; position: absolute; inset: 0; background: var(--ok);
+}
+.progress-segments .seg.active::after {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0;
+  width: var(--seg-fill, 0%); background: var(--ok);
+  transition: width 0.2s linear;
+}
+
+/* tune panel form */
+.tune-field {
+  display: grid; grid-template-columns: 140px 1fr 80px; gap: var(--sp-3);
+  align-items: center; padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--bg-3);
+}
+.tune-field label { font-size: var(--fs-sm); color: var(--tx-1); }
+.tune-field input[type=range] { width: 100%; }
+.tune-field input[type=number] { width: 80px; padding: 6px 8px; font-size: var(--fs-sm); }
+.tune-field .tune-meta { grid-column: 1 / -1; font-size: var(--fs-xs); color: var(--tx-2); }
 
 /* compact data tables (Live Vision, RPi Actuator) */
 .data-table { width: 100%; border-collapse: collapse; margin-top: 4px; }

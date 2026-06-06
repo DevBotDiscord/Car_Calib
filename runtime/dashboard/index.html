@@ -26,6 +26,11 @@
       <div id="eventLog" style="margin-top:12px"></div>
     </div>
     <div class="panel">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="script" role="tab">Script</button>
+        <button class="tab" data-tab="tune" role="tab">Tune</button>
+      </div>
+      <div class="tab-pane active" data-pane="script">
       <h2>Route script builder</h2>
       <div class="row">
         <select id="action">
@@ -72,11 +77,24 @@
         <span id="runDetail" class="muted"></span>
       </div>
       <div class="progress"><div id="progressBar" style="width:0%"></div></div>
+      <div class="progress-segments" id="progressSegments"></div>
 
       <h3>JSON preview</h3>
       <pre id="preview">{
   "steps": []
 }</pre>
+      </div>
+      <div class="tab-pane" data-pane="tune">
+        <h2>Steering controller tuning</h2>
+        <div class="muted" style="margin-bottom:10px">Live runtime parameters of <code>SteeringController</code>. Apply pushes new values to the running vision loop.</div>
+        <div id="tuneError" class="muted" style="color:var(--bad);margin-bottom:8px;display:none"></div>
+        <div id="tuneFields"></div>
+        <div class="row" style="margin-top:14px">
+          <button id="tuneApply" class="primary">Apply</button>
+          <button id="tuneReset">Reset to defaults</button>
+          <span class="muted" id="tuneStatus"></span>
+        </div>
+      </div>
     </div>
   </div>
   <div class="panel" style="margin-top:20px">

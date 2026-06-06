@@ -10,6 +10,7 @@ const preview = document.getElementById("preview");
 const runPill = document.getElementById("runPill");
 const runDetail = document.getElementById("runDetail");
 const progressBar = document.getElementById("progressBar");
+const progressSegments = document.getElementById("progressSegments");
 const actionInput = document.getElementById("action");
 const durationInput = document.getElementById("duration");
 const addBtn = document.getElementById("add");
@@ -131,6 +132,27 @@ async function setLight(on) {
   }
 }
 document.getElementById("lightToggle").onchange = (e) => setLight(e.target.checked);
+
+document.querySelectorAll(".tab").forEach(btn => {
+  btn.onclick = () => {
+    const target = btn.dataset.tab;
+    document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === target));
+    document.querySelectorAll(".tab-pane").forEach(p => p.classList.toggle("active", p.dataset.pane === target));
+  };
+});
+
+function renderProgressSegments(total, currentIdx, fillRatio) {
+  if (!progressSegments) return;
+  if (!total) { progressSegments.innerHTML = ""; progressSegments.style.gridTemplateColumns = ""; return; }
+  progressSegments.style.gridTemplateColumns = `repeat(${total}, 1fr)`;
+  let html = "";
+  for (let i = 1; i <= total; i++) {
+    if (i < currentIdx) html += '<div class="seg done"></div>';
+    else if (i === currentIdx) html += `<div class="seg active" style="--seg-fill:${Math.round((fillRatio||0)*100)}%"></div>`;
+    else html += '<div class="seg"></div>';
+  }
+  progressSegments.innerHTML = html;
+}
 
 function setPill(klass, text) {
   runPill.className = "pill " + klass;
@@ -268,18 +290,28 @@ async function pollStatus() {
       isRunning = !!st.running;
       currentRunningStep = st.current_step || 0;
       if (st.running) {
-        setPill("pill-running", `running ${currentRunningStep}/${st.total}`);
-        const cur = st.step ? `${st.step.action} ${st.step.duration_s}s` : "";
-        runDetail.textContent = cur;
-        progressBar.style.width = (st.total ? (currentRunningStep / st.total * 100) : 0) + "%";
+        const total = st.total || 0;
+        const stepDur = (st.step && Number(st.step.duration_s)) || 0;
+        const stepElapsed = Number(st.step_elapsed_s ?? st.elapsed_in_step_s ?? 0);
+        const fillRatio = stepDur > 0 ? Math.min(1, stepElapsed / stepDur) : 0;
+        setPill("pill-running", `running ${currentRunningStep}/${total}`);
+        const action = st.step ? safeText(st.step.action) : "";
+        runDetail.textContent = action
+          ? `${action} · ${stepElapsed.toFixed(1)} / ${stepDur.toFixed(1)}s`
+          : "";
+        const overallRatio = total ? ((currentRunningStep - 1 + fillRatio) / total) : 0;
+        progressBar.style.width = (overallRatio * 100).toFixed(1) + "%";
+        renderProgressSegments(total, currentRunningStep, fillRatio);
       } else if (st.last_error) {
         setPill("pill-error", "error");
         runDetail.textContent = st.last_error;
         progressBar.style.width = "0%";
+        renderProgressSegments(0, 0, 0);
       } else {
         setPill("pill-idle", "idle");
         if (wasRunning) runDetail.textContent = "finished";
         progressBar.style.width = "0%";
+        renderProgressSegments(0, 0, 0);
         currentRunningStep = 0;
       }
       if (wasRunning !== isRunning || st.running) render();
