@@ -242,6 +242,10 @@ tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
 }
 .health-banner.bad { background: var(--bad-dim); color: var(--bad); border: 1px solid var(--bad); }
 .health-banner.warn { background: var(--warn-dim); color: var(--warn); border: 1px solid var(--warn); }
+
+/* F6 route comparison table */
+.cmp-table td, .cmp-table th { text-align: center; }
+.cmp-table .cmp-metric { text-align: left; color: var(--tx-1); font-weight: 600; }
 .metric-cell {
   background: var(--bg-2); border-radius: var(--r-sm);
   padding: var(--sp-2) var(--sp-3);

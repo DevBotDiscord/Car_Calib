@@ -408,6 +408,7 @@ const routeSortSel = document.getElementById("routeSort");
 const routeSearchInput = document.getElementById("routeSearch");
 const routeSelectAll = document.getElementById("routeSelectAll");
 const deleteSelectedBtn = document.getElementById("deleteSelected");
+const compareSelectedBtn = document.getElementById("compareSelected");
 let _routesAll = [];
 let _routeFilter = "all";
 const _selectedRoutes = new Set();
@@ -542,6 +543,10 @@ function updateSelectionUI() {
   const n = _selectedRoutes.size;
   deleteSelectedBtn.disabled = n === 0;
   deleteSelectedBtn.textContent = n ? `🗑 selected (${n})` : "🗑 selected";
+  if (compareSelectedBtn) {
+    compareSelectedBtn.disabled = n < 2;
+    compareSelectedBtn.textContent = n >= 2 ? `⊟ compare (${n})` : "⊟ compare";
+  }
 }
 
 if (routeFilterChips) routeFilterChips.onclick = (e) => {
@@ -1007,6 +1012,60 @@ function renderHealthBanner(rpi) {
     el.className = "health-banner";
     el.textContent = "";
   }
+}
+
+if (compareSelectedBtn) compareSelectedBtn.onclick = async () => {
+  const ids = Array.from(_selectedRoutes).slice(0, 3);
+  if (ids.length < 2) return;
+  await openCompare(ids);
+};
+
+async function openCompare(ids) {
+  const overview = document.getElementById("summaryOverview");
+  const scriptDiv = document.getElementById("summaryScript");
+  const jsonPre = document.getElementById("summaryJson");
+  const dlBtn = document.getElementById("summaryDownload");
+  const title = document.getElementById("summaryTitle");
+  if (dlBtn) dlBtn.style.display = "none";
+  title.textContent = `Compare ${ids.length} routes`;
+  scriptDiv.innerHTML = '<div class="muted">comparison uses the Overview tab</div>';
+  jsonPre.textContent = "";
+  overview.innerHTML = '<div class="muted" style="margin-top:14px">loading…</div>';
+  document.getElementById("summaryModal").classList.add("show");
+  document.querySelectorAll(".modal-tabs .tab").forEach(t => t.classList.toggle("active", t.dataset.mtab === "overview"));
+  document.querySelectorAll(".tab-pane[data-mpane]").forEach(p => p.classList.toggle("active", p.dataset.mpane === "overview"));
+  try {
+    const summaries = await Promise.all(ids.map(async id => {
+      try {
+        const r = await fetch(`/routes/${encodeURIComponent(id)}/summary${qp}`);
+        if (!r.ok) return {route_id: id, _error: r.status};
+        const j = await r.json();
+        return j.summary || {route_id: id};
+      } catch (e) { return {route_id: id, _error: "net"}; }
+    }));
+    overview.innerHTML = renderCompare(summaries);
+    jsonPre.textContent = JSON.stringify(summaries, null, 2);
+  } catch (e) {
+    overview.innerHTML = '<div class="muted" style="margin-top:14px;color:var(--bad)">compare failed</div>';
+  }
+}
+
+function renderCompare(summaries) {
+  const rows = [
+    ["Mode", s => safeText(s.route_mode)],
+    ["Status", s => safeText(s.status)],
+    ["Accepted", s => s.accepted === true ? "✓" : (s.accepted === false ? "✗" : "-")],
+    ["Elapsed", s => s.total_elapsed_seconds != null ? Number(s.total_elapsed_seconds).toFixed(2) + " s" : "-"],
+    ["Frames", s => s.total_frames ?? "-"],
+    ["Frames w/ theta", s => s.frames_with_theta ?? "-"],
+    ["Gap ratio", s => s.gap_ratio != null ? Number(s.gap_ratio).toFixed(3) : "-"],
+    ["HW errors", s => s.hardware_error_count ?? "-"],
+  ];
+  const head = `<th>Metric</th>` + summaries.map(s => `<th>${safeText(s.route_id)}</th>`).join("");
+  const body = rows.map(([label, fn]) =>
+    `<tr><td class="cmp-metric">${label}</td>` + summaries.map(s => `<td>${s._error ? '<span class="text-bad">err</span>' : fn(s)}</td>`).join("") + `</tr>`
+  ).join("");
+  return `<table class="data-table cmp-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
 })();
