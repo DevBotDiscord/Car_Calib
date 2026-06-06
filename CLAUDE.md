@@ -19,7 +19,9 @@ Bidirectional MQTT: RPi publishes mode/route to MiniPC for route session tagging
 
 - Vision loop: 30Hz, publishes `{"angle": int}` to MQTT
 - RPi bridge loop: ~100Hz, polls input → decides → writes GPIO + publishes mode/route
-- MiniPC subscribes to `car/control/route` (START/STOP) and `car/control/mode` to lifecycle route logging sessions
+- Telemetry: RPi publishes retained `car/status` every `TELEMETRY_INTERVAL_SEC` (1s default); MQTT LWT republishes on disconnect
+- E-Stop: NC push-button on GPIO 6 latches the bridge into a safe state until `try_reset()` is called and the button reads safe; `base.py`/`steering.py` gate command writes while latched
+- MiniPC subscribes to `car/control/route` (START/STOP), `car/control/mode`, `car/status`, and `ugv/rpi/estop` for route session lifecycle + dashboard telemetry
 - Steering convention: more negative angle = LEFT, more positive = RIGHT
   Default (current code): CENTER_ANGLE=-8, SERVO_MAX_ANGLE_DEG=45 → LEFT_LIMIT=-53, RIGHT_LIMIT=+37
 - IMU heading-hold: removed (mpu_home_detect.py kept as standalone test script, not wired into bridge)
@@ -42,7 +44,8 @@ car-calib/
 ├── control/                   # PID controller (servo_pid.py)
 ├── drivers/                   # Servo driver (MQTT publish)
 ├── models/                    # RobotState FSM
-├── runtime/                   # HTTPS MJPEG stream, video helpers
+├── runtime/                   # HTTPS MJPEG stream, dashboard, route logging
+│   └── dashboard/             # Static HTML/JS/CSS dashboard (status bar + tables + event log)
 ├── vision/                    # LineDetector (OpenCV: CLAHE, Canny, Hough)
 ├── visualization/             # PID simulation visualizer
 ├── firmware/                  # ESP32 MQTT bridge firmware
@@ -54,14 +57,16 @@ car-calib/
 │   └── mosquitto/mosquitto.conf  # MQTT broker config (listener 1883 0.0.0.0, anonymous)
 │
 ├── scripts/
-│   ├── rpi/                   # RPi bridge (modular, 8 files)
+│   ├── rpi/                   # RPi bridge (modular, 9 files)
 │   │   ├── bridge.py          # Main entrypoint: setup, main loop, cleanup, banner
-│   │   ├── config.py          # All env vars + global state (~170 lines)
-│   │   ├── base.py            # Motor GPIO: forward/backward/stop/lock/unlock
-│   │   ├── steering.py        # Servo: pulse calc, apply_steering, deadband, remote angle mapping
+│   │   ├── config.py          # All env vars + global state (~200 lines)
+│   │   ├── base.py            # Motor GPIO: forward/backward/stop/lock/unlock/turn_left/turn_right + estop gate
+│   │   ├── steering.py        # Servo: pulse calc, apply_steering, deadband, remote angle mapping + estop gate
 │   │   ├── controls.py        # InputController: mode logic, cruise/square/relay triggers
 │   │   ├── input_handler.py   # evdev reader: gamepad + keyboard state
-│   │   └── mqtt_client.py     # MQTT connect, callbacks, publish_status, publish_mode/route_control
+│   │   ├── estop.py           # E-Stop GPIO 6 NC button: latch, debounce, blink relay
+│   │   ├── logging_utils.py   # Compact stdout logger
+│   │   └── mqtt_client.py     # MQTT connect, callbacks, publish_status/estop/mode/route_control + LWT
 │   ├── servo_bridge_common.py # Shared helpers: clamp_angle, angle_within_limits
 │   ├── input_device_helpers.py# Gamepad/keyboard detection helpers
 │   ├── mqtt_servo_command.py  # CLI: publish servo angle to MQTT
@@ -103,6 +108,18 @@ car-calib/
 ### Relay
 - `RELAY_PIN=5`
 - `RELAY_BLINK_INTERVAL_S=0.12`
+
+### E-Stop (RPi)
+- `ESTOP_GPIO=6` — NC push-button to GND
+- `ESTOP_ACTIVE_LOW=true` — pull-up enabled, button press pulls pin LOW
+- `ESTOP_DEBOUNCE_US=5000` — pigpio hardware glitch filter
+- `ESTOP_LATCH_STABLE_S=0.02` — software stable-window after edge
+- `ESTOP_BLINK_RELAY_S=5.0` — relay blink duration on latch (visual warning)
+
+### Telemetry
+- `TELEMETRY_INTERVAL_SEC=1.0` — heartbeat publish interval (was 10 s previously)
+- `MQTT_ESTOP_TOPIC=ugv/rpi/estop` — retained E-stop transitions
+- `MQTT_STATUS_TOPIC=car/status` — retained rich health JSON + LWT
 
 ### Cruise / Square Pattern
 - `CRUISE_DURATION_S=30`
@@ -223,14 +240,25 @@ All paths gate through `apply_steering()` → clamp to [LEFT_LIMIT, RIGHT_LIMIT]
 
 ## MQTT Topics
 
-| Topic | Direction | Payload |
-|-------|-----------|---------|
-| `car/servo/angle` | MiniPC → RPi | `{"angle": int}` JSON or float string |
-| `car/base/command` | (any) → RPi | `FORWARD`/`BACKWARD`/`STOP`/`LOCK`/`UNLOCK` |
-| `car/relay` | (any) → RPi | `ON`/`OFF` |
-| `car/control/route` | RPi → MiniPC | `START`/`STOP` (qos=1) — gates route logging session |
-| `car/control/mode` | RPi → MiniPC | `AUTO`/`CRUISE`/`SQUARE`/`REMOTE_STEER` (qos=1, retain) |
-| `car/status` | RPi → all | JSON heartbeat every 10 s |
+| Topic | Direction | Payload | QoS | Retain |
+|-------|-----------|---------|-----|--------|
+| `car/servo/angle` | MiniPC → RPi | `{"angle": int}` JSON or float string | 0 | no |
+| `car/base/command` | (any) → RPi | `FORWARD/BACKWARD/STOP/LOCK/UNLOCK/TURN_LEFT/TURN_RIGHT` | 1 | no |
+| `car/relay` | (any) → RPi | `ON`/`OFF` | 0 | no |
+| `car/control/script_active` | dashboard → RPi | `ON/OFF/1/0/TRUE/FALSE/START/STOP` | 0 | no |
+| `car/control/route` | RPi → MiniPC | `START`/`STOP` — gates route logging session | 1 | no |
+| `car/control/mode` | RPi → MiniPC | `AUTO/CRUISE/SQUARE/REMOTE_STEER/RECORD` | 1 | yes |
+| `car/status` | RPi → all | Rich health JSON every `TELEMETRY_INTERVAL_SEC` (1.0s default); also LWT payload `{"rpi_online":false,"reason":"mqtt_lwt"}` if RPi disconnects | 1 | yes |
+| `ugv/rpi/estop` (env `MQTT_ESTOP_TOPIC`) | RPi → all | `{"active":bool,"latched_at":float,"ts":float}` on E-stop transitions | 1 | yes |
+
+MiniPC subscribes to `car/control/#` plus `car/status` and `ugv/rpi/estop` via
+`drivers/mqtt_control_client.py`; the cached payload is exposed to the
+dashboard through the `/status` endpoint as `rpi_status: {online, stale,
+age_s, payload}` (stale=true once `age_s > 5.0`).
+
+Vision-side gating: `handle_servo_message` ignores `car/servo/angle` until
+the dashboard publishes `car/control/script_active=ON`, so manual
+gamepad/keyboard control stays exclusive on the RPi by default.
 
 ## Modes (RPi → MiniPC tag)
 
