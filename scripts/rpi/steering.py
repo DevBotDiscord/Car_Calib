@@ -46,6 +46,11 @@ def _servo_off() -> None:
 
 
 def apply_steering(target_angle: float, source: str) -> None:
+    # E-stop gate: ESTOP source may pass (used by estop._safe_outputs to
+    # center + release); all other paths are blocked while latched.
+    if config.estop_active and source != "ESTOP":
+        return
+
     target = _clamp_angle(target_angle, config.LEFT_LIMIT, config.RIGHT_LIMIT)
 
     if (

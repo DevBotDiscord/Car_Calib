@@ -7,6 +7,8 @@ and GPIO writes for servo, base motor, and relay.
 from __future__ import annotations
 
 import os
+import socket as _socket
+import time
 from typing import Any
 
 # -- optional imports --------------------------------------------------
@@ -143,6 +145,28 @@ OUT3 = int(os.getenv("BASE_OUT3", "22"))
 RELAY_PIN = int(os.getenv("RELAY_PIN", "5"))
 
 # ======================================================================
+# E-Stop (NC push-button on GPIO 6, active-low default)
+# ======================================================================
+ESTOP_GPIO = int(os.getenv("ESTOP_GPIO", "6"))
+ESTOP_ACTIVE_LOW = os.getenv("ESTOP_ACTIVE_LOW", "true").strip().lower() in {
+    "1", "true", "t", "yes", "y", "on",
+}
+ESTOP_DEBOUNCE_US = int(os.getenv("ESTOP_DEBOUNCE_US", "5000"))
+ESTOP_LATCH_STABLE_S = float(os.getenv("ESTOP_LATCH_STABLE_S", "0.02"))
+ESTOP_BLINK_RELAY_S = float(os.getenv("ESTOP_BLINK_RELAY_S", "5.0"))
+
+# ======================================================================
+# Telemetry
+# ======================================================================
+TELEMETRY_INTERVAL_SEC = float(os.getenv("TELEMETRY_INTERVAL_SEC", "1.0"))
+MQTT_ESTOP_TOPIC = os.getenv("MQTT_ESTOP_TOPIC", "ugv/rpi/estop")
+try:
+    _hostname = _socket.gethostname()
+except Exception:
+    _hostname = "unknown"
+RPI_HOSTNAME = os.getenv("RPI_HOSTNAME", _hostname)
+
+# ======================================================================
 # GLOBAL STATE (minimal)
 # ======================================================================
 running = True
@@ -156,6 +180,7 @@ last_steer_source: str | None = None
 # Relay state
 relay_on = False
 last_base_state: tuple[int, int, int] | None = None
+last_base_label: str = "STOP"
 
 # MQTT state
 mqtt_client: Any = None
@@ -165,3 +190,9 @@ mqtt_connected = False
 manual_override_active = False
 script_active = False
 current_route_mode = "AUTO"
+
+# Health telemetry
+bridge_started_at = time.time()
+pigpio_connected = False
+estop_active = False
+estop_latched_at: float | None = None

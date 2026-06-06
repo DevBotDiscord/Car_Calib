@@ -16,11 +16,18 @@ TURN_LEFT_STATE = (1, 0, 0)
 TURN_RIGHT_STATE = (0, 1, 1)
 
 
-def set_base(b1: int, b2: int, b3: int, label: str | None = None) -> None:
+def set_base(b1: int, b2: int, b3: int, label: str | None = None, force: bool = False) -> None:
     state = (b1, b2, b3)
 
     if config.gpio is None:
         raise RuntimeError("pigpio is not initialized.")
+
+    # E-stop gate: only STOP_STATE may pass through while latched, and
+    # only when the caller explicitly requests force (e.g. estop._safe_outputs).
+    if config.estop_active and not force:
+        if state != STOP_STATE:
+            logger.warning("[BASE][ESTOP_BLOCKED] %s state=%d,%d,%d", label or "?", *state)
+            return
 
     if state == config.last_base_state:
         return
@@ -34,10 +41,12 @@ def set_base(b1: int, b2: int, b3: int, label: str | None = None) -> None:
     else:
         logger.debug("[BASE] state=%d,%d,%d", *state)
     config.last_base_state = state
+    if label:
+        config.last_base_label = label
 
 
-def stop_base() -> None:
-    set_base(*STOP_STATE, "STOP")
+def stop_base(force: bool = False) -> None:
+    set_base(*STOP_STATE, "STOP", force=force)
 
 
 def forward() -> None:

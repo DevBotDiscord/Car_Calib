@@ -13,6 +13,7 @@ import time
 from . import config
 from .base import backward, forward, lock_base, stop_base, unlock_base
 from .controls import InputController
+from .estop import setup as setup_estop
 from .input_handler import InputDeviceHandler
 from .logging_utils import get_logger, setup_rpi_logging
 from .mqtt_client import close_mqtt, publish_status, setup_mqtt
@@ -96,9 +97,20 @@ def main() -> None:
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
+    config.bridge_started_at = time.monotonic()
     setup_gpio()
     setup_servo_output()
     setup_mqtt()
+
+    # E-stop hardware — must come after gpio + mqtt are ready
+    try:
+        if config.gpio is not None and config.gpio.connected:
+            setup_estop()
+            config.pigpio_connected = True
+        else:
+            logger.warning("[BRIDGE][ESTOP] skipped (pigpio not connected)")
+    except Exception as exc:
+        logger.warning("[BRIDGE][ESTOP] setup failed: %s", exc)
 
     # Setup input devices (optional, graceful fallback)
     input_handler: InputDeviceHandler | None = None
@@ -136,12 +148,21 @@ def main() -> None:
     stop_base()
 
     # Main control loop: poll input, apply decisions, publish control signals
-    heartbeat_interval = 10.0
+    heartbeat_interval = max(0.2, float(config.TELEMETRY_INTERVAL_SEC))
     last_heartbeat = time.monotonic()
 
     try:
         while config.running:
             now = time.monotonic()
+
+            # E-stop override: block all command application; telemetry still flows
+            if config.estop_active:
+                config.manual_override_active = False
+                if (now - last_heartbeat) >= heartbeat_interval:
+                    publish_status("estop")
+                    last_heartbeat = now
+                time.sleep(0.01)
+                continue
 
             # Process input if available
             if input_controller is not None and input_handler is not None:
