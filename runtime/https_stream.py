@@ -197,6 +197,46 @@ class HttpsMjpegServer:
                 raise HTTPException(status_code=400, detail=str(exc))
             return JSONResponse({"params": new_params, "bounds": ctrl.PARAM_BOUNDS})
 
+        @app.get("/control/presets")
+        def control_presets_list(token: str = "") -> Any:
+            _check_token(token)
+            return JSONResponse({"ok": True, "presets": _tune_presets_list()})
+
+        @app.get("/control/presets/{name}")
+        def control_preset_get(name: str, token: str = "") -> Any:
+            _check_token(token)
+            data = _tune_preset_load(name)
+            if data is None:
+                raise HTTPException(status_code=404, detail="preset_not_found")
+            return JSONResponse({"ok": True, "preset": data})
+
+        @app.put("/control/presets/{name}")
+        async def control_preset_save(name: str, request: Request, token: str = "") -> Any:
+            _check_token(token)
+            ctrl = self._steering_controller
+            if ctrl is None:
+                raise HTTPException(status_code=503, detail="steering controller not available")
+            try:
+                body = await request.json()
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}")
+            # Snapshot the params to store: accept an explicit params object,
+            # otherwise capture the controller's current live values.
+            params = body.get("params") if isinstance(body, dict) else None
+            if params is None:
+                params = ctrl.get_params()
+            try:
+                _tune_preset_save(name, params)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            return JSONResponse({"ok": True, "preset": _tune_preset_load(name)})
+
+        @app.delete("/control/presets/{name}")
+        def control_preset_delete(name: str, token: str = "") -> Any:
+            _check_token(token)
+            removed = _tune_preset_delete(name)
+            return JSONResponse({"ok": True, "removed": removed})
+
         @app.get(self._stream_path)
         def stream(token: str = "") -> Any:
             _check_token(token)
@@ -695,5 +735,79 @@ def _normalize_path(path: str) -> str:
     if not path:
         return "/"
     return path if path.startswith("/") else f"/{path}"
+
+
+# ----- tune preset CRUD (steering controller params) ----------------------
+
+def _tune_preset_dir() -> Path:
+    from config.settings import ROUTE_LOG_ROOT
+    root = _resolve_route_root(ROUTE_LOG_ROOT)
+    p = root / "_tune_presets"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _tune_preset_path(name: str) -> Path:
+    if not name or len(name) > _PRESET_NAME_MAX:
+        raise ValueError(f"preset name length must be 1..{_PRESET_NAME_MAX}")
+    safe = _safe_basename(name)
+    for ch in safe:
+        if not (ch.isalnum() or ch in "-_ "):
+            raise ValueError(f"preset name char not allowed: {ch!r}")
+    return _tune_preset_dir() / f"{safe}.json"
+
+
+def _tune_preset_save(name: str, params: dict[str, Any]) -> None:
+    import json as _json
+    path = _tune_preset_path(name)
+    payload = {
+        "name": name,
+        "params": params,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    path.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _tune_preset_load(name: str) -> dict[str, Any] | None:
+    import json as _json
+    try:
+        path = _tune_preset_path(name)
+    except ValueError:
+        return None
+    if not path.exists():
+        return None
+    try:
+        return _json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _tune_preset_delete(name: str) -> bool:
+    try:
+        path = _tune_preset_path(name)
+    except ValueError:
+        return False
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
+def _tune_presets_list() -> list[dict[str, Any]]:
+    import json as _json
+    out: list[dict[str, Any]] = []
+    pdir = _tune_preset_dir()
+    if not pdir.exists():
+        return out
+    for child in sorted(pdir.glob("*.json")):
+        try:
+            data = _json.loads(child.read_text(encoding="utf-8"))
+            out.append({
+                "name": data.get("name", child.stem),
+                "updated_at": data.get("updated_at"),
+            })
+        except Exception:  # noqa: BLE001
+            continue
+    return out
 
 

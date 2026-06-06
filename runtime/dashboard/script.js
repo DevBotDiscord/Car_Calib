@@ -844,6 +844,69 @@ document.getElementById("tuneReset").onclick = async () => {
 // load on first switch to Tune tab
 document.querySelector('.tab[data-tab="tune"]').addEventListener("click", () => {
   if (!_tuneOriginal) loadTune();
+  refreshTunePresets();
 });
+
+// ---------- tune presets CRUD ----------
+const tunePresetSelect = document.getElementById("tunePresetSelect");
+const tunePresetName = document.getElementById("tunePresetName");
+async function refreshTunePresets() {
+  try {
+    const r = await fetch("/control/presets" + qp);
+    if (!r.ok) return;
+    const j = await r.json();
+    const list = j.presets || [];
+    const cur = tunePresetSelect.value;
+    tunePresetSelect.innerHTML = '<option value="">— select preset —</option>';
+    list.forEach(p => {
+      const o = document.createElement("option");
+      o.value = p.name;
+      o.textContent = p.name;
+      tunePresetSelect.appendChild(o);
+    });
+    if (cur) tunePresetSelect.value = cur;
+  } catch (e) {}
+}
+document.getElementById("tunePresetLoad").onclick = async () => {
+  const name = tunePresetSelect.value;
+  if (!name) { alert("select a preset first"); return; }
+  const r = await fetch(`/control/presets/${encodeURIComponent(name)}${qp}`);
+  if (!r.ok) { alert("load failed"); return; }
+  const j = await r.json();
+  const params = (j.preset && j.preset.params) || {};
+  // push loaded params into the inputs, then Apply to the live controller
+  Object.entries(_tuneInputs).forEach(([k, el]) => {
+    if (params[k] !== undefined) {
+      el.value = params[k];
+      const slider = el.parentElement.querySelector('input[type=range]');
+      if (slider) slider.value = params[k];
+    }
+  });
+  tunePresetName.value = name;
+  applyTune();
+};
+document.getElementById("tunePresetSave").onclick = async () => {
+  const name = (tunePresetName.value || "").trim();
+  if (!name) { alert("enter preset name"); return; }
+  const params = {};
+  Object.entries(_tuneInputs).forEach(([k, el]) => { params[k] = Number(el.value); });
+  const r = await fetch(`/control/presets/${encodeURIComponent(name)}${qp}`, {
+    method: "PUT", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({params}),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { alert("save failed: " + JSON.stringify(j.detail || r.status)); return; }
+  await refreshTunePresets();
+  tunePresetSelect.value = name;
+};
+document.getElementById("tunePresetDelete").onclick = async () => {
+  const name = tunePresetSelect.value;
+  if (!name) { alert("select a preset first"); return; }
+  if (!confirm(`Delete tune preset "${name}"?`)) return;
+  const r = await fetch(`/control/presets/${encodeURIComponent(name)}${qp}`, {method: "DELETE"});
+  if (!r.ok) { alert("delete failed"); return; }
+  tunePresetSelect.value = "";
+  refreshTunePresets();
+};
 
 })();
