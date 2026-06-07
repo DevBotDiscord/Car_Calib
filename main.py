@@ -26,6 +26,7 @@ addition to the standard text log. When a route session is active a parallel
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -73,6 +74,9 @@ from config.settings import (
     MQTT_KEEPALIVE_S,
     MQTT_PASSWORD,
     MQTT_USERNAME,
+    ESP32_SERIAL_ENABLED,
+    ESP32_SERIAL_BAUD,
+    ESP32_SERIAL_PORT_GLOBS,
 )
 from control.steering_controller import SteeringController
 from drivers.mqtt_control_client import MQTTControlClient
@@ -336,6 +340,42 @@ def main() -> None:
             return mqtt_control_client.get_rpi_status()
         except Exception:  # noqa: BLE001
             return None
+
+    esp32_bridge = None
+    if ESP32_SERIAL_ENABLED:
+        try:
+            from runtime.esp32_serial_bridge import ESP32SerialBridge
+            esp32_bridge = ESP32SerialBridge(
+                mqtt_host=MQTT_BROKER_HOST,
+                mqtt_port=MQTT_BROKER_PORT,
+                mqtt_username=MQTT_USERNAME,
+                mqtt_password=MQTT_PASSWORD,
+                servo_topic=MQTT_SERVO_TOPIC,
+                base_topic=MQTT_BASE_COMMAND_TOPIC,
+                relay_topic=MQTT_RELAY_TOPIC,
+                status_topic=MQTT_STATUS_TOPIC,
+                baud=ESP32_SERIAL_BAUD,
+                port_globs=tuple(g for g in ESP32_SERIAL_PORT_GLOBS.split(",") if g),
+                device_config={
+                    "servo_pin": int(os.getenv("SERVO_PIN", "12")),
+                    "min_pulse_us": int(round(float(os.getenv("SERVO_MIN_PULSE", "0.0005")) * 1_000_000)),
+                    "max_pulse_us": int(round(float(os.getenv("SERVO_MAX_PULSE", "0.0025")) * 1_000_000)),
+                    "center_angle": float(os.getenv("SERVO_CENTER_ANGLE", "-8")),
+                    "max_angle_deg": float(os.getenv("SERVO_MAX_ANGLE_DEG", "45")),
+                    "deadband_deg": float(os.getenv("STEER_DEADBAND_DEG", "1.0")),
+                    "out1": int(os.getenv("BASE_OUT1", "17")),
+                    "out2": int(os.getenv("BASE_OUT2", "27")),
+                    "out3": int(os.getenv("BASE_OUT3", "22")),
+                    "relay_pin": int(os.getenv("RELAY_PIN", "5")),
+                    "estop_pin": int(os.getenv("ESTOP_GPIO", "6")),
+                    "estop_active_low": os.getenv("ESTOP_ACTIVE_LOW", "true").strip().lower() in {"1", "true", "t", "yes", "y", "on"},
+                    "telemetry_ms": int(float(os.getenv("TELEMETRY_INTERVAL_SEC", "1.0")) * 1000),
+                },
+            )
+            esp32_bridge.start()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ESP32 serial bridge setup failed: %s", exc)
+            esp32_bridge = None
 
     try:
         base_stop_client = setup_base_stop_client()
@@ -735,6 +775,11 @@ def main() -> None:
         if mqtt_control_client is not None:
             try:
                 mqtt_control_client.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if esp32_bridge is not None:
+            try:
+                esp32_bridge.close()
             except Exception:  # noqa: BLE001
                 pass
         if base_stop_client is not None:

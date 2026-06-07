@@ -17,3 +17,6 @@ cryptography>=42.0.0
 
 # Gamepad / keyboard input (MiniPC)
 evdev>=1.6.1
+
+# ESP32 USB-serial actuator bridge (MiniPC)
+pyserial>=3.5

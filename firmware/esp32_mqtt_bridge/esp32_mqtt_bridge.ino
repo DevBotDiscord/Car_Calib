@@ -1,260 +1,388 @@
-#include <WiFi.h>
-#include <WiFiManager.h>
-#include <PubSubClient.h>
-#include <ESP32Servo.h>
+/*
+ * car-calib ESP32 serial actuator bridge
+ * ----------------------------------------
+ * The ESP32 is a dumb-ish actuator driven by the MiniPC over USB-serial.
+ * No WiFi, no MQTT. The MiniPC (runtime/esp32_serial_bridge.py) scans
+ * serial ports, handshakes with WHO, pushes config with CFG, then streams
+ * SERVO/BASE/RELAY/ESTOP_RESET commands. The ESP32 streams TEL telemetry
+ * and ESTOP transition events back.
+ *
+ * Line protocol (newline-terminated, ASCII):
+ *   MiniPC -> ESP32:
+ *     WHO                         -> reply: CARCALIB-ESP32 v1
+ *     CFG {json}                  -> reply: CFGOK   (sets pins/pulse/limits/estop)
+ *     SERVO <angle_deg>           -> set servo angle (signed)
+ *     BASE <STATE>                -> FORWARD|BACKWARD|STOP|LOCK|UNLOCK|TURN_LEFT|TURN_RIGHT
+ *     RELAY ON|OFF
+ *     ESTOP_RESET                 -> clear latch if button released
+ *     PING                        -> reply: PONG
+ *   ESP32 -> MiniPC:
+ *     CARCALIB-ESP32 v1           (WHO reply / boot banner)
+ *     CFGOK
+ *     PONG
+ *     TEL {json}                  (periodic telemetry)
+ *     ESTOP {json}                (on latch/clear transition)
+ *     LOG <msg>                   (diagnostics)
+ *
+ * Steering convention matches the rest of the project:
+ *   more negative angle = LEFT, more positive = RIGHT.
+ * Pulse mapping is absolute [-90,90] deg -> [min_pulse_us, max_pulse_us],
+ * the input angle is first clamped to [left_limit, right_limit].
+ */
 
-// =========================================================
-// WIFI + MQTT
-// =========================================================
-const char* WIFI_AP_NAME = "ESP32-Car-Setup";
-const char* WIFI_AP_PASSWORD = "setup1234";
-const unsigned long WIFI_PORTAL_TIMEOUT_S = 180;
+#include <Arduino.h>
 
-const char* MQTT_HOST = "192.168.10.60";
-const uint16_t MQTT_PORT = 1883;
-const char* MQTT_USERNAME = "";
-const char* MQTT_PASSWORD = "";
+// ---------------------------------------------------------------------------
+// Config (defaults; overridden by CFG from MiniPC)
+// ---------------------------------------------------------------------------
+struct Config {
+  // servo
+  int   servoPin       = 12;
+  int   minPulseUs     = 500;
+  int   maxPulseUs     = 2500;
+  float centerAngle    = -8.0f;
+  float maxAngleDeg    = 45.0f;   // limits = center +/- this
+  float deadbandDeg    = 1.0f;
+  // base motor 3-pin
+  int   out1           = 17;
+  int   out2           = 27;
+  int   out3           = 22;
+  // relay
+  int   relayPin       = 5;
+  // estop
+  int   estopPin       = 6;
+  bool  estopActiveLow = true;
+  unsigned long estopStableMs = 20;
+  unsigned long blinkRelayMs  = 5000;
+  // telemetry
+  unsigned long telemetryMs = 1000;
+};
 
-const char* MQTT_CLIENT_ID = "esp32-car-bridge";
-const char* MQTT_SERVO_TOPIC = "car/servo/angle";
-const char* MQTT_BASE_COMMAND_TOPIC = "car/base/command";
-const char* MQTT_STATUS_TOPIC = "car/status";
+Config cfg;
+bool   cfgReceived = false;
 
-// =========================================================
-// PINOUT
-// =========================================================
-const int SERVO_PIN = 25;
-const int BASE_OUT1_PIN = 17;
-const int BASE_OUT2_PIN = 18;
-const int BASE_OUT3_PIN = 21;
+// ---------------------------------------------------------------------------
+// Servo PWM via LEDC
+// ---------------------------------------------------------------------------
+static const int SERVO_LEDC_CH   = 0;
+static const int SERVO_LEDC_FREQ = 50;       // 50 Hz
+static const int SERVO_LEDC_BITS = 16;       // 16-bit duty
+static const float SERVO_ABS_MIN_DEG = -90.0f;
+static const float SERVO_ABS_MAX_DEG =  90.0f;
+static const unsigned long SERVO_PERIOD_US = 20000UL; // 50 Hz
 
-// =========================================================
-// SERVO MAPPING
-// =========================================================
-const int SERVO_MIN_US = 700;
-const int SERVO_MAX_US = 2300;
-const float LOCAL_LEFT_LIMIT = -65.0f;
-const float LOCAL_CENTER_ANGLE = -8.0f;
-const float LOCAL_RIGHT_LIMIT = 60.0f;
+float steerAngle = 0.0f;
+float lastWrittenAngle = 1e9f;
+bool  servoAttached = false;
 
-// Vision side default output range from Car_Calib.
-// If you publish signed angles directly, change these to -65 / -8 / 60.
-const float REMOTE_INPUT_MIN_ANGLE = -65.0f;
-const float REMOTE_INPUT_CENTER_ANGLE = -8.0f;
-const float REMOTE_INPUT_MAX_ANGLE =  60.0f;
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+String baseState  = "STOP";
+bool   relayOn    = false;
+bool   estopActive = false;
+unsigned long estopLatchedAtMs = 0;
+unsigned long bootMs = 0;
+unsigned long lastTelemetryMs = 0;
+unsigned long blinkUntilMs = 0;
+unsigned long lastBlinkToggleMs = 0;
+bool          blinkRelayState = false;
 
-const unsigned long MQTT_RECONNECT_DELAY_MS = 3000;
-const unsigned long STATUS_INTERVAL_MS = 5000;
+String rxBuf;
 
-WiFiClient wifiClient;
-PubSubClient mqttClient(wifiClient);
-WiFiManager wifiManager;
-Servo steeringServo;
-
-float lastServoAngle = LOCAL_CENTER_ANGLE;
-unsigned long lastReconnectAttempt = 0;
-unsigned long lastStatusAt = 0;
-
-
-float clampFloat(float value, float low, float high) {
-  if (value < low) {
-    return low;
-  }
-  if (value > high) {
-    return high;
-  }
-  return value;
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+static float clampf(float v, float lo, float hi) {
+  return v < lo ? lo : (v > hi ? hi : v);
 }
 
+static float leftLimit()  { return cfg.centerAngle - cfg.maxAngleDeg; }
+static float rightLimit() { return cfg.centerAngle + cfg.maxAngleDeg; }
 
-int angleToPulseMicros(float localAngle) {
-  float clampedAngle = clampFloat(localAngle, LOCAL_LEFT_LIMIT, LOCAL_RIGHT_LIMIT);
-  float ratio = (clampedAngle - LOCAL_LEFT_LIMIT) / (LOCAL_RIGHT_LIMIT - LOCAL_LEFT_LIMIT);
-  return static_cast<int>(SERVO_MIN_US + ratio * (SERVO_MAX_US - SERVO_MIN_US));
+static int angleToPulseUs(float angle) {
+  float clamped = clampf(angle, leftLimit(), rightLimit());
+  float span = SERVO_ABS_MAX_DEG - SERVO_ABS_MIN_DEG;
+  float ratio = (clamped - SERVO_ABS_MIN_DEG) / span;
+  ratio = clampf(ratio, 0.0f, 1.0f);
+  return (int)(cfg.minPulseUs + ratio * (cfg.maxPulseUs - cfg.minPulseUs));
 }
 
-
-float mapRemoteAngle(float remoteAngle) {
-  remoteAngle = clampFloat(remoteAngle, REMOTE_INPUT_MIN_ANGLE, REMOTE_INPUT_MAX_ANGLE);
-
-  if (remoteAngle <= REMOTE_INPUT_CENTER_ANGLE) {
-    float remoteSpan = REMOTE_INPUT_CENTER_ANGLE - REMOTE_INPUT_MIN_ANGLE;
-    if (remoteSpan <= 0.0f) {
-      return LOCAL_CENTER_ANGLE;
-    }
-    float ratio = (remoteAngle - REMOTE_INPUT_CENTER_ANGLE) / remoteSpan;
-    return LOCAL_CENTER_ANGLE + ratio * (LOCAL_CENTER_ANGLE - LOCAL_LEFT_LIMIT);
-  }
-
-  float remoteSpan = REMOTE_INPUT_MAX_ANGLE - REMOTE_INPUT_CENTER_ANGLE;
-  if (remoteSpan <= 0.0f) {
-    return LOCAL_CENTER_ANGLE;
-  }
-  float ratio = (remoteAngle - REMOTE_INPUT_CENTER_ANGLE) / remoteSpan;
-  return LOCAL_CENTER_ANGLE + ratio * (LOCAL_RIGHT_LIMIT - LOCAL_CENTER_ANGLE);
+static void servoSetup() {
+  ledcSetup(SERVO_LEDC_CH, SERVO_LEDC_FREQ, SERVO_LEDC_BITS);
+  ledcAttachPin(cfg.servoPin, SERVO_LEDC_CH);
+  servoAttached = true;
 }
 
-
-void applyBaseCommand(const String& command) {
-  if (command == "FORWARD") {
-    digitalWrite(BASE_OUT1_PIN, LOW);
-    digitalWrite(BASE_OUT2_PIN, LOW);
-    digitalWrite(BASE_OUT3_PIN, HIGH);
-  } else if (command == "BACKWARD") {
-    digitalWrite(BASE_OUT1_PIN, LOW);
-    digitalWrite(BASE_OUT2_PIN, HIGH);
-    digitalWrite(BASE_OUT3_PIN, LOW);
-  } else if (command == "LOCK") {
-    digitalWrite(BASE_OUT1_PIN, HIGH);
-    digitalWrite(BASE_OUT2_PIN, LOW);
-    digitalWrite(BASE_OUT3_PIN, HIGH);
-  } else if (command == "UNLOCK") {
-    digitalWrite(BASE_OUT1_PIN, HIGH);
-    digitalWrite(BASE_OUT2_PIN, HIGH);
-    digitalWrite(BASE_OUT3_PIN, LOW);
-  } else {
-    digitalWrite(BASE_OUT1_PIN, LOW);
-    digitalWrite(BASE_OUT2_PIN, LOW);
-    digitalWrite(BASE_OUT3_PIN, LOW);
-  }
-
-  Serial.print("BASE: ");
-  Serial.println(command);
+static void servoWriteAngle(float angle) {
+  if (!servoAttached) return;
+  int pulseUs = angleToPulseUs(angle);
+  uint32_t duty = (uint32_t)((uint64_t)pulseUs * 65535UL / SERVO_PERIOD_US);
+  ledcWrite(SERVO_LEDC_CH, duty);
+  steerAngle = angle;
+  lastWrittenAngle = angle;
 }
 
-
-void applyServoAngle(float remoteAngle) {
-  float localAngle = mapRemoteAngle(remoteAngle);
-  int pulseUs = angleToPulseMicros(localAngle);
-  steeringServo.writeMicroseconds(pulseUs);
-  lastServoAngle = localAngle;
-
-  Serial.print("SERVO remote=");
-  Serial.print(remoteAngle, 4);
-  Serial.print(" local=");
-  Serial.print(localAngle, 4);
-  Serial.print(" pulse=");
-  Serial.println(pulseUs);
+static void servoRelease() {
+  if (!servoAttached) return;
+  ledcWrite(SERVO_LEDC_CH, 0);  // 0 duty -> no pulse, servo relaxes
 }
 
-
-void publishStatus() {
-  if (!mqttClient.connected()) {
-    return;
-  }
-
-  String payload = "online servo=" + String(lastServoAngle, 2);
-  mqttClient.publish(MQTT_STATUS_TOPIC, payload.c_str(), false);
+// base motor: write the 3-pin pattern
+static void baseWrite(int b1, int b2, int b3, const char* label) {
+  digitalWrite(cfg.out1, b1 ? HIGH : LOW);
+  digitalWrite(cfg.out2, b2 ? HIGH : LOW);
+  digitalWrite(cfg.out3, b3 ? HIGH : LOW);
+  baseState = label;
 }
 
+static void baseStop() { baseWrite(0, 0, 0, "STOP"); }
 
-void handleMessage(char* topic, byte* payload, unsigned int length) {
-  String message;
-  for (unsigned int i = 0; i < length; ++i) {
-    message += static_cast<char>(payload[i]);
-  }
-  message.trim();
-
-  String incomingTopic(topic);
-  if (incomingTopic == MQTT_SERVO_TOPIC) {
-    applyServoAngle(message.toFloat());
-    return;
-  }
-
-  if (incomingTopic == MQTT_BASE_COMMAND_TOPIC) {
-    message.toUpperCase();
-    applyBaseCommand(message);
-  }
-}
-
-
-void connectWifi() {
-  if (WiFi.status() == WL_CONNECTED) {
-    return;
-  }
-
-  Serial.println("WiFi not connected. Starting WiFiManager portal if needed...");
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  wifiManager.setConfigPortalBlocking(true);
-  wifiManager.setConfigPortalTimeout(WIFI_PORTAL_TIMEOUT_S);
-  wifiManager.setHostname(MQTT_CLIENT_ID);
-
-  if (!wifiManager.autoConnect(WIFI_AP_NAME, WIFI_AP_PASSWORD)) {
-    Serial.println("WiFiManager portal timed out. Restarting...");
-    delay(1000);
-    ESP.restart();
-  }
-
-  Serial.print("WiFi connected, IP=");
-  Serial.println(WiFi.localIP());
-}
-
-
-bool connectMqtt() {
-  if (mqttClient.connected()) {
-    return true;
-  }
-
-  Serial.print("Connecting MQTT...");
-  bool connected;
-  if (String(MQTT_USERNAME).length() > 0) {
-    connected = mqttClient.connect(MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD);
-  } else {
-    connected = mqttClient.connect(MQTT_CLIENT_ID);
-  }
-
-  if (!connected) {
-    Serial.print("failed, rc=");
-    Serial.println(mqttClient.state());
-    return false;
-  }
-
-  mqttClient.subscribe(MQTT_SERVO_TOPIC);
-  mqttClient.subscribe(MQTT_BASE_COMMAND_TOPIC);
-  mqttClient.publish(MQTT_STATUS_TOPIC, "online", false);
-  Serial.println("connected");
+// returns true if command applied, false if blocked/unknown
+static bool baseCommand(const String& cmd) {
+  // E-stop gate: only STOP passes while latched
+  if (estopActive && cmd != "STOP") return false;
+  if (cmd == "FORWARD")     baseWrite(0, 1, 0, "FORWARD");
+  else if (cmd == "BACKWARD")  baseWrite(0, 0, 1, "BACKWARD");
+  else if (cmd == "STOP")      baseWrite(0, 0, 0, "STOP");
+  else if (cmd == "LOCK")      baseWrite(1, 0, 1, "LOCK");
+  else if (cmd == "UNLOCK")    baseWrite(1, 1, 0, "UNLOCK");
+  else if (cmd == "TURN_LEFT") baseWrite(1, 0, 0, "TURN_LEFT");
+  else if (cmd == "TURN_RIGHT")baseWrite(0, 1, 1, "TURN_RIGHT");
+  else return false;
   return true;
 }
 
-
-void setup() {
-  Serial.begin(115200);
-
-  pinMode(BASE_OUT1_PIN, OUTPUT);
-  pinMode(BASE_OUT2_PIN, OUTPUT);
-  pinMode(BASE_OUT3_PIN, OUTPUT);
-  applyBaseCommand("STOP");
-
-  steeringServo.setPeriodHertz(50);
-  steeringServo.attach(SERVO_PIN, SERVO_MIN_US, SERVO_MAX_US);
-  applyServoAngle(REMOTE_INPUT_CENTER_ANGLE);
-
-  connectWifi();
-
-  mqttClient.setServer(MQTT_HOST, MQTT_PORT);
-  mqttClient.setCallback(handleMessage);
+static void relaySet(bool on) {
+  relayOn = on;
+  digitalWrite(cfg.relayPin, on ? HIGH : LOW);
 }
 
+// ---------------------------------------------------------------------------
+// E-stop
+// ---------------------------------------------------------------------------
+static bool estopPinActive() {
+  int level = digitalRead(cfg.estopPin);
+  return cfg.estopActiveLow ? (level == LOW) : (level == HIGH);
+}
 
-void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    connectWifi();
+static void emitEstop(bool active) {
+  Serial.print("ESTOP {\"active\":");
+  Serial.print(active ? "true" : "false");
+  Serial.print(",\"latched_at_ms\":");
+  Serial.print(estopLatchedAtMs);
+  Serial.println("}");
+}
+
+static void estopLatch() {
+  if (estopActive) return;
+  estopActive = true;
+  estopLatchedAtMs = millis();
+  baseStop();
+  servoWriteAngle(cfg.centerAngle);
+  servoRelease();
+  blinkUntilMs = millis() + cfg.blinkRelayMs;
+  emitEstop(true);
+  Serial.println("LOG estop latched");
+}
+
+static void estopTryReset() {
+  if (!estopActive) { emitEstop(false); return; }
+  if (estopPinActive()) {
+    Serial.println("LOG estop reset rejected - button still active");
+    emitEstop(true);
+    return;
   }
+  estopActive = false;
+  estopLatchedAtMs = 0;
+  relaySet(false);
+  emitEstop(false);
+  Serial.println("LOG estop cleared");
+}
 
-  if (!mqttClient.connected()) {
-    unsigned long now = millis();
-    if (now - lastReconnectAttempt >= MQTT_RECONNECT_DELAY_MS) {
-      lastReconnectAttempt = now;
-      connectMqtt();
+static void estopPoll() {
+  static bool pendingActive = false;
+  static unsigned long pendingSince = 0;
+  if (estopActive) {
+    // relay blink window for visual warning
+    if (millis() < blinkUntilMs) {
+      if (millis() - lastBlinkToggleMs >= 120) {
+        lastBlinkToggleMs = millis();
+        blinkRelayState = !blinkRelayState;
+        digitalWrite(cfg.relayPin, blinkRelayState ? HIGH : LOW);
+        relayOn = blinkRelayState;
+      }
+    } else if (relayOn && blinkRelayState) {
+      digitalWrite(cfg.relayPin, LOW);
+      relayOn = false;
+      blinkRelayState = false;
+    }
+    return;
+  }
+  // debounce a fresh activation over estopStableMs
+  if (estopPinActive()) {
+    if (!pendingActive) { pendingActive = true; pendingSince = millis(); }
+    else if (millis() - pendingSince >= cfg.estopStableMs) {
+      pendingActive = false;
+      estopLatch();
     }
   } else {
-    mqttClient.loop();
+    pendingActive = false;
   }
+}
 
+// ---------------------------------------------------------------------------
+// Telemetry
+// ---------------------------------------------------------------------------
+static void emitTelemetry() {
+  unsigned long up = (millis() - bootMs) / 1000UL;
+  Serial.print("TEL {\"rpi_online\":true,\"source\":\"esp32\",\"estop_active\":");
+  Serial.print(estopActive ? "true" : "false");
+  Serial.print(",\"steer_angle\":");
+  Serial.print(steerAngle, 2);
+  Serial.print(",\"center_angle\":");
+  Serial.print(cfg.centerAngle, 2);
+  Serial.print(",\"base_state\":\"");
+  Serial.print(baseState);
+  Serial.print("\",\"relay_on\":");
+  Serial.print(relayOn ? "true" : "false");
+  Serial.print(",\"pigpio_connected\":true,\"mqtt_connected\":true,\"uptime_s\":");
+  Serial.print(up);
+  Serial.println("}");
+}
+
+// ---------------------------------------------------------------------------
+// Config parse (tiny hand-rolled JSON number/bool extractor)
+// ---------------------------------------------------------------------------
+static bool jsonNumber(const String& s, const char* key, float& out) {
+  String pat = String("\"") + key + "\":";
+  int i = s.indexOf(pat);
+  if (i < 0) return false;
+  i += pat.length();
+  int j = i;
+  while (j < (int)s.length() && (isdigit(s[j]) || s[j]=='-' || s[j]=='+' || s[j]=='.')) j++;
+  if (j == i) return false;
+  out = s.substring(i, j).toFloat();
+  return true;
+}
+
+static bool jsonBool(const String& s, const char* key, bool& out) {
+  String pat = String("\"") + key + "\":";
+  int i = s.indexOf(pat);
+  if (i < 0) return false;
+  i += pat.length();
+  out = s.startsWith("true", i);
+  return true;
+}
+
+static void applyConfig(const String& json) {
+  float f; bool b;
+  if (jsonNumber(json, "servo_pin", f))     cfg.servoPin = (int)f;
+  if (jsonNumber(json, "min_pulse_us", f))  cfg.minPulseUs = (int)f;
+  if (jsonNumber(json, "max_pulse_us", f))  cfg.maxPulseUs = (int)f;
+  if (jsonNumber(json, "center_angle", f))  cfg.centerAngle = f;
+  if (jsonNumber(json, "max_angle_deg", f)) cfg.maxAngleDeg = f;
+  if (jsonNumber(json, "deadband_deg", f))  cfg.deadbandDeg = f;
+  if (jsonNumber(json, "out1", f))          cfg.out1 = (int)f;
+  if (jsonNumber(json, "out2", f))          cfg.out2 = (int)f;
+  if (jsonNumber(json, "out3", f))          cfg.out3 = (int)f;
+  if (jsonNumber(json, "relay_pin", f))     cfg.relayPin = (int)f;
+  if (jsonNumber(json, "estop_pin", f))     cfg.estopPin = (int)f;
+  if (jsonBool(json,   "estop_active_low", b)) cfg.estopActiveLow = b;
+  if (jsonNumber(json, "estop_stable_ms", f))  cfg.estopStableMs = (unsigned long)f;
+  if (jsonNumber(json, "blink_relay_ms", f))   cfg.blinkRelayMs = (unsigned long)f;
+  if (jsonNumber(json, "telemetry_ms", f))     cfg.telemetryMs = (unsigned long)f;
+
+  // re-init hardware with the new pins
+  pinMode(cfg.out1, OUTPUT);
+  pinMode(cfg.out2, OUTPUT);
+  pinMode(cfg.out3, OUTPUT);
+  pinMode(cfg.relayPin, OUTPUT);
+  pinMode(cfg.estopPin, cfg.estopActiveLow ? INPUT_PULLUP : INPUT_PULLDOWN);
+  servoSetup();
+  baseStop();
+  relaySet(false);
+  servoWriteAngle(cfg.centerAngle);
+  cfgReceived = true;
+}
+
+// ---------------------------------------------------------------------------
+// Command dispatch
+// ---------------------------------------------------------------------------
+static void handleLine(String line) {
+  line.trim();
+  if (line.length() == 0) return;
+
+  if (line == "WHO") {
+    Serial.println("CARCALIB-ESP32 v1");
+    return;
+  }
+  if (line == "PING") { Serial.println("PONG"); return; }
+  if (line.startsWith("CFG ")) {
+    applyConfig(line.substring(4));
+    Serial.println("CFGOK");
+    return;
+  }
+  if (line.startsWith("SERVO ")) {
+    if (estopActive) { Serial.println("LOG servo blocked - estop"); return; }
+    float a = line.substring(6).toFloat();
+    // deadband against last written, same source
+    if (fabs(a - lastWrittenAngle) >= cfg.deadbandDeg) servoWriteAngle(a);
+    return;
+  }
+  if (line.startsWith("BASE ")) {
+    String cmd = line.substring(5); cmd.trim(); cmd.toUpperCase();
+    if (!baseCommand(cmd)) Serial.println("LOG base rejected");
+    return;
+  }
+  if (line.startsWith("RELAY ")) {
+    String cmd = line.substring(6); cmd.trim(); cmd.toUpperCase();
+    if (cmd == "ON") relaySet(true);
+    else if (cmd == "OFF") relaySet(false);
+    return;
+  }
+  if (line == "ESTOP_RESET") { estopTryReset(); return; }
+
+  Serial.print("LOG unknown cmd: ");
+  Serial.println(line);
+}
+
+static void pumpSerial() {
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == '\n') { handleLine(rxBuf); rxBuf = ""; }
+    else if (c != '\r') {
+      rxBuf += c;
+      if (rxBuf.length() > 512) rxBuf = "";  // overflow guard
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Arduino entry points
+// ---------------------------------------------------------------------------
+void setup() {
+  Serial.begin(115200);
+  bootMs = millis();
+  // apply defaults so the board is safe even before CFG arrives
+  pinMode(cfg.out1, OUTPUT);
+  pinMode(cfg.out2, OUTPUT);
+  pinMode(cfg.out3, OUTPUT);
+  pinMode(cfg.relayPin, OUTPUT);
+  pinMode(cfg.estopPin, cfg.estopActiveLow ? INPUT_PULLUP : INPUT_PULLDOWN);
+  servoSetup();
+  baseStop();
+  relaySet(false);
+  delay(50);
+  Serial.println("CARCALIB-ESP32 v1");
+}
+
+void loop() {
+  pumpSerial();
+  estopPoll();
   unsigned long now = millis();
-  if (now - lastStatusAt >= STATUS_INTERVAL_MS) {
-    lastStatusAt = now;
-    publishStatus();
+  if (now - lastTelemetryMs >= cfg.telemetryMs) {
+    lastTelemetryMs = now;
+    emitTelemetry();
   }
 }
