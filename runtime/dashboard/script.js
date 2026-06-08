@@ -828,7 +828,13 @@ async function applyTune() {
       body: JSON.stringify(patch),
     });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
+    if (!r.ok) {
+      let msg;
+      if (typeof j.detail === "string") msg = j.detail;
+      else if (j.detail !== undefined) msg = JSON.stringify(j.detail);
+      else msg = "HTTP " + r.status;
+      throw new Error(msg);
+    }
     status.textContent = "applied";
     setTimeout(() => { status.textContent = ""; }, 1500);
     renderTuneFields(j.params);
