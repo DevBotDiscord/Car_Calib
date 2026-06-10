@@ -828,13 +828,7 @@ async function applyTune() {
       body: JSON.stringify(patch),
     });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      let msg;
-      if (typeof j.detail === "string") msg = j.detail;
-      else if (j.detail !== undefined) msg = JSON.stringify(j.detail);
-      else msg = "HTTP " + r.status;
-      throw new Error(msg);
-    }
+    if (!r.ok) throw new Error(formatErrorDetail(j, r.status));
     status.textContent = "applied";
     setTimeout(() => { status.textContent = ""; }, 1500);
     renderTuneFields(j.params);
@@ -843,6 +837,22 @@ async function applyTune() {
     errEl.textContent = "Apply failed: " + e.message;
     errEl.style.display = "block";
   }
+}
+
+function formatErrorDetail(j, status) {
+  const d = j && j.detail;
+  if (typeof d === "string") return d;
+  if (Array.isArray(d)) {
+    return d.map(it => {
+      if (it && typeof it === "object") {
+        const loc = Array.isArray(it.loc) ? it.loc.join(".") : "";
+        return loc ? `${loc}: ${it.msg || JSON.stringify(it)}` : (it.msg || JSON.stringify(it));
+      }
+      return String(it);
+    }).join("; ");
+  }
+  if (d && typeof d === "object") return JSON.stringify(d);
+  return "HTTP " + status;
 }
 
 document.getElementById("tuneApply").onclick = applyTune;
