@@ -71,6 +71,7 @@ class ESP32SerialBridge:
         baud: int = 115200,
         port_globs: tuple[str, ...] = DEFAULT_PORT_GLOBS,
         device_config: dict[str, Any] | None = None,
+        scan_timeout_s: float | None = None,
     ) -> None:
         self._mqtt_host = mqtt_host
         self._mqtt_port = mqtt_port
@@ -85,6 +86,8 @@ class ESP32SerialBridge:
         self._baud = baud
         self._port_globs = port_globs
         self._device_config = device_config or {}
+        self._scan_timeout_s = scan_timeout_s  # None = scan forever (esp32 mode)
+        self._ever_connected = False
 
         self._ser: Any = None
         self._ser_lock = threading.Lock()
@@ -188,16 +191,32 @@ class ESP32SerialBridge:
     # Serial connect/scan loop — probe forever, never crash
     # ------------------------------------------------------------------ #
     def _connect_loop(self) -> None:
+        scan_started = time.monotonic()
         while self._running:
             try:
                 port = self._scan_and_handshake()
                 if port is None:
+                    # auto mode: give up after scan_timeout_s if never connected,
+                    # so the MQTT/RPi path stays the actuator. esp32 mode
+                    # (scan_timeout_s is None) scans forever.
+                    if (
+                        self._scan_timeout_s is not None
+                        and not self._ever_connected
+                        and (time.monotonic() - scan_started) >= self._scan_timeout_s
+                    ):
+                        logger.warning(
+                            "No ESP32 found within %.0fs; falling back to MQTT actuator path.",
+                            self._scan_timeout_s,
+                        )
+                        self._running = False
+                        return
                     logger.warning(
                         "No ESP32 found on %s; retrying.", ",".join(self._port_globs)
                     )
                     time.sleep(2.0)
                     continue
                 logger.info("ESP32 connected on %s", port)
+                self._ever_connected = True
                 self._push_config()
                 self._read_loop()  # blocks until link drops
             except Exception as exc:  # noqa: BLE001 — never let the thread die

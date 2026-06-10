@@ -103,7 +103,6 @@ def handle_servo_message(payload_text: str) -> None:
     # active. Vision PID stream and stray publishers are ignored otherwise
     # so manual gamepad/keyboard control stays exclusive on the RPi.
     if not config.script_active:
-        logger.warning("[MQTT][RX][SERVO] ignored script_active=OFF raw=%s", payload_text)
         return
     angle = resolve_remote_servo_angle(payload_text)
     apply_steering(angle, "MQTT")

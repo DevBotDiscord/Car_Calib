@@ -77,6 +77,8 @@ from config.settings import (
     ESP32_SERIAL_ENABLED,
     ESP32_SERIAL_BAUD,
     ESP32_SERIAL_PORT_GLOBS,
+    ACTUATOR_MODE,
+    ESP32_SCAN_TIMEOUT_S,
 )
 from control.steering_controller import SteeringController
 from drivers.mqtt_control_client import MQTTControlClient
@@ -342,7 +344,12 @@ def main() -> None:
             return None
 
     esp32_bridge = None
-    if ESP32_SERIAL_ENABLED:
+    # Actuator mode: "mqtt" never starts the ESP32 bridge; "esp32" scans
+    # forever (exclusive); "auto" tries the ESP32 then falls back to MQTT.
+    _esp32_wanted = ESP32_SERIAL_ENABLED and ACTUATOR_MODE in ("auto", "esp32")
+    if ACTUATOR_MODE == "mqtt":
+        logger.info("ACTUATOR_MODE=mqtt — ESP32 serial bridge disabled, MQTT/RPi path only")
+    if _esp32_wanted:
         try:
             from runtime.esp32_serial_bridge import ESP32SerialBridge
             esp32_bridge = ESP32SerialBridge(
@@ -356,6 +363,7 @@ def main() -> None:
                 status_topic=MQTT_STATUS_TOPIC,
                 baud=ESP32_SERIAL_BAUD,
                 port_globs=tuple(g for g in ESP32_SERIAL_PORT_GLOBS.split(",") if g),
+                scan_timeout_s=(None if ACTUATOR_MODE == "esp32" else ESP32_SCAN_TIMEOUT_S),
                 device_config={
                     "servo_pin": int(os.getenv("SERVO_PIN", "12")),
                     "min_pulse_us": int(round(float(os.getenv("SERVO_MIN_PULSE", "0.0005")) * 1_000_000)),

@@ -180,6 +180,12 @@ MQTT_KEEPALIVE_S = _get_int("MQTT_KEEPALIVE_S", 60)
 ESP32_SERIAL_ENABLED = _get_bool("ESP32_SERIAL_ENABLED", False)
 ESP32_SERIAL_BAUD = _get_int("ESP32_SERIAL_BAUD", 115200)
 ESP32_SERIAL_PORT_GLOBS = _get_str("ESP32_SERIAL_PORT_GLOBS", "/dev/ttyUSB*,/dev/ttyACM*")
+# Actuator control mode: "auto" (try ESP32, fall back to MQTT if not found),
+# "esp32" (ESP32 only, scan forever), or "mqtt" (never start the ESP32 bridge).
+ACTUATOR_MODE = _get_str("ACTUATOR_MODE", "auto").strip().lower()
+# In "auto" mode, give up scanning for the ESP32 after this many seconds and
+# fall back to the MQTT/RPi path. "esp32" mode ignores this and scans forever.
+ESP32_SCAN_TIMEOUT_S = _get_float("ESP32_SCAN_TIMEOUT_S", 10.0)
 MQTT_SERVO_TOPIC = _get_str("MQTT_SERVO_TOPIC", "car/servo/angle")
 MQTT_BASE_COMMAND_TOPIC = _get_str("MQTT_BASE_COMMAND_TOPIC", "car/base/command")
 MQTT_RELAY_TOPIC = _get_str("MQTT_RELAY_TOPIC", "car/relay")
