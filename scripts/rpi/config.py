@@ -155,6 +155,9 @@ POWER_OFF_PULSE_S = float(os.getenv("POWER_OFF_PULSE_S", "3.0"))
 # E-Stop (NC push-button on GPIO 6, active-low default)
 # ======================================================================
 ESTOP_GPIO = int(os.getenv("ESTOP_GPIO", "6"))
+ESTOP_ENABLED = os.getenv("ESTOP_ENABLED", "true").strip().lower() in {
+    "1", "true", "t", "yes", "y", "on",
+}
 ESTOP_ACTIVE_LOW = os.getenv("ESTOP_ACTIVE_LOW", "true").strip().lower() in {
     "1", "true", "t", "yes", "y", "on",
 }

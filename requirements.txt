@@ -14,6 +14,8 @@ matplotlib>=3.4.0
 fastapi>=0.110.0
 uvicorn>=0.29.0
 cryptography>=42.0.0
+# multipart form parsing for ESP firmware .ino upload (request.form())
+python-multipart>=0.0.9
 
 # Gamepad / keyboard input (MiniPC)
 evdev>=1.6.1

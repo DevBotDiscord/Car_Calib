@@ -423,7 +423,13 @@ class HttpsMjpegServer:
             _check_token(token)
             if self._esp32_flasher is None:
                 raise HTTPException(status_code=503, detail="esp32 flasher not available")
-            form = await request.form()
+            try:
+                form = await request.form()
+            except Exception as exc:  # noqa: BLE001 — usually python-multipart missing
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"multipart parse failed (install python-multipart): {exc}",
+                )
             upload = form.get("file")
             if upload is None or not hasattr(upload, "read"):
                 raise HTTPException(status_code=400, detail="missing 'file' (.ino) upload")

@@ -382,6 +382,7 @@ def main() -> None:
                     "power_off_pulse_ms": int(round(float(os.getenv("POWER_OFF_PULSE_S", "3.0")) * 1000)),
                     "estop_pin": int(os.getenv("ESTOP_GPIO", "6")),
                     "estop_active_low": os.getenv("ESTOP_ACTIVE_LOW", "true").strip().lower() in {"1", "true", "t", "yes", "y", "on"},
+                    "estop_enabled": os.getenv("ESTOP_ENABLED", "true").strip().lower() in {"1", "true", "t", "yes", "y", "on"},
                     "telemetry_ms": int(float(os.getenv("TELEMETRY_INTERVAL_SEC", "1.0")) * 1000),
                 },
             )

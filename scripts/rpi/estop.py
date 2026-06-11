@@ -170,6 +170,10 @@ def setup() -> None:
     if config.gpio is None:
         raise RuntimeError("pigpio is not initialized; cannot setup E-stop")
 
+    if not config.ESTOP_ENABLED:
+        logger.info("[ESTOP][SETUP] disabled (ESTOP_ENABLED=false) — pin ignored")
+        return
+
     pi = config.pigpio
     config.gpio.set_mode(config.ESTOP_GPIO, pi.INPUT)
     if config.ESTOP_ACTIVE_LOW:

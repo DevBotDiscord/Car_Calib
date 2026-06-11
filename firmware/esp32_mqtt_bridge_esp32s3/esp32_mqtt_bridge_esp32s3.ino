@@ -56,6 +56,7 @@ struct Config {
   // estop
   int   estopPin       = 6;
   bool  estopActiveLow = true;
+  bool  estopEnabled   = true;  // false = ignore estop pin entirely
   unsigned long estopStableMs = 20;
   unsigned long blinkRelayMs  = 5000;
   // telemetry
@@ -215,7 +216,7 @@ static void estopLatch() {
 
 static void estopTryReset() {
   if (!estopActive) { emitEstop(false); return; }
-  if (estopPinActive()) {
+  if (cfg.estopEnabled && estopPinActive()) {
     Serial.println("LOG estop reset rejected - button still active");
     emitEstop(true);
     return;
@@ -230,6 +231,7 @@ static void estopTryReset() {
 static void estopPoll() {
   static bool pendingActive = false;
   static unsigned long pendingSince = 0;
+  if (!cfg.estopEnabled) return;  // estop disabled: never read pin / latch
   if (estopActive) {
     // relay blink window for visual warning
     if (millis() < blinkUntilMs) {
@@ -321,6 +323,7 @@ static void applyConfig(const String& json) {
   if (jsonNumber(json, "power_off_pulse_ms", f))cfg.powerOffPulseMs = (unsigned long)f;
   if (jsonNumber(json, "estop_pin", f))     cfg.estopPin = (int)f;
   if (jsonBool(json,   "estop_active_low", b)) cfg.estopActiveLow = b;
+  if (jsonBool(json,   "estop_enabled", b))    cfg.estopEnabled = b;
   if (jsonNumber(json, "estop_stable_ms", f))  cfg.estopStableMs = (unsigned long)f;
   if (jsonNumber(json, "blink_relay_ms", f))   cfg.blinkRelayMs = (unsigned long)f;
   if (jsonNumber(json, "telemetry_ms", f))     cfg.telemetryMs = (unsigned long)f;
@@ -332,7 +335,7 @@ static void applyConfig(const String& json) {
   pinMode(cfg.relayPin, OUTPUT);
   pinMode(cfg.powerRelayPin, OUTPUT);
   digitalWrite(cfg.powerRelayPin, LOW);
-  pinMode(cfg.estopPin, cfg.estopActiveLow ? INPUT_PULLUP : INPUT_PULLDOWN);
+  if (cfg.estopEnabled) pinMode(cfg.estopPin, cfg.estopActiveLow ? INPUT_PULLUP : INPUT_PULLDOWN);
   servoSetup();
   baseStop();
   relaySet(false);
@@ -413,7 +416,7 @@ void setup() {
   pinMode(cfg.relayPin, OUTPUT);
   pinMode(cfg.powerRelayPin, OUTPUT);
   digitalWrite(cfg.powerRelayPin, LOW);
-  pinMode(cfg.estopPin, cfg.estopActiveLow ? INPUT_PULLUP : INPUT_PULLDOWN);
+  if (cfg.estopEnabled) pinMode(cfg.estopPin, cfg.estopActiveLow ? INPUT_PULLUP : INPUT_PULLDOWN);
   servoSetup();
   baseStop();
   relaySet(false);
