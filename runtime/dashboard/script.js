@@ -76,7 +76,7 @@ addBtn.onclick = () => {
   if (isRunning) return;
   const action = actionInput.value;
   const duration_s = parseFloat(durationInput.value || "0");
-  if (!isFinite(duration_s) || duration_s < 0) return;
+  if (!isFinite(duration_s) || duration_s <= 0) { runDetail.textContent = "duration phải > 0"; return; }
   if (editingIndex >= 0 && editingIndex < steps.length) {
     steps[editingIndex] = {action, duration_s};
     resetEditor();
@@ -179,10 +179,16 @@ async function setLight(on) {
 }
 document.getElementById("lightToggle").onchange = (e) => setLight(e.target.checked);
 
+let _powerBusy = false;
 async function sendPower(on) {
   const sep = qp ? "&" : "?";
   const label = document.getElementById("powerLabel");
-  if (!on && !confirm("Tắt xe? Relay sẽ chập giữ 3s.")) return;
+  const onBtn = document.getElementById("powerOnBtn");
+  const offBtn = document.getElementById("powerOffBtn");
+  if (_powerBusy) return;  // debounce: a pulse request is already in flight
+  if (!on && !confirm("Tắt xe? Relay sẽ chập giữ 3s.")) { label.textContent = ""; return; }
+  _powerBusy = true;
+  onBtn.disabled = true; offBtn.disabled = true;
   label.textContent = on ? "đang bật…" : "đang tắt…";
   try {
     const r = await fetch("/control/power" + qp + sep + "on=" + (on ? 1 : 0), {method: "POST"});
@@ -195,6 +201,13 @@ async function sendPower(on) {
     setTimeout(() => { label.textContent = ""; }, 2000);
   } catch (e) {
     label.textContent = "power error: network";
+  } finally {
+    // Hold the lock long enough to cover the longest (OFF) pulse so a rapid
+    // second click cannot overlap the relay pulse on the actuator side.
+    setTimeout(() => {
+      _powerBusy = false;
+      onBtn.disabled = false; offBtn.disabled = false;
+    }, 3500);
   }
 }
 document.getElementById("powerOnBtn").onclick = () => sendPower(true);
@@ -270,6 +283,11 @@ function renderStatusBar(rpi) {
   setHeaderPill("hPillRpi", online ? "ok" : "bad", "RPi", rpiTxt, rpiSub);
   setHeaderPill("hPillMqtt", mqttConnected ? "ok" : "bad", "MQTT", mqttTxt);
 
+  // Lock actuator controls when the RPi is unreachable or latched safe.
+  // power ON is also blocked while E-stop is active (matches firmware/RPi
+  // gating); power OFF stays allowed so the car can always be shut down.
+  updateActuatorControls({stale, online, estop});
+
   document.getElementById("statusBar").innerHTML = `
     <div class="status-grid">
       <div class="status-cell"><div class="label">E-stop</div><div class="value ${estopCls}">${estopTxt}</div></div>
@@ -290,6 +308,17 @@ function setHeaderPill(id, cls, label, value, sub) {
   if (lbl) lbl.textContent = `${label} ${value}`;
   const subEl = el.querySelector(".sub");
   if (subEl) subEl.textContent = sub || "";
+}
+
+function updateActuatorControls({stale, online, estop}) {
+  const reachable = !!online && !stale;
+  const onBtn = document.getElementById("powerOnBtn");
+  const offBtn = document.getElementById("powerOffBtn");
+  const lightToggle = document.getElementById("lightToggle");
+  // _powerBusy (pulse in flight) still wins so we never re-enable mid-pulse.
+  if (onBtn) onBtn.disabled = _powerBusy || !reachable || estop;
+  if (offBtn) offBtn.disabled = _powerBusy || !reachable;
+  if (lightToggle) lightToggle.disabled = !reachable;
 }
 
 function renderMetricGrid(tel, rpiPayload) {
@@ -342,12 +371,16 @@ function renderEventLog() {
   document.getElementById("eventLog").innerHTML = `
     <div style="font-size:12px;color:#888;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px">Events</div>
     <div class="event-log">
-      ${_eventLog.map(e => `<div class="event-item ${e.kind}">[${e.ts}] ${e.msg}</div>`).join("")}
+      ${_eventLog.map(e => `<div class="event-item ${safeText(e.kind)}">[${safeText(e.ts)}] ${safeText(e.msg)}</div>`).join("")}
     </div>`;
 }
 
 let lastRouteId;
+let _polling = false;
 async function pollStatus() {
+  if (document.hidden) return;  // skip polling while tab is backgrounded
+  if (_polling) return;         // guard: don't stack requests if a poll is slow
+  _polling = true;
   try {
     const r = await fetch("/route/script/status" + qp);
     if (r.ok) {
@@ -409,6 +442,7 @@ async function pollStatus() {
       lastRouteId = newRid;
     }
   } catch (e) {}
+  finally { _polling = false; }
 }
 
 function reloadStream() {
@@ -1213,6 +1247,10 @@ if (esp32FlashBtn) esp32FlashBtn.onclick = async () => {
     const fl = await fetch("/esp32/flash" + qp, {method: "POST"});
     const fj = await fl.json().catch(() => ({}));
     if (!fl.ok) throw new Error(formatErrorDetail(fj, fl.status));
+    // Clear the one-shot .ino override so the next flash uses the built-in
+    // board sketch unless the user picks another file.
+    _inoSelected = null;
+    inoName.textContent = "using built-in board sketch";
     refreshEsp32Status();
   } catch (e) {
     esp32FlashStatus.textContent = "update failed: " + e.message;
@@ -1223,5 +1261,11 @@ if (esp32FlashBtn) esp32FlashBtn.onclick = async () => {
 
 // poll ESP32 status when Tune tab opens
 document.querySelector('.tab[data-tab="tune"]').addEventListener("click", refreshEsp32Status);
+
+// Also refresh ESP status periodically so the panel appears/updates when a
+// board is plugged in after load. Skips the network call while the tab is
+// backgrounded; slower cadence than the main status poll.
+setInterval(() => { if (!document.hidden) refreshEsp32Status(); }, 3000);
+refreshEsp32Status();
 
 })();

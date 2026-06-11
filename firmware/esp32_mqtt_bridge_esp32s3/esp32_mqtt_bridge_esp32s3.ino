@@ -169,6 +169,10 @@ static void relaySet(bool on) {
 // pulse. The pin is driven HIGH now and released LOW in loop() when the
 // window elapses, so the 3s OFF pulse never blocks command processing.
 static void powerPulse(bool on) {
+  if (powerPulseActive) {  // a pulse is already in flight; ignore overlap
+    Serial.println("LOG power pulse busy, ignored");
+    return;
+  }
   unsigned long pulseMs = on ? cfg.powerOnPulseMs : cfg.powerOffPulseMs;
   digitalWrite(cfg.powerRelayPin, HIGH);
   powerPulseActive = true;

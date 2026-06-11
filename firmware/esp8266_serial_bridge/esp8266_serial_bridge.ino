@@ -129,6 +129,10 @@ static void relaySet(bool on) {
 
 // power relay: non-blocking pulse-to-toggle (ON=short, OFF=long).
 static void powerPulse(bool on) {
+  if (powerPulseActive) {  // a pulse is already in flight; ignore overlap
+    Serial.println("LOG power pulse busy, ignored");
+    return;
+  }
   unsigned long pulseMs = on ? cfg.powerOnPulseMs : cfg.powerOffPulseMs;
   digitalWrite(cfg.powerRelayPin, HIGH);
   powerPulseActive = true;
