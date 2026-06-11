@@ -79,6 +79,7 @@ from config.settings import (
     ESP32_SERIAL_PORT_GLOBS,
     ACTUATOR_MODE,
     ESP32_SCAN_TIMEOUT_S,
+    ESP32_FQBN,
 )
 from control.steering_controller import SteeringController
 from drivers.mqtt_control_client import MQTTControlClient
@@ -385,6 +386,19 @@ def main() -> None:
             logger.warning("ESP32 serial bridge setup failed: %s", exc)
             esp32_bridge = None
 
+    esp32_flasher = None
+    if ACTUATOR_MODE in ("auto", "esp32"):
+        try:
+            from runtime.esp32_flasher import ESP32Flasher
+            esp32_flasher = ESP32Flasher(
+                fqbn=ESP32_FQBN,
+                bridge=esp32_bridge,
+                port_globs=tuple(g for g in ESP32_SERIAL_PORT_GLOBS.split(",") if g),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ESP32 flasher setup failed: %s", exc)
+            esp32_flasher = None
+
     try:
         base_stop_client = setup_base_stop_client()
     except Exception as exc:  # noqa: BLE001
@@ -419,6 +433,8 @@ def main() -> None:
             script_runner=script_runner,
             rpi_status_provider=_rpi_status_provider,
             steering_controller=controller,
+            esp32_bridge=esp32_bridge,
+            esp32_flasher=esp32_flasher,
         )
         stream_server.start()
         logger.info("HTTPS MJPEG stream online: %s", stream_server.stream_url())

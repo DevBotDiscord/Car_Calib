@@ -88,6 +88,8 @@ class ESP32SerialBridge:
         self._device_config = device_config or {}
         self._scan_timeout_s = scan_timeout_s  # None = scan forever (esp32 mode)
         self._ever_connected = False
+        self._paused = False
+        self._current_port: str | None = None
 
         self._ser: Any = None
         self._ser_lock = threading.Lock()
@@ -127,6 +129,33 @@ class ESP32SerialBridge:
                 self._mqtt_client.loop_stop()
             except Exception:  # noqa: BLE001
                 pass
+
+    def current_port(self) -> str | None:
+        """Return the serial port the ESP32 is connected on, or None."""
+        return self._current_port if (self._current_port and not self._paused) else self._current_port
+
+    def is_connected(self) -> bool:
+        with self._ser_lock:
+            return self._ser is not None
+
+    def pause(self) -> str | None:
+        """Release the serial port (for flashing). Returns the port that was in use."""
+        port = self._current_port
+        self._paused = True
+        with self._ser_lock:
+            if self._ser is not None:
+                try:
+                    self._ser.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._ser = None
+        logger.info("ESP32 bridge paused (port released: %s)", port)
+        return port
+
+    def resume(self) -> None:
+        """Re-enable the connect loop after a pause."""
+        self._paused = False
+        logger.info("ESP32 bridge resumed")
 
     # ------------------------------------------------------------------ #
     # MQTT
@@ -193,6 +222,9 @@ class ESP32SerialBridge:
     def _connect_loop(self) -> None:
         scan_started = time.monotonic()
         while self._running:
+            if self._paused:
+                time.sleep(0.5)
+                continue
             try:
                 port = self._scan_and_handshake()
                 if port is None:
@@ -217,6 +249,7 @@ class ESP32SerialBridge:
                     continue
                 logger.info("ESP32 connected on %s", port)
                 self._ever_connected = True
+                self._current_port = port
                 self._push_config()
                 self._read_loop()  # blocks until link drops
             except Exception as exc:  # noqa: BLE001 — never let the thread die

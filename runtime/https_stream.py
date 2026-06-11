@@ -63,6 +63,8 @@ class HttpsMjpegServer:
         script_runner: Any | None = None,
         rpi_status_provider: Any | None = None,
         steering_controller: Any | None = None,
+        esp32_bridge: Any | None = None,
+        esp32_flasher: Any | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -76,6 +78,8 @@ class HttpsMjpegServer:
         self._script_runner = script_runner
         self._rpi_status_provider = rpi_status_provider
         self._steering_controller = steering_controller
+        self._esp32_bridge = esp32_bridge
+        self._esp32_flasher = esp32_flasher
 
         self._server: Any = None
         self._thread: threading.Thread | None = None
@@ -372,6 +376,59 @@ class HttpsMjpegServer:
                 raise HTTPException(status_code=503, detail="script_runner_disabled")
             self._script_runner.publish_estop_reset()
             return JSONResponse({"ok": True, "requested": True})
+
+        @app.get("/esp32/status")
+        def esp32_status(token: str = "") -> Any:
+            _check_token(token)
+            bridge = self._esp32_bridge
+            connected = False
+            port = None
+            if bridge is not None:
+                try:
+                    connected = bridge.is_connected()
+                    port = bridge.current_port()
+                except Exception:  # noqa: BLE001
+                    pass
+            flash = self._esp32_flasher.status() if self._esp32_flasher is not None else None
+            return JSONResponse({
+                "available": self._esp32_flasher is not None,
+                "connected": connected,
+                "port": port,
+                "flash": flash,
+            })
+
+        @app.post("/esp32/firmware")
+        async def esp32_firmware_upload(request: Request, token: str = "") -> Any:
+            _check_token(token)
+            if self._esp32_flasher is None:
+                raise HTTPException(status_code=503, detail="esp32 flasher not available")
+            form = await request.form()
+            upload = form.get("file")
+            if upload is None or not hasattr(upload, "read"):
+                raise HTTPException(status_code=400, detail="missing 'file' (.ino) upload")
+            raw = await upload.read()
+            try:
+                ino_text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                raise HTTPException(status_code=400, detail="file is not valid UTF-8 text (.ino expected)")
+            if len(ino_text) > 1_000_000:
+                raise HTTPException(status_code=400, detail="sketch too large (>1MB)")
+            try:
+                self._esp32_flasher.save_sketch(ino_text)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+            return JSONResponse({"ok": True, "status": self._esp32_flasher.status()})
+
+        @app.post("/esp32/flash")
+        def esp32_flash(token: str = "") -> Any:
+            _check_token(token)
+            if self._esp32_flasher is None:
+                raise HTTPException(status_code=503, detail="esp32 flasher not available")
+            try:
+                self._esp32_flasher.start_flash()
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+            return JSONResponse({"ok": True, "status": self._esp32_flasher.status()})
 
         @app.get("/routes/list")
         def routes_list(token: str = "", limit: int = 30) -> Any:

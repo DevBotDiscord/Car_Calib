@@ -254,6 +254,16 @@ tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
   font-weight: 700; cursor: pointer; margin-left: var(--sp-2);
 }
 .estop-reset-btn:hover { background: #fff; }
+
+/* ESP32 firmware update drop zone */
+.ino-drop {
+  border: 2px dashed var(--bg-3); border-radius: var(--r-md);
+  padding: var(--sp-4); text-align: center; color: var(--tx-2);
+  cursor: pointer; font-size: var(--fs-sm);
+  transition: border-color var(--tr), color var(--tr);
+}
+.ino-drop:hover { border-color: var(--info); color: var(--tx-1); }
+.ino-drop.dragover { border-color: var(--ok); color: var(--ok); background: var(--ok-dim); }
 .metric-cell {
   background: var(--bg-2); border-radius: var(--r-sm);
   padding: var(--sp-2) var(--sp-3);
