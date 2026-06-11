@@ -261,7 +261,19 @@ function fmtUptime(seconds) {
   return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
 }
 
-function renderStatusBar(rpi) {
+function detectMode(payload, esp) {
+  const src = payload && payload.source;  // "esp32"|"esp8266" from ESP TEL
+  if (src === "esp32" || src === "esp8266") {
+    return {kind: "esp", label: src.toUpperCase()};
+  }
+  if (esp && esp.available && (!payload || !payload.source)) {
+    // ESP path configured but no telemetry yet (board not handshaked)
+    return {kind: "esp", label: "ESP"};
+  }
+  return {kind: "rpi", label: "RPi · MQTT"};
+}
+
+function renderStatusBar(rpi, esp) {
   const payload = (rpi && rpi.payload) || {};
   const stale = !rpi || !!rpi.stale;
   const online = !!(rpi && rpi.online);
@@ -278,9 +290,13 @@ function renderStatusBar(rpi) {
   const pigpioTxt = stale ? "unknown" : (pigpio ? "ok" : "error");
   const pigpioCls = !stale && pigpio ? "text-ok" : "text-bad";
 
+  const mode = detectMode(payload, esp);
+  const isEsp = mode.kind === "esp";
+
   // sticky header pills (always visible)
+  setHeaderPill("modePill", isEsp ? "warn" : "ok", "Mode", mode.label);
   setHeaderPill("hPillEstop", estop ? "bad" : "ok", "E-stop", estopTxt);
-  setHeaderPill("hPillRpi", online ? "ok" : "bad", "RPi", rpiTxt, rpiSub);
+  setHeaderPill("hPillRpi", online ? "ok" : "bad", isEsp ? "Ctrl" : "RPi", rpiTxt, rpiSub);
   setHeaderPill("hPillMqtt", mqttConnected ? "ok" : "bad", "MQTT", mqttTxt);
 
   // Lock actuator controls when the RPi is unreachable or latched safe.
@@ -288,12 +304,19 @@ function renderStatusBar(rpi) {
   // gating); power OFF stays allowed so the car can always be shut down.
   updateActuatorControls({stale, online, estop});
 
+  // 4th cell is mode-specific: pigpio is meaningless on ESP (firmware fakes
+  // it true), so show the Board/port instead.
+  const ctrlLabel = isEsp ? "Controller" : "RPi";
+  const fourthCell = isEsp
+    ? `<div class="status-cell"><div class="label">Board</div><div class="value text-ok">${safeText(mode.label)}</div><div class="sub">${safeText(esp && esp.port)}</div></div>`
+    : `<div class="status-cell"><div class="label">pigpio</div><div class="value ${pigpioCls}">${pigpioTxt}</div></div>`;
+
   document.getElementById("statusBar").innerHTML = `
     <div class="status-grid">
       <div class="status-cell"><div class="label">E-stop</div><div class="value ${estopCls}">${estopTxt}</div></div>
-      <div class="status-cell"><div class="label">RPi</div><div class="value ${rpiCls}">${rpiTxt}</div><div class="sub">${rpiSub}</div></div>
+      <div class="status-cell"><div class="label">${ctrlLabel}</div><div class="value ${rpiCls}">${rpiTxt}</div><div class="sub">${rpiSub}</div></div>
       <div class="status-cell"><div class="label">MQTT</div><div class="value ${mqttCls}">${mqttTxt}</div></div>
-      <div class="status-cell"><div class="label">pigpio</div><div class="value ${pigpioCls}">${pigpioTxt}</div></div>
+      ${fourthCell}
     </div>
     <div style="margin-top:4px;font-size:12px;color:#666;text-align:center">
       ${fmtUptime(payload.uptime_s ?? payload.uptime_sec)} · ${safeText(payload.hostname)}
@@ -335,12 +358,15 @@ function renderMetricGrid(tel, rpiPayload) {
   const mode = safeText(p.current_route_mode || t.route_mode);
   const modeCls = mode === "AUTO" ? "text-ok" : (mode === "-" ? "" : "text-warn");
   const route = safeText(t.route_id || "-");
+  // actuator label tracks the active path (ESP USB vs RPi GPIO)
+  const actMode = detectMode(p, _lastEspStatus);
+  const steerLabel = actMode.kind === "esp" ? "Steer (ESP)" : "Steer (RPi)";
 
   const cells = [
     {label: "FSM", value: fsm},
     {label: "Theta", value: theta},
     {label: "Servo (vision)", value: visionServo},
-    {label: "Steer (RPi)", value: rpiSteer},
+    {label: steerLabel, value: rpiSteer},
     {label: "Base", value: base},
     {label: "Relay", value: relay, cls: relayCls},
     {label: "Mode", value: mode, cls: modeCls},
@@ -428,7 +454,7 @@ async function pollStatus() {
       const rpi = j2.rpi_status || null;
       const rpiPayload = (rpi && rpi.payload) || {};
 
-      renderStatusBar(rpi);
+      renderStatusBar(rpi, _lastEspStatus);
       renderMetricGrid(tel, rpiPayload);
       pushTelemetryHistory(tel);
       renderTrendChart();
@@ -1206,12 +1232,14 @@ const esp32ConnState = document.getElementById("esp32ConnState");
 const esp32BoardState = document.getElementById("esp32BoardState");
 let _inoSelected = null;
 let _flashPollTimer = null;
+let _lastEspStatus = null;  // cached /esp32/status for mode detection in status bar
 
 async function refreshEsp32Status() {
   try {
     const r = await fetch("/esp32/status" + qp);
     if (!r.ok) return;
     const j = await r.json();
+    _lastEspStatus = j;
     if (!j.available) { esp32Update.style.display = "none"; return; }
     esp32Update.style.display = "block";
     const boardLabel = j.board_label || j.board_kind || "";
