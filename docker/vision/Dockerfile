@@ -21,12 +21,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && sed -i 's/^hosts:.*/hosts:          files mdns4_minimal [NOTFOUND=return] dns/' /etc/nsswitch.conf
 
-COPY requirements.txt /tmp/requirements.txt
-
-RUN python -m pip install --upgrade pip \
-    && python -m pip install --retries 5 --timeout 120 -r /tmp/requirements.txt
-
 # arduino-cli + ESP cores — needed for dashboard USB actuator firmware flashing.
+# Placed BEFORE requirements.txt so editing Python deps does not invalidate
+# this layer: the heavy ESP core download stays cached across deps changes.
 # Skipped automatically at runtime if the binary is absent, so this layer
 # is only required when ACTUATOR_MODE uses the USB actuator path.
 ARG INSTALL_ARDUINO_CLI=true
@@ -43,6 +40,11 @@ RUN if [ "$INSTALL_ARDUINO_CLI" = "true" ]; then \
         && arduino-cli core install esp8266:esp8266 --additional-urls https://arduino.esp8266.com/stable/package_esp8266com_index.json \
         && rm -rf /var/lib/apt/lists/* /opt/arduino/staging ; \
     fi
+
+COPY requirements.txt /tmp/requirements.txt
+
+RUN python -m pip install --upgrade pip \
+    && python -m pip install --retries 5 --timeout 120 -r /tmp/requirements.txt
 
 COPY . /app
 
