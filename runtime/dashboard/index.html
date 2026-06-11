@@ -105,17 +105,6 @@
           <input id="tunePresetName" type="text" placeholder="preset name" style="flex:1;min-width:120px">
           <button id="tunePresetSave">save current</button>
         </div>
-        <div id="esp32Update" style="margin-top:10px;border-top:1px solid var(--bg-3);padding-top:10px;display:none">
-          <div class="metric-section-label">ESP32 firmware update <span id="esp32ConnState" class="muted"></span></div>
-          <div id="inoDrop" class="ino-drop">drop .ino here or click to choose</div>
-          <input id="inoFile" type="file" accept=".ino" style="display:none">
-          <div class="row" style="margin-top:6px">
-            <span class="muted" id="inoName">no file selected</span>
-            <button id="esp32FlashBtn" class="primary" disabled>⬆ update firmware</button>
-            <span class="muted" id="esp32FlashStatus"></span>
-          </div>
-          <pre id="esp32FlashLog" style="display:none;max-height:160px"></pre>
-        </div>
       </div>
     </div>
   </div>
@@ -142,6 +131,17 @@
       <thead><tr><th style="width:24px"><input type="checkbox" id="routeSelectAll"></th><th>Route ID</th><th>Mode</th><th>Preset</th><th>Status</th><th>Frames</th><th>Elapsed</th><th>Zip size</th><th>Ended (UTC)</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
+  </div>
+  <div class="panel" id="esp32Update" style="margin-top:20px;display:none">
+    <h2>ESP32 firmware update <span id="esp32ConnState" class="muted" style="font-size:14px"></span></h2>
+    <div id="inoDrop" class="ino-drop">drop .ino here or click to choose</div>
+    <input id="inoFile" type="file" accept=".ino" style="display:none">
+    <div class="row" style="margin-top:8px">
+      <span class="muted" id="inoName">no file selected</span>
+      <button id="esp32FlashBtn" class="primary" disabled>⬆ update firmware</button>
+      <span class="muted" id="esp32FlashStatus"></span>
+    </div>
+    <pre id="esp32FlashLog" style="display:none;max-height:200px"></pre>
   </div>
   <div id="summaryModal" class="modal-bg">
     <div class="modal">

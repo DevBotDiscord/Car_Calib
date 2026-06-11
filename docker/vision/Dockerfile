@@ -26,6 +26,23 @@ COPY requirements.txt /tmp/requirements.txt
 RUN python -m pip install --upgrade pip \
     && python -m pip install --retries 5 --timeout 120 -r /tmp/requirements.txt
 
+# arduino-cli + esp32 core — needed for dashboard ESP32 firmware flashing.
+# Skipped automatically at runtime if the binary is absent, so this layer
+# is only required when ACTUATOR_MODE uses the ESP32 path.
+ARG INSTALL_ARDUINO_CLI=true
+ENV ARDUINO_DIRECTORIES_DATA=/opt/arduino \
+    ARDUINO_DIRECTORIES_DOWNLOADS=/opt/arduino/staging \
+    ARDUINO_DIRECTORIES_USER=/opt/arduino/user
+RUN if [ "$INSTALL_ARDUINO_CLI" = "true" ]; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends curl ca-certificates \
+        && curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=/usr/local/bin sh \
+        && arduino-cli config init \
+        && arduino-cli core update-index --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json \
+        && arduino-cli core install esp32:esp32 --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json \
+        && rm -rf /var/lib/apt/lists/* /opt/arduino/staging ; \
+    fi
+
 COPY . /app
 
 RUN mkdir -p /data/certs
