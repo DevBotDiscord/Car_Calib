@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
 from . import config
 from .logging_utils import get_logger
 
@@ -79,3 +82,35 @@ def toggle_relay() -> None:
     config.relay_on = not config.relay_on
     config.gpio.write(config.RELAY_PIN, 1 if config.relay_on else 0)
     logger.info("[RELAY] %s pin=%d", "ON" if config.relay_on else "OFF", config.RELAY_PIN)
+
+
+def _power_pulse_worker(on: bool) -> None:
+    pulse_s = config.POWER_ON_PULSE_S if on else config.POWER_OFF_PULSE_S
+    try:
+        config.gpio.write(config.POWER_RELAY_PIN, 1)
+        logger.info("[POWER] pulse %s pin=%d dur=%.2fs", "ON" if on else "OFF", config.POWER_RELAY_PIN, pulse_s)
+        time.sleep(max(0.0, pulse_s))
+    finally:
+        try:
+            config.gpio.write(config.POWER_RELAY_PIN, 0)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[POWER] release failed: %s", exc)
+        config.power_pulse_busy = False
+
+
+def pulse_power(on: bool) -> None:
+    """Pulse the power relay to toggle the car: short=ON, long=OFF.
+
+    Runs in a daemon thread so the long OFF pulse never blocks the MQTT
+    loop. Ignores a new request while a pulse is already in flight.
+    """
+    if config.gpio is None:
+        raise RuntimeError("pigpio is not initialized.")
+    if config.estop_active and on:
+        logger.warning("[POWER][ESTOP_BLOCKED] power ON ignored while latched")
+        return
+    if config.power_pulse_busy:
+        logger.warning("[POWER] pulse busy, ignoring %s", "ON" if on else "OFF")
+        return
+    config.power_pulse_busy = True
+    threading.Thread(target=_power_pulse_worker, args=(on,), daemon=True, name="power-pulse").start()

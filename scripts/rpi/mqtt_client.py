@@ -159,6 +159,20 @@ def handle_relay_message(payload_text: str) -> None:
         logger.warning("[MQTT][RX][RELAY] unknown command=%s", cmd)
 
 
+def handle_power_message(payload_text: str) -> None:
+    cmd = payload_text.strip().upper()
+    from .base import pulse_power
+
+    if cmd == "ON":
+        pulse_power(True)
+        logger.info("[MQTT][RX][POWER] ON pin=%s", config.POWER_RELAY_PIN)
+    elif cmd == "OFF":
+        pulse_power(False)
+        logger.info("[MQTT][RX][POWER] OFF pin=%s", config.POWER_RELAY_PIN)
+    else:
+        logger.warning("[MQTT][RX][POWER] unknown command=%s", cmd)
+
+
 # ---------------------------------------------------------------------------
 # MQTT callbacks
 # ---------------------------------------------------------------------------
@@ -173,6 +187,7 @@ def on_mqtt_connect(client, userdata, flags, rc, properties=None) -> None:
     client.subscribe(config.MQTT_SERVO_TOPIC)
     client.subscribe(config.MQTT_BASE_COMMAND_TOPIC)
     client.subscribe(config.MQTT_RELAY_TOPIC)
+    client.subscribe(config.MQTT_POWER_TOPIC)
     client.subscribe("car/control/script_active")
     client.subscribe("car/control/estop_reset")
     logger.info(
@@ -212,6 +227,8 @@ def on_mqtt_message(client, userdata, message) -> None:
             handle_base_message(payload_text)
         elif topic == config.MQTT_RELAY_TOPIC:
             handle_relay_message(payload_text)
+        elif topic == config.MQTT_POWER_TOPIC:
+            handle_power_message(payload_text)
         elif topic == "car/control/script_active":
             handle_script_active_message(payload_text)
         elif topic == "car/control/estop_reset":

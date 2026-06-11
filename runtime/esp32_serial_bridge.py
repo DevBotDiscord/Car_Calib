@@ -65,6 +65,7 @@ class ESP32SerialBridge:
         servo_topic: str = "car/servo/angle",
         base_topic: str = "car/base/command",
         relay_topic: str = "car/relay",
+        power_topic: str = "car/power",
         estop_reset_topic: str = "car/control/estop_reset",
         status_topic: str = "car/status",
         estop_topic: str = "ugv/rpi/estop",
@@ -80,6 +81,7 @@ class ESP32SerialBridge:
         self._servo_topic = servo_topic
         self._base_topic = base_topic
         self._relay_topic = relay_topic
+        self._power_topic = power_topic
         self._estop_reset_topic = estop_reset_topic
         self._status_topic = status_topic
         self._estop_topic = estop_topic
@@ -183,6 +185,7 @@ class ESP32SerialBridge:
         client.subscribe(self._servo_topic)
         client.subscribe(self._base_topic)
         client.subscribe(self._relay_topic)
+        client.subscribe(self._power_topic)
         client.subscribe(self._estop_reset_topic)
         logger.info("ESP32 bridge MQTT connected; subscribed to actuator topics")
 
@@ -201,6 +204,8 @@ class ESP32SerialBridge:
             self._send(f"BASE {payload.upper()}")
         elif topic == self._relay_topic:
             self._send(f"RELAY {payload.upper()}")
+        elif topic == self._power_topic:
+            self._send(f"POWER {payload.upper()}")
         elif topic == self._estop_reset_topic:
             self._send("ESTOP_RESET")
 

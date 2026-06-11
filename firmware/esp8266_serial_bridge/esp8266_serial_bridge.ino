@@ -34,6 +34,9 @@ struct Config {
   int   out2           = D2;   // GPIO4
   int   out3           = D6;   // GPIO12
   int   relayPin       = D7;   // GPIO13
+  int   powerRelayPin  = D8;   // GPIO15 ignition pulse-to-toggle (CFG overrides)
+  unsigned long powerOnPulseMs  = 100;
+  unsigned long powerOffPulseMs = 3000;
   int   estopPin       = D3;   // GPIO0, input pull-up friendly
   bool  estopActiveLow = true;
   unsigned long estopStableMs = 20;
@@ -49,6 +52,8 @@ float steerAngle = 0.0f;
 float lastWrittenAngle = 1e9f;
 String baseState = "STOP";
 bool relayOn = false;
+bool powerPulseActive = false;
+unsigned long powerPulseUntilMs = 0;
 bool estopActive = false;
 unsigned long estopLatchedAtMs = 0;
 unsigned long bootMs = 0;
@@ -119,6 +124,25 @@ static bool baseCommand(const String& cmd) {
 static void relaySet(bool on) {
   relayOn = on;
   digitalWrite(cfg.relayPin, on ? HIGH : LOW);
+}
+
+// power relay: non-blocking pulse-to-toggle (ON=short, OFF=long).
+static void powerPulse(bool on) {
+  unsigned long pulseMs = on ? cfg.powerOnPulseMs : cfg.powerOffPulseMs;
+  digitalWrite(cfg.powerRelayPin, HIGH);
+  powerPulseActive = true;
+  powerPulseUntilMs = millis() + pulseMs;
+  Serial.print("LOG power pulse ");
+  Serial.print(on ? "ON" : "OFF");
+  Serial.print(" ms=");
+  Serial.println(pulseMs);
+}
+
+static void powerPoll() {
+  if (powerPulseActive && millis() >= powerPulseUntilMs) {
+    digitalWrite(cfg.powerRelayPin, LOW);
+    powerPulseActive = false;
+  }
 }
 
 static bool estopPinActive() {
@@ -204,6 +228,8 @@ static void emitTelemetry() {
   Serial.print(baseState);
   Serial.print("\",\"relay_on\":");
   Serial.print(relayOn ? "true" : "false");
+  Serial.print(",\"power_pulsing\":");
+  Serial.print(powerPulseActive ? "true" : "false");
   Serial.print(",\"pigpio_connected\":true,\"mqtt_connected\":true,\"uptime_s\":");
   Serial.print(up);
   Serial.println("}");
@@ -242,6 +268,9 @@ static void applyConfig(const String& json) {
   if (jsonNumber(json, "out2", f))          cfg.out2 = (int)f;
   if (jsonNumber(json, "out3", f))          cfg.out3 = (int)f;
   if (jsonNumber(json, "relay_pin", f))     cfg.relayPin = (int)f;
+  if (jsonNumber(json, "power_relay_pin", f))   cfg.powerRelayPin = (int)f;
+  if (jsonNumber(json, "power_on_pulse_ms", f)) cfg.powerOnPulseMs = (unsigned long)f;
+  if (jsonNumber(json, "power_off_pulse_ms", f))cfg.powerOffPulseMs = (unsigned long)f;
   if (jsonNumber(json, "estop_pin", f))     cfg.estopPin = (int)f;
   if (jsonBool(json,   "estop_active_low", b)) cfg.estopActiveLow = b;
   if (jsonNumber(json, "estop_stable_ms", f))  cfg.estopStableMs = (unsigned long)f;
@@ -252,6 +281,8 @@ static void applyConfig(const String& json) {
   pinMode(cfg.out2, OUTPUT);
   pinMode(cfg.out3, OUTPUT);
   pinMode(cfg.relayPin, OUTPUT);
+  pinMode(cfg.powerRelayPin, OUTPUT);
+  digitalWrite(cfg.powerRelayPin, LOW);
   pinMode(cfg.estopPin, cfg.estopActiveLow ? INPUT_PULLUP : INPUT);
   servoSetup();
   baseStop();
@@ -289,6 +320,14 @@ static void handleLine(String line) {
     else if (cmd == "OFF") relaySet(false);
     return;
   }
+  if (line.startsWith("POWER ")) {
+    if (estopActive) { Serial.println("LOG power blocked - estop"); return; }
+    String cmd = line.substring(6); cmd.trim(); cmd.toUpperCase();
+    if (cmd == "ON") powerPulse(true);
+    else if (cmd == "OFF") powerPulse(false);
+    else Serial.println("LOG power bad arg");
+    return;
+  }
   if (line == "ESTOP_RESET") { estopTryReset(); return; }
 
   Serial.print("LOG unknown cmd: ");
@@ -314,6 +353,8 @@ void setup() {
   pinMode(cfg.out2, OUTPUT);
   pinMode(cfg.out3, OUTPUT);
   pinMode(cfg.relayPin, OUTPUT);
+  pinMode(cfg.powerRelayPin, OUTPUT);
+  digitalWrite(cfg.powerRelayPin, LOW);
   pinMode(cfg.estopPin, cfg.estopActiveLow ? INPUT_PULLUP : INPUT);
   servoSetup();
   baseStop();
@@ -326,6 +367,7 @@ void loop() {
   ESP.wdtFeed();
   pumpSerial();
   estopPoll();
+  powerPoll();
   unsigned long now = millis();
   if (now - lastTelemetryMs >= cfg.telemetryMs) {
     lastTelemetryMs = now;

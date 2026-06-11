@@ -140,9 +140,16 @@ OUT2 = int(os.getenv("BASE_OUT2", "27"))
 OUT3 = int(os.getenv("BASE_OUT3", "22"))
 
 # ======================================================================
-# Relay
+# Relay (light)
 # ======================================================================
-RELAY_PIN = int(os.getenv("RELAY_PIN", "5"))
+RELAY_PIN = int(os.getenv("RELAY_PIN", "13"))
+
+# ======================================================================
+# Power relay (car ignition pulse-to-toggle)
+# ======================================================================
+POWER_RELAY_PIN = int(os.getenv("POWER_RELAY_PIN", "5"))
+POWER_ON_PULSE_S = float(os.getenv("POWER_ON_PULSE_S", "0.1"))
+POWER_OFF_PULSE_S = float(os.getenv("POWER_OFF_PULSE_S", "3.0"))
 
 # ======================================================================
 # E-Stop (NC push-button on GPIO 6, active-low default)
@@ -179,6 +186,7 @@ last_steer_source: str | None = None
 
 # Relay state
 relay_on = False
+power_pulse_busy = False
 last_base_state: tuple[int, int, int] | None = None
 last_base_label: str = "STOP"
 

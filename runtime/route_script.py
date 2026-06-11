@@ -43,6 +43,7 @@ from config.settings import (
     MQTT_CLIENT_ID_PREFIX,
     MQTT_KEEPALIVE_S,
     MQTT_PASSWORD,
+    MQTT_POWER_TOPIC,
     MQTT_RELAY_TOPIC,
     MQTT_SERVO_TOPIC,
     MQTT_USERNAME,
@@ -336,6 +337,14 @@ class RouteScriptRunner:
             self._mqtt.publish(MQTT_RELAY_TOPIC, command, qos=1)
         except Exception as exc:  # noqa: BLE001
             logger.error("RouteScriptRunner relay publish failed: %s", exc)
+
+    def publish_power(self, on: bool) -> None:
+        """Publish a power ON/OFF command (car ignition pulse-to-toggle)."""
+        command = "ON" if on else "OFF"
+        try:
+            self._mqtt.publish(MQTT_POWER_TOPIC, command, qos=1)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("RouteScriptRunner power publish failed: %s", exc)
 
     def publish_estop_reset(self) -> None:
         """Request the RPi to clear its E-stop latch (hardware check still applies)."""

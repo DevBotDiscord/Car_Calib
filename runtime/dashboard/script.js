@@ -179,6 +179,27 @@ async function setLight(on) {
 }
 document.getElementById("lightToggle").onchange = (e) => setLight(e.target.checked);
 
+async function sendPower(on) {
+  const sep = qp ? "&" : "?";
+  const label = document.getElementById("powerLabel");
+  if (!on && !confirm("Tắt xe? Relay sẽ chập giữ 3s.")) return;
+  label.textContent = on ? "đang bật…" : "đang tắt…";
+  try {
+    const r = await fetch("/control/power" + qp + sep + "on=" + (on ? 1 : 0), {method: "POST"});
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      label.textContent = "power error: " + (j.detail || j.error || r.status);
+      return;
+    }
+    label.textContent = on ? "đã gửi BẬT" : "đã gửi TẮT";
+    setTimeout(() => { label.textContent = ""; }, 2000);
+  } catch (e) {
+    label.textContent = "power error: network";
+  }
+}
+document.getElementById("powerOnBtn").onclick = () => sendPower(true);
+document.getElementById("powerOffBtn").onclick = () => sendPower(false);
+
 document.querySelectorAll(".tab").forEach(btn => {
   btn.onclick = () => {
     const target = btn.dataset.tab;

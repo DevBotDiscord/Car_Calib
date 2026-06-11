@@ -379,6 +379,14 @@ class HttpsMjpegServer:
             self._script_runner.publish_relay(bool(on))
             return JSONResponse({"ok": True, "relay": "ON" if on else "OFF"})
 
+        @app.post("/control/power")
+        def control_power(on: int = 0, token: str = "") -> Any:
+            _check_token(token)
+            if self._script_runner is None:
+                raise HTTPException(status_code=503, detail="script_runner_disabled")
+            self._script_runner.publish_power(bool(on))
+            return JSONResponse({"ok": True, "power": "ON" if on else "OFF"})
+
         @app.post("/control/estop_reset")
         def control_estop_reset(token: str = "") -> Any:
             _check_token(token)

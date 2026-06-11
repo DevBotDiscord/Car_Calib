@@ -30,9 +30,10 @@ def setup_gpio() -> None:
             f"Cannot connect to pigpio at {config.PIGPIO_HOST}:{config.PIGPIO_PORT}. "
             "Start pigpiod first: sudo systemctl enable --now pigpiod"
         )
-    for pin in (config.OUT1, config.OUT2, config.OUT3, config.RELAY_PIN):
+    for pin in (config.OUT1, config.OUT2, config.OUT3, config.RELAY_PIN, config.POWER_RELAY_PIN):
         config.gpio.set_mode(pin, pi.OUTPUT)
     config.gpio.write(config.RELAY_PIN, 0)  # relay off at startup
+    config.gpio.write(config.POWER_RELAY_PIN, 0)  # power relay idle at startup
 
 
 def setup_servo_output() -> None:
