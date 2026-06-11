@@ -1112,6 +1112,7 @@ const esp32FlashBtn = document.getElementById("esp32FlashBtn");
 const esp32FlashStatus = document.getElementById("esp32FlashStatus");
 const esp32FlashLog = document.getElementById("esp32FlashLog");
 const esp32ConnState = document.getElementById("esp32ConnState");
+const esp32BoardState = document.getElementById("esp32BoardState");
 let _inoSelected = null;
 let _flashPollTimer = null;
 
@@ -1122,8 +1123,17 @@ async function refreshEsp32Status() {
     const j = await r.json();
     if (!j.available) { esp32Update.style.display = "none"; return; }
     esp32Update.style.display = "block";
-    esp32ConnState.textContent = j.connected ? `· connected ${j.port || ""}` : "· not connected";
+    const boardLabel = j.board_label || j.board_kind || "";
+    esp32ConnState.textContent = j.connected ? `· connected ${j.port || ""}${boardLabel ? ` · ${boardLabel}` : ""}` : "· not connected";
     esp32ConnState.className = j.connected ? "text-ok" : "muted";
+    if (j.flash && esp32BoardState) {
+      const board = j.flash.board;
+      const fqbn = j.flash.fqbn;
+      const sketch = j.flash.sketch;
+      esp32BoardState.textContent = board
+        ? `board: ${board.label || board.key} · ${fqbn || ""} · ${sketch || ""}`
+        : `board: auto-detect on flash${j.port ? ` · port ${j.port}` : ""}`;
+    }
     if (j.flash) renderFlashState(j.flash);
   } catch (e) {}
 }
@@ -1133,8 +1143,8 @@ function renderFlashState(f) {
   esp32FlashStatus.textContent = phase + (f.message ? `: ${f.message}` : "");
   esp32FlashStatus.className = phase === "error" ? "text-bad" : (phase === "done" ? "text-ok" : "muted");
   if (f.log) { esp32FlashLog.style.display = "block"; esp32FlashLog.textContent = f.log; }
-  const busy = ["saved", "compiling", "flashing"].includes(phase);
-  esp32FlashBtn.disabled = busy || !_inoSelected;
+  const busy = ["saved", "detecting", "compiling", "flashing"].includes(phase);
+  esp32FlashBtn.disabled = busy;
   if (busy && !_flashPollTimer) {
     _flashPollTimer = setInterval(refreshEsp32Status, 1000);
   } else if (!busy && _flashPollTimer) {
@@ -1146,7 +1156,7 @@ function pickIno(file) {
   if (!file) return;
   if (!file.name.toLowerCase().endsWith(".ino")) { alert("please choose a .ino file"); return; }
   _inoSelected = file;
-  inoName.textContent = file.name + ` (${file.size} B)`;
+  inoName.textContent = file.name + ` (${file.size} B override)`;
   esp32FlashBtn.disabled = false;
 }
 
@@ -1166,17 +1176,19 @@ if (inoDrop) {
 }
 
 if (esp32FlashBtn) esp32FlashBtn.onclick = async () => {
-  if (!_inoSelected) return;
-  if (!confirm(`Flash ${_inoSelected.name} to the ESP32? The actuator bridge pauses during flashing.`)) return;
+  const target = _inoSelected ? _inoSelected.name : "built-in sketch for detected board";
+  if (!confirm(`Compile + flash ${target}? The actuator bridge pauses during flashing.`)) return;
   esp32FlashBtn.disabled = true;
-  esp32FlashStatus.textContent = "uploading…";
+  esp32FlashStatus.textContent = _inoSelected ? "uploading…" : "starting…";
   esp32FlashStatus.className = "muted";
   try {
-    const fd = new FormData();
-    fd.append("file", _inoSelected, _inoSelected.name);
-    const up = await fetch("/esp32/firmware" + qp, {method: "POST", body: fd});
-    const uj = await up.json().catch(() => ({}));
-    if (!up.ok) throw new Error(formatErrorDetail(uj, up.status));
+    if (_inoSelected) {
+      const fd = new FormData();
+      fd.append("file", _inoSelected, _inoSelected.name);
+      const up = await fetch("/esp32/firmware" + qp, {method: "POST", body: fd});
+      const uj = await up.json().catch(() => ({}));
+      if (!up.ok) throw new Error(formatErrorDetail(uj, up.status));
+    }
     const fl = await fetch("/esp32/flash" + qp, {method: "POST"});
     const fj = await fl.json().catch(() => ({}));
     if (!fl.ok) throw new Error(formatErrorDetail(fj, fl.status));

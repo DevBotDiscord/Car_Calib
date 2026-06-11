@@ -186,9 +186,10 @@ ACTUATOR_MODE = _get_str("ACTUATOR_MODE", "auto").strip().lower()
 # In "auto" mode, give up scanning for the ESP32 after this many seconds and
 # fall back to the MQTT/RPi path. "esp32" mode ignores this and scans forever.
 ESP32_SCAN_TIMEOUT_S = _get_float("ESP32_SCAN_TIMEOUT_S", 10.0)
-# Board target for arduino-cli compile/flash when updating ESP32 firmware
-# from the dashboard. Override per board (e.g. esp32:esp32:esp32s3).
+# Board targets for arduino-cli compile/flash when updating USB actuator
+# firmware from the dashboard. ESP32_FQBN is the fallback when detect fails.
 ESP32_FQBN = _get_str("ESP32_FQBN", "esp32:esp32:esp32")
+ESP8266_FQBN = _get_str("ESP8266_FQBN", "esp8266:esp8266:nodemcuv2")
 MQTT_SERVO_TOPIC = _get_str("MQTT_SERVO_TOPIC", "car/servo/angle")
 MQTT_BASE_COMMAND_TOPIC = _get_str("MQTT_BASE_COMMAND_TOPIC", "car/base/command")
 MQTT_RELAY_TOPIC = _get_str("MQTT_RELAY_TOPIC", "car/relay")

@@ -14,10 +14,12 @@ from typing import Any, Optional
 
 import cv2
 
+
+
 try:  # Optional dependency: only needed when stream server is started.
-    from fastapi import Request as _FastAPIRequest
+    from fastapi import Request
 except Exception:  # noqa: BLE001
-    _FastAPIRequest = Any  # type: ignore[assignment,misc]
+    Request = Any  # type: ignore[assignment,misc]
 
 
 @dataclass
@@ -65,6 +67,7 @@ class HttpsMjpegServer:
         steering_controller: Any | None = None,
         esp32_bridge: Any | None = None,
         esp32_flasher: Any | None = None,
+        restart_callback: Any | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -80,6 +83,7 @@ class HttpsMjpegServer:
         self._steering_controller = steering_controller
         self._esp32_bridge = esp32_bridge
         self._esp32_flasher = esp32_flasher
+        self._restart_callback = restart_callback
 
         self._server: Any = None
         self._thread: threading.Thread | None = None
@@ -199,7 +203,13 @@ class HttpsMjpegServer:
                 new_params = ctrl.update_params(body)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
-            return JSONResponse({"params": new_params, "bounds": ctrl.PARAM_BOUNDS})
+            restart = None
+            if self._restart_callback is not None:
+                restart = self._restart_callback()
+            payload = {"params": new_params, "bounds": ctrl.PARAM_BOUNDS}
+            if restart is not None:
+                payload["restart"] = restart
+            return JSONResponse(payload)
 
         @app.get("/control/presets")
         def control_presets_list(token: str = "") -> Any:
@@ -390,10 +400,13 @@ class HttpsMjpegServer:
                 except Exception:  # noqa: BLE001
                     pass
             flash = self._esp32_flasher.status() if self._esp32_flasher is not None else None
+            board = (flash or {}).get("board") if isinstance(flash, dict) else None
             return JSONResponse({
                 "available": self._esp32_flasher is not None,
                 "connected": connected,
                 "port": port,
+                "board_kind": (board or {}).get("key") if isinstance(board, dict) else None,
+                "board_label": (board or {}).get("label") if isinstance(board, dict) else None,
                 "flash": flash,
             })
 

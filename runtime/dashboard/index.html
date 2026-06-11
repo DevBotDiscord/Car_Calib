@@ -134,11 +134,13 @@
   </div>
   <div class="panel" id="esp32Update" style="margin-top:20px;display:none">
     <h2>ESP32 firmware update <span id="esp32ConnState" class="muted" style="font-size:14px"></span></h2>
-    <div id="inoDrop" class="ino-drop">drop .ino here or click to choose</div>
+    <div class="muted" style="margin-bottom:8px">Dashboard tự detect board qua <code>arduino-cli board list</code>, rồi compile/upload sketch đúng board.</div>
+    <div id="esp32BoardState" class="muted" style="margin-bottom:8px">board: unknown</div>
+    <div id="inoDrop" class="ino-drop">optional: drop .ino override here or click to choose</div>
     <input id="inoFile" type="file" accept=".ino" style="display:none">
     <div class="row" style="margin-top:8px">
-      <span class="muted" id="inoName">no file selected</span>
-      <button id="esp32FlashBtn" class="primary" disabled>⬆ update firmware</button>
+      <span class="muted" id="inoName">using built-in board sketch</span>
+      <button id="esp32FlashBtn" class="primary">⬆ compile + update detected board</button>
       <span class="muted" id="esp32FlashStatus"></span>
     </div>
     <pre id="esp32FlashLog" style="display:none;max-height:200px"></pre>

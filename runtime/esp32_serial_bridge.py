@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
-HANDSHAKE_TOKEN = "CARCALIB-ESP32"
+HANDSHAKE_TOKENS = ("CARCALIB-ESP32", "CARCALIB-ESP8266")
 DEFAULT_PORT_GLOBS = ("/dev/ttyUSB*", "/dev/ttyACM*")
 
 
@@ -281,7 +281,7 @@ class ESP32SerialBridge:
                     line = ser.readline().decode("utf-8", "ignore").strip()
                     if not line:
                         continue
-                    if line.startswith(HANDSHAKE_TOKEN):
+                    if any(line.startswith(token) for token in HANDSHAKE_TOKENS):
                         with self._ser_lock:
                             self._ser = ser
                         return port

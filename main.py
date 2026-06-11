@@ -80,6 +80,7 @@ from config.settings import (
     ACTUATOR_MODE,
     ESP32_SCAN_TIMEOUT_S,
     ESP32_FQBN,
+    ESP8266_FQBN,
 )
 from control.steering_controller import SteeringController
 from drivers.mqtt_control_client import MQTTControlClient
@@ -392,6 +393,7 @@ def main() -> None:
             from runtime.esp32_flasher import ESP32Flasher
             esp32_flasher = ESP32Flasher(
                 fqbn=ESP32_FQBN,
+                fqbn_esp8266=ESP8266_FQBN,
                 bridge=esp32_bridge,
                 port_globs=tuple(g for g in ESP32_SERIAL_PORT_GLOBS.split(",") if g),
             )
