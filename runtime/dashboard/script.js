@@ -708,13 +708,21 @@ function renderSummaryOverview(s) {
 function renderSummaryScript(s) {
   const extra = s.extra_meta || {};
   const script = extra.script || {};
-  const stepsRows = (script.steps || []).map((st, i) =>
-    `<tr><td>${i+1}</td><td>${safeText(st.action)}</td><td>${Number(st.duration_s).toFixed(1)} s</td></tr>`
-  ).join("");
+  const stepsRows = (script.steps || []).map((st, i) => {
+    const d = Number(st.duration_s);
+    const dTxt = Number.isFinite(d) ? d.toFixed(1) + " s" : "-";
+    return `<tr><td>${i+1}</td><td>${safeText(st.action)}</td><td>${dTxt}</td></tr>`;
+  }).join("");
   const stepsTable = stepsRows
     ? `<table style="margin-top:6px"><thead><tr><th>#</th><th>Action</th><th>Duration</th></tr></thead><tbody>${stepsRows}</tbody></table>`
     : `<div class="muted">no script steps recorded</div>`;
-  const submittedAt = script.submitted_at_unix ? new Date(script.submitted_at_unix * 1000).toISOString() : null;
+  let submittedAt = null;
+  if (script.submitted_at_unix) {
+    const ms = Number(script.submitted_at_unix) * 1000;
+    if (Number.isFinite(ms)) {
+      try { submittedAt = new Date(ms).toISOString(); } catch (e) { submittedAt = null; }
+    }
+  }
   return `
     <div class="kv">
       <div class="k">Source</div><div class="v">${safeText(script.source)}</div>
@@ -865,17 +873,34 @@ function renderTuneFields(params) {
     const slider = wrap.querySelector('input[type=range]');
     const num = wrap.querySelector('input[type=number]');
     slider.oninput = () => { num.value = slider.value; };
-    num.oninput = () => { slider.value = num.value; };
+    num.oninput = () => {
+      // clamp the number box to the slider's bounds so the two stay in sync
+      // and we never submit an out-of-range value
+      let v = Number(num.value);
+      if (Number.isFinite(v)) {
+        if (v < lo) { v = lo; num.value = String(lo); }
+        else if (v > hi) { v = hi; num.value = String(hi); }
+      }
+      slider.value = num.value;
+    };
     _tuneInputs[key] = num;
   });
 }
 
+let _tuneApplying = false;
 async function applyTune() {
   const status = document.getElementById("tuneStatus");
   const errEl = document.getElementById("tuneError");
+  const applyBtn = document.getElementById("tuneApply");
+  if (_tuneApplying) return;  // debounce: an apply is already in flight
   errEl.style.display = "none";
   const patch = {};
-  Object.entries(_tuneInputs).forEach(([k, el]) => { patch[k] = Number(el.value); });
+  Object.entries(_tuneInputs).forEach(([k, el]) => {
+    const v = Number(el.value);
+    if (Number.isFinite(v)) patch[k] = v;  // skip blank/NaN fields
+  });
+  _tuneApplying = true;
+  if (applyBtn) applyBtn.disabled = true;
   status.textContent = "applying…";
   try {
     const r = await fetch("/control/params" + qp, {
@@ -891,6 +916,9 @@ async function applyTune() {
     status.textContent = "";
     errEl.textContent = "Apply failed: " + e.message;
     errEl.style.display = "block";
+  } finally {
+    _tuneApplying = false;
+    if (applyBtn) applyBtn.disabled = false;
   }
 }
 
@@ -913,17 +941,20 @@ function formatErrorDetail(j, status) {
 document.getElementById("tuneApply").onclick = applyTune;
 document.getElementById("tuneReset").onclick = async () => {
   if (!_tuneOriginal) return;
-  if (!confirm("Reset all params to values at page load?")) return;
+  if (!confirm("Reset all params to values at page load and apply to the controller?")) return;
   Object.entries(_tuneInputs).forEach(([k, el]) => {
     if (_tuneOriginal[k] !== undefined) el.value = _tuneOriginal[k];
     const slider = el.parentElement.querySelector('input[type=range]');
     if (slider) slider.value = el.value;
   });
+  // push the restored values to the live controller, not just the UI
+  await applyTune();
 };
 
-// load on first switch to Tune tab
+// reload params each time the Tune tab opens so they track controller state;
+// loadTune keeps the first snapshot in _tuneOriginal for the reset button.
 document.querySelector('.tab[data-tab="tune"]').addEventListener("click", () => {
-  if (!_tuneOriginal) loadTune();
+  loadTune();
   refreshTunePresets();
 });
 
@@ -950,6 +981,7 @@ async function refreshTunePresets() {
 document.getElementById("tunePresetLoad").onclick = async () => {
   const name = tunePresetSelect.value;
   if (!name) { alert("select a preset first"); return; }
+  if (!Object.keys(_tuneInputs).length) { alert("open the Tune tab first (controller params not loaded)"); return; }
   const r = await fetch(`/control/presets/${encodeURIComponent(name)}${qp}`);
   if (!r.ok) { alert("load failed"); return; }
   const j = await r.json();
@@ -968,8 +1000,12 @@ document.getElementById("tunePresetLoad").onclick = async () => {
 document.getElementById("tunePresetSave").onclick = async () => {
   const name = (tunePresetName.value || "").trim();
   if (!name) { alert("enter preset name"); return; }
+  if (!Object.keys(_tuneInputs).length) { alert("open the Tune tab first (controller params not loaded)"); return; }
   const params = {};
-  Object.entries(_tuneInputs).forEach(([k, el]) => { params[k] = Number(el.value); });
+  Object.entries(_tuneInputs).forEach(([k, el]) => {
+    const v = Number(el.value);
+    if (Number.isFinite(v)) params[k] = v;  // skip blank/NaN fields
+  });
   const r = await fetch(`/control/presets/${encodeURIComponent(name)}${qp}`, {
     method: "PUT", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({params}),
