@@ -36,8 +36,10 @@ RUN if [ "$INSTALL_ARDUINO_CLI" = "true" ]; then \
         && curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=/usr/local/bin sh \
         && arduino-cli config init \
         && arduino-cli core update-index --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json,https://arduino.esp8266.com/stable/package_esp8266com_index.json \
-        && arduino-cli core install esp32:esp32 --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json \
-        && arduino-cli core install esp8266:esp8266 --additional-urls https://arduino.esp8266.com/stable/package_esp8266com_index.json \
+        && (arduino-cli core list | grep -q '^esp32:esp32' \
+            || arduino-cli core install esp32:esp32 --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json) \
+        && (arduino-cli core list | grep -q '^esp8266:esp8266' \
+            || arduino-cli core install esp8266:esp8266 --additional-urls https://arduino.esp8266.com/stable/package_esp8266com_index.json) \
         && rm -rf /var/lib/apt/lists/* /opt/arduino/staging ; \
     fi
 
