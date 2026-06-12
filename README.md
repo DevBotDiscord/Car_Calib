@@ -47,6 +47,8 @@ controller. True PID control remains a later approved refinement phase.
 - Both call `UnifiedCalibrator` as the only calibration facade.
 - `UnifiedCalibrator.process_frame(frame, frame_num)` returns one typed
   `CalibrationResult`.
+- Unexpected failures identify the exact frame, stage, process, exception type,
+  and detail through `CalibrationProcessingError`.
 - `UnifiedCalibrator.update(frame, frame_num)` is the offline compatibility
   wrapper that adds visualization, logging, video, and stream side effects.
 

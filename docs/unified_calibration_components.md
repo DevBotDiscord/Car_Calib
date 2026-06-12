@@ -35,6 +35,41 @@ and returns a frozen `CalibrationResult`:
 The `vision_debug` entry inside `debug_data` contains unified vision
 intermediates consumed by existing HUD helpers.
 
+## Failure Diagnostics
+
+Unexpected processing failures raise `CalibrationProcessingError`. Its
+`diagnostic` value provides:
+
+- `frame_num`
+- `stage`
+- `process`
+- `error_type`
+- `detail`
+
+The original exception is preserved as `__cause__` for traceback debugging.
+Current computation stages identify input validation, vision processing,
+lane-pair selection, vision-debug rendering, geometry operations, steering
+control, control-state updates, and result assembly.
+
+| Stage | Processes |
+| --- | --- |
+| `input` | `validate_frame` |
+| `vision` | `preprocess_and_extract_lines` |
+| `lane_pair_selection` | `select_opposite_slope_pair` |
+| `vision_debug` | `draw_selected_lines` |
+| `geometry` | `calculate_bottom_intercepts`, `calculate_vanishing_point`, `map_vanishing_point_to_angle` |
+| `steering_control` | `compute_steering_command` |
+| `control_state` | `update_robot_state` |
+| `result_assembly` | `assemble_calibration_result` |
+| `runtime_output` | `render_visuals`, `write_telemetry`, `write_debug_video`, `publish_stream`, `log_terminal_status` |
+
+Example:
+
+```text
+frame=22 stage=vision process=preprocess_and_extract_lines
+error=RuntimeError: synthetic extraction failure
+```
+
 ## Offline Compatibility API
 
 ```python
@@ -43,7 +78,9 @@ angle = calibrator.update(frame, frame_num)
 
 `update()` calls `process_frame()` and then applies visualization, CSV, video,
 stream, terminal-log, and timing side effects. It returns the steering angle
-for compatibility with `process_video.py`.
+for compatibility with `process_video.py`. Output-side failures identify the
+specific `runtime_output` process such as `render_visuals`, `write_telemetry`,
+`write_debug_video`, `publish_stream`, or `log_terminal_status`.
 
 ## Current Pair Selection
 

@@ -87,7 +87,7 @@ def main() -> None:
         csv_name,
     )
 
-    from unified_calibration_components import UnifiedCalibrator
+    from unified_calibration_components import CalibrationProcessingError, UnifiedCalibrator
 
     calibrator = UnifiedCalibrator()
     frame_num = 0
@@ -97,7 +97,20 @@ def main() -> None:
             if not ok or frame is None:
                 break
 
-            calibrator.update(frame, frame_num)
+            try:
+                calibrator.update(frame, frame_num)
+            except CalibrationProcessingError as exc:
+                diagnostic = exc.diagnostic
+                logger.exception(
+                    "Offline calibration failure frame=%d stage=%s process=%s "
+                    "error_type=%s detail=%s",
+                    diagnostic.frame_num,
+                    diagnostic.stage,
+                    diagnostic.process,
+                    diagnostic.error_type,
+                    diagnostic.detail,
+                )
+                raise
             if PROCESS_VIDEO_FRAME_SLEEP_MS > 0:
                 time.sleep(float(PROCESS_VIDEO_FRAME_SLEEP_MS) / 1000.0)
 

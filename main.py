@@ -94,7 +94,7 @@ from runtime.video_runtime_helpers import (
     maybe_flip_frame,
     sleep_remainder,
 )
-from unified_calibration_components import UnifiedCalibrator
+from unified_calibration_components import CalibrationProcessingError, UnifiedCalibrator
 
 # --------------------------------------------------------------------------- #
 # Logging configuration
@@ -464,13 +464,31 @@ def main() -> None:
 
             try:
                 calibration = calibrator.process_frame(frame, frame_num)
+            except CalibrationProcessingError as calibration_exc:
+                diagnostic = calibration_exc.diagnostic
+                logger.exception(
+                    "Calibration failure frame=%d stage=%s process=%s "
+                    "error_type=%s detail=%s - centering servo and stopping.",
+                    diagnostic.frame_num,
+                    diagnostic.stage,
+                    diagnostic.process,
+                    diagnostic.error_type,
+                    diagnostic.detail,
+                )
+                final_status = "FAILED_CONTROL"
+                rejection_reason = (
+                    f"calibration_error:{diagnostic.stage}:{diagnostic.process}:"
+                    f"{diagnostic.error_type}"
+                )
+                servo.center()
+                break
             except Exception as ctrl_exc:  # noqa: BLE001
-                logger.error(
-                    "Unified calibration error: %s - centering servo and stopping.",
+                logger.exception(
+                    "Unexpected calibration facade failure: %s - centering servo and stopping.",
                     ctrl_exc,
                 )
                 final_status = "FAILED_CONTROL"
-                rejection_reason = f"controller_error:{type(ctrl_exc).__name__}"
+                rejection_reason = f"calibration_facade_error:{type(ctrl_exc).__name__}"
                 servo.center()
                 break
 

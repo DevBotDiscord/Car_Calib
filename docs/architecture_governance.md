@@ -25,6 +25,8 @@ Work proceeds one approved phase at a time.
 - Each configured stage processes a frame at most once.
 - Stage order and dependencies are explicit.
 - Stages exchange typed results rather than unrelated mutable global state.
+- Unexpected failures must identify the frame, stage, process, exception type,
+  and detail while preserving the original exception chain.
 - Capabilities such as positioning cannot silently affect steering. Calibration
   must explicitly declare them as required dependencies.
 

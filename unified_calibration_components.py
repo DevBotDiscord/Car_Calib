@@ -37,6 +37,51 @@ class CalibrationResult:
     debug_data: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class CalibrationDiagnostic:
+    """Structured context identifying a failed calibration operation."""
+
+    frame_num: int
+    stage: str
+    process: str
+    error_type: str
+    detail: str
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return JSON-serializable diagnostic fields."""
+        return {
+            "frame_num": self.frame_num,
+            "stage": self.stage,
+            "process": self.process,
+            "error_type": self.error_type,
+            "detail": self.detail,
+        }
+
+
+class CalibrationProcessingError(RuntimeError):
+    """Failure raised with the exact calibration stage and process."""
+
+    def __init__(
+        self,
+        *,
+        frame_num: int,
+        stage: str,
+        process: str,
+        cause: Exception,
+    ) -> None:
+        self.diagnostic = CalibrationDiagnostic(
+            frame_num=frame_num,
+            stage=stage,
+            process=process,
+            error_type=type(cause).__name__,
+            detail=str(cause),
+        )
+        super().__init__(
+            f"frame={frame_num} stage={stage} process={process} "
+            f"error={type(cause).__name__}: {cause}"
+        )
+
+
 class ConfigManager:
     """Registry for runtime configuration values used by the unified module."""
 
@@ -640,91 +685,126 @@ class UnifiedCalibrator:
     def process_frame(self, frame: np.ndarray, frame_num: int) -> CalibrationResult:
         """Compute one frame through the single centralized calibration path."""
         loop_start = time.perf_counter()
-        frame_h, frame_w = frame.shape[:2]
-        vp: tuple[int, int] | None = None
-        vp_angle: float | None = None
-        left_intercept: int | None = None
-        right_intercept: int | None = None
+        stage = "input"
+        process = "validate_frame"
+        try:
+            if frame is None or not isinstance(frame, np.ndarray) or frame.size == 0:
+                raise ValueError("frame must be a non-empty NumPy array")
+            frame_h, frame_w = frame.shape[:2]
+            vp: tuple[int, int] | None = None
+            vp_angle: float | None = None
+            left_intercept: int | None = None
+            right_intercept: int | None = None
 
-        lines, vision_debug = self._vision.process_frame_debug(frame)
-        selected = self._vision._apply_geometric_filter(lines)
-        if selected is not None:
-            line1, line2 = selected
-            vision_debug["selected_lines"] = [line1, line2]
-            grouped_vis = vision_debug["grouped_vis"]
-            cv2.line(grouped_vis, (line1[0], line1[1]), (line1[2], line1[3]), (0, 255, 0), 2)
-            cv2.line(grouped_vis, (line2[0], line2[1]), (line2[2], line2[3]), (255, 0, 0), 2)
-            intercept_a, intercept_b = self._geometry.calculate_bottom_intercepts(
-                line1,
-                line2,
-                frame_h,
+            stage = "vision"
+            process = "preprocess_and_extract_lines"
+            lines, vision_debug = self._vision.process_frame_debug(frame)
+
+            stage = "lane_pair_selection"
+            process = "select_opposite_slope_pair"
+            selected = self._vision._apply_geometric_filter(lines)
+            if selected is not None:
+                line1, line2 = selected
+                vision_debug["selected_lines"] = [line1, line2]
+
+                stage = "vision_debug"
+                process = "draw_selected_lines"
+                grouped_vis = vision_debug["grouped_vis"]
+                cv2.line(grouped_vis, (line1[0], line1[1]), (line1[2], line1[3]), (0, 255, 0), 2)
+                cv2.line(grouped_vis, (line2[0], line2[1]), (line2[2], line2[3]), (255, 0, 0), 2)
+
+                stage = "geometry"
+                process = "calculate_bottom_intercepts"
+                intercept_a, intercept_b = self._geometry.calculate_bottom_intercepts(
+                    line1,
+                    line2,
+                    frame_h,
+                )
+                left_intercept, right_intercept = sorted((intercept_a, intercept_b))
+
+                process = "calculate_vanishing_point"
+                vp = self._geometry.calculate_vanishing_point(line1, line2)
+                if vp is not None:
+                    process = "map_vanishing_point_to_angle"
+                    vp_angle = self._geometry.map_vp_to_angle(vp[0], frame_w)
+
+            stage = "steering_control"
+            process = "compute_steering_command"
+            steering_angle, fsm_state = self._steering.compute_steering(
+                vp_angle=vp_angle,
+                left_intercept=left_intercept,
+                right_intercept=right_intercept,
+                frame_width=frame_w,
             )
-            left_intercept, right_intercept = sorted((intercept_a, intercept_b))
-            vp = self._geometry.calculate_vanishing_point(line1, line2)
-            if vp is not None:
-                vp_angle = self._geometry.map_vp_to_angle(vp[0], frame_w)
 
-        steering_angle, fsm_state = self._steering.compute_steering(
-            vp_angle=vp_angle,
-            left_intercept=left_intercept,
-            right_intercept=right_intercept,
-            frame_width=frame_w,
-        )
-        self._robot_state.transition_to(FSMState(fsm_state))
-        self._robot_state.calibration_active = fsm_state == "TRACKING_PD"
-        self._robot_state.last_valid_servo_angle = steering_angle
+            stage = "control_state"
+            process = "update_robot_state"
+            self._robot_state.transition_to(FSMState(fsm_state))
+            self._robot_state.calibration_active = fsm_state == "TRACKING_PD"
+            self._robot_state.last_valid_servo_angle = steering_angle
 
-        loop_ms = (time.perf_counter() - loop_start) * 1000.0
-        target_period_ms = 1000.0 / self._target_hz if self._target_hz > 0 else 0.0
-        overrun_ms = max(0.0, loop_ms - target_period_ms) if target_period_ms > 0 else 0.0
-        pid_error = 0.0 if vp_angle is None else float(vp_angle) - 90.0
-        pid_p = self._robot_state.pid.kp * pid_error
-        pid_d = self._robot_state.pid.kd * (pid_error - self._robot_state.pid_last_error)
-        pid_i = self._robot_state.pid.ki * self._robot_state.pid_integral
-        telemetry_data: dict[str, Any] = {
-            "frame_num": frame_num,
-            "mono_timestamp": f"{time.perf_counter():.6f}",
-            "utc_timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "loop_ms": f"{loop_ms:.3f}",
-            "loop_overrun_ms": f"{overrun_ms:.3f}",
-            "vp_x": None if vp is None else vp[0],
-            "vp_y": None if vp is None else vp[1],
-            "vp_angle": vp_angle,
-            "theta": "" if vp_angle is None else f"{vp_angle:.6f}",
-            "theta_source": "none" if vp_angle is None else "live",
-            "theta_for_overlay": "" if vp_angle is None else f"{vp_angle:.6f}",
-            "lines_count": len(lines),
-            "left_intercept": left_intercept,
-            "right_intercept": right_intercept,
-            "fsm_state": fsm_state,
-            "servo_angle": steering_angle,
-            "servo_center_angle": self._robot_state.servo_center_angle,
-            "servo_offset": steering_angle - self._robot_state.servo_center_angle,
-            "pid_error": f"{pid_error:.6f}",
-            "pid_p_term": f"{pid_p:.6f}",
-            "pid_i_term": f"{pid_i:.6f}",
-            "pid_d_term": f"{pid_d:.6f}",
-            "pid_integral": f"{self._robot_state.pid_integral:.6f}",
-            "pid_last_error": f"{self._robot_state.pid_last_error:.6f}",
-            "hardware_send_latency_ms": "0.000",
-            "stream_enabled": int(self._stream_enabled),
-            "stream_host": self._stream_configs.get("MAIN_HTTPS_STREAM_HOST", ""),
-            "stream_port": self._stream_configs.get("MAIN_HTTPS_STREAM_PORT", ""),
-            "calibration_active": int(bool(self._robot_state.calibration_active)),
-        }
-        debug_data: dict[str, Any] = {
-            "show_vision_debug": bool(_get_bool("MAIN_SHOW_VISION_DEBUG", False)),
-            "vision_debug": vision_debug,
-        }
-        self._robot_state.pid_last_error = pid_error
-        return CalibrationResult(
-            steering_angle=float(steering_angle),
-            control_state=fsm_state,
-            observation_angle=vp_angle,
-            calibration_active=self._robot_state.calibration_active,
-            telemetry=telemetry_data,
-            debug_data=debug_data,
-        )
+            stage = "result_assembly"
+            process = "assemble_calibration_result"
+            loop_ms = (time.perf_counter() - loop_start) * 1000.0
+            target_period_ms = 1000.0 / self._target_hz if self._target_hz > 0 else 0.0
+            overrun_ms = max(0.0, loop_ms - target_period_ms) if target_period_ms > 0 else 0.0
+            pid_error = 0.0 if vp_angle is None else float(vp_angle) - 90.0
+            pid_p = self._robot_state.pid.kp * pid_error
+            pid_d = self._robot_state.pid.kd * (pid_error - self._robot_state.pid_last_error)
+            pid_i = self._robot_state.pid.ki * self._robot_state.pid_integral
+            telemetry_data: dict[str, Any] = {
+                "frame_num": frame_num,
+                "mono_timestamp": f"{time.perf_counter():.6f}",
+                "utc_timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "loop_ms": f"{loop_ms:.3f}",
+                "loop_overrun_ms": f"{overrun_ms:.3f}",
+                "vp_x": None if vp is None else vp[0],
+                "vp_y": None if vp is None else vp[1],
+                "vp_angle": vp_angle,
+                "theta": "" if vp_angle is None else f"{vp_angle:.6f}",
+                "theta_source": "none" if vp_angle is None else "live",
+                "theta_for_overlay": "" if vp_angle is None else f"{vp_angle:.6f}",
+                "lines_count": len(lines),
+                "left_intercept": left_intercept,
+                "right_intercept": right_intercept,
+                "fsm_state": fsm_state,
+                "servo_angle": steering_angle,
+                "servo_center_angle": self._robot_state.servo_center_angle,
+                "servo_offset": steering_angle - self._robot_state.servo_center_angle,
+                "pid_error": f"{pid_error:.6f}",
+                "pid_p_term": f"{pid_p:.6f}",
+                "pid_i_term": f"{pid_i:.6f}",
+                "pid_d_term": f"{pid_d:.6f}",
+                "pid_integral": f"{self._robot_state.pid_integral:.6f}",
+                "pid_last_error": f"{self._robot_state.pid_last_error:.6f}",
+                "hardware_send_latency_ms": "0.000",
+                "stream_enabled": int(self._stream_enabled),
+                "stream_host": self._stream_configs.get("MAIN_HTTPS_STREAM_HOST", ""),
+                "stream_port": self._stream_configs.get("MAIN_HTTPS_STREAM_PORT", ""),
+                "calibration_active": int(bool(self._robot_state.calibration_active)),
+            }
+            debug_data: dict[str, Any] = {
+                "show_vision_debug": bool(_get_bool("MAIN_SHOW_VISION_DEBUG", False)),
+                "vision_debug": vision_debug,
+            }
+            self._robot_state.pid_last_error = pid_error
+            return CalibrationResult(
+                steering_angle=float(steering_angle),
+                control_state=fsm_state,
+                observation_angle=vp_angle,
+                calibration_active=self._robot_state.calibration_active,
+                telemetry=telemetry_data,
+                debug_data=debug_data,
+            )
+        except CalibrationProcessingError:
+            raise
+        except Exception as exc:
+            raise CalibrationProcessingError(
+                frame_num=frame_num,
+                stage=stage,
+                process=process,
+                cause=exc,
+            ) from exc
 
     def update(self, frame: np.ndarray, frame_num: int) -> float:
         """Process one frame and apply the offline telemetry side effects."""
@@ -733,13 +813,29 @@ class UnifiedCalibrator:
             self._last_rendered_frame = frame.copy()
             return result.steering_angle
 
-        rendered = self._telemetry.update_visuals(frame, result.telemetry, result.debug_data)
-        self._last_rendered_frame = rendered
-        self._telemetry.log_state(frame_num, result.telemetry)
-        self._telemetry.write_video(rendered)
-        self._telemetry.publish_stream(rendered, result.telemetry)
-        self._log_terminal_status(frame_num, result.telemetry)
-        return result.steering_angle
+        stage = "runtime_output"
+        process = "render_visuals"
+        try:
+            rendered = self._telemetry.update_visuals(frame, result.telemetry, result.debug_data)
+            self._last_rendered_frame = rendered
+            process = "write_telemetry"
+            self._telemetry.log_state(frame_num, result.telemetry)
+            process = "write_debug_video"
+            self._telemetry.write_video(rendered)
+            process = "publish_stream"
+            self._telemetry.publish_stream(rendered, result.telemetry)
+            process = "log_terminal_status"
+            self._log_terminal_status(frame_num, result.telemetry)
+            return result.steering_angle
+        except CalibrationProcessingError:
+            raise
+        except Exception as exc:
+            raise CalibrationProcessingError(
+                frame_num=frame_num,
+                stage=stage,
+                process=process,
+                cause=exc,
+            ) from exc
 
     def _log_terminal_status(self, frame_num: int, telemetry_data: dict[str, Any]) -> None:
         """Emit periodic terminal status logs for live runtime visibility."""

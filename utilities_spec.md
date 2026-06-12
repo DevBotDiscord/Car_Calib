@@ -22,6 +22,23 @@ Frozen result returned by `UnifiedCalibrator.process_frame(frame, frame_num)`:
 Live and offline callers must consume this result rather than independently
 recomputing calibration geometry or steering.
 
+### `CalibrationProcessingError`
+
+Unexpected failures from `process_frame()` and `update()` are wrapped with:
+
+- failing frame number;
+- stage identifier;
+- process identifier;
+- original exception type;
+- original exception detail.
+
+The structured fields are available through `error.diagnostic` and
+`error.diagnostic.as_dict()`. The original exception remains chained as
+`error.__cause__`.
+
+Live runtime logging includes these fields before safe shutdown. Offline video
+processing logs them before re-raising the error.
+
 ### `VisionProcessor.process_frame_debug`
 
 Input: BGR or grayscale NumPy frame.

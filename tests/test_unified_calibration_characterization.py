@@ -18,6 +18,7 @@ from control.steering_controller import SteeringController
 from models.robot_state import PIDConstants, RobotState
 from runtime.video_runtime_helpers import build_main_arg_parser
 from unified_calibration_components import (
+    CalibrationProcessingError,
     GeometryCalculator,
     TelemetryLogger,
     UnifiedCalibrator,
@@ -61,6 +62,22 @@ class _TelemetryStub:
 
     def publish_stream(self, frame, telemetry_data):
         return None
+
+
+class _FailingVisionStub(_VisionStub):
+    def process_frame_debug(self, frame: np.ndarray):
+        raise RuntimeError("synthetic extraction failure")
+
+
+class _FailingTelemetryStub(_TelemetryStub):
+    def log_state(self, frame_num, telemetry_data):
+        raise OSError("synthetic telemetry failure")
+
+
+class _FailingGeometryStub(GeometryCalculator):
+    @staticmethod
+    def calculate_vanishing_point(line1, line2):
+        raise ArithmeticError("synthetic geometry failure")
 
 
 def _make_calibrator_for_characterization() -> UnifiedCalibrator:
@@ -241,3 +258,57 @@ def test_main_parser_exposes_only_vision_debug_cli() -> None:
     parser = build_main_arg_parser()
 
     assert parser.parse_args(["--show-vision-debug"]).show_vision_debug is True
+
+
+def test_invalid_frame_error_identifies_input_process() -> None:
+    calibrator = _make_calibrator_for_characterization()
+
+    with pytest.raises(CalibrationProcessingError) as raised:
+        calibrator.process_frame(None, frame_num=21)
+
+    diagnostic = raised.value.diagnostic
+    assert diagnostic.as_dict() == {
+        "frame_num": 21,
+        "stage": "input",
+        "process": "validate_frame",
+        "error_type": "ValueError",
+        "detail": "frame must be a non-empty NumPy array",
+    }
+    assert "stage=input process=validate_frame" in str(raised.value)
+
+
+def test_vision_error_identifies_exact_process_and_preserves_cause() -> None:
+    calibrator = _make_calibrator_for_characterization()
+    calibrator._vision = _FailingVisionStub()
+
+    with pytest.raises(CalibrationProcessingError) as raised:
+        calibrator.process_frame(np.zeros((20, 20, 3), dtype=np.uint8), frame_num=22)
+
+    assert raised.value.diagnostic.stage == "vision"
+    assert raised.value.diagnostic.process == "preprocess_and_extract_lines"
+    assert raised.value.diagnostic.error_type == "RuntimeError"
+    assert isinstance(raised.value.__cause__, RuntimeError)
+
+
+def test_output_error_identifies_failed_runtime_process() -> None:
+    calibrator = _make_calibrator_for_characterization()
+    calibrator._telemetry = _FailingTelemetryStub()
+
+    with pytest.raises(CalibrationProcessingError) as raised:
+        calibrator.update(np.zeros((200, 200, 3), dtype=np.uint8), frame_num=23)
+
+    assert raised.value.diagnostic.stage == "runtime_output"
+    assert raised.value.diagnostic.process == "write_telemetry"
+    assert raised.value.diagnostic.error_type == "OSError"
+
+
+def test_geometry_error_identifies_exact_operation() -> None:
+    calibrator = _make_calibrator_for_characterization()
+    calibrator._geometry = _FailingGeometryStub()
+
+    with pytest.raises(CalibrationProcessingError) as raised:
+        calibrator.process_frame(np.zeros((200, 200, 3), dtype=np.uint8), frame_num=24)
+
+    assert raised.value.diagnostic.stage == "geometry"
+    assert raised.value.diagnostic.process == "calculate_vanishing_point"
+    assert raised.value.diagnostic.error_type == "ArithmeticError"

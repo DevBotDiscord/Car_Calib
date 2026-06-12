@@ -19,6 +19,12 @@ angle, calibration-active flag, telemetry snapshot, and visualization debug
 data. Runtime entrypoints consume this result instead of recalculating
 calibration values.
 
+Unexpected calibration and output-side failures are raised as
+`CalibrationProcessingError`. The diagnostic identifies the frame, stage,
+process, exception type, and detail while preserving the original traceback.
+The live runtime logs this context before safe shutdown; offline processing
+logs it before re-raising.
+
 ## Runtime Ownership
 
 `main.py` owns live lifecycle concerns: camera recovery, control subscriptions,
