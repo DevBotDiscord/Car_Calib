@@ -16,6 +16,7 @@ import pytest
 
 from control.steering_controller import SteeringController
 from models.robot_state import PIDConstants, RobotState
+from runtime.video_runtime_helpers import build_main_arg_parser
 from unified_calibration_components import (
     GeometryCalculator,
     TelemetryLogger,
@@ -181,7 +182,7 @@ def test_unified_process_frame_uses_one_vision_path() -> None:
     assert calibrator._vision.filter_calls == 1
     assert result.telemetry["frame_num"] == 7
     assert result.telemetry["vp_angle"] == pytest.approx(90.0)
-    assert result.debug_data["detector_debug"]["selected_lines"] == [
+    assert result.debug_data["vision_debug"]["selected_lines"] == [
         (0, 100, 100, 0),
         (100, 0, 200, 100),
     ]
@@ -234,3 +235,9 @@ def test_telemetry_logger_projects_known_fields() -> None:
     )
 
     assert output.getvalue().strip() == "3,91.5,4,"
+
+
+def test_main_parser_exposes_only_vision_debug_cli() -> None:
+    parser = build_main_arg_parser()
+
+    assert parser.parse_args(["--show-vision-debug"]).show_vision_debug is True

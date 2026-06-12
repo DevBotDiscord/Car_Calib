@@ -26,7 +26,7 @@ Module: `runtime/video_runtime_helpers.py`
 
 - `maybe_flip_frame(frame: np.ndarray, flip_frame: bool) -> np.ndarray`
 - `draw_overlay(...) -> np.ndarray`
-- `build_detector_debug_panel(frame_width: int, panel_height: int, detector_debug: dict[str, Any]) -> np.ndarray`
+- `build_vision_debug_panel(frame_width: int, panel_height: int, vision_debug: dict[str, Any]) -> np.ndarray`
 
 ## Notes
 

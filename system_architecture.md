@@ -13,7 +13,6 @@ live camera or offline video frame
 ```
 
 Each frame passes through vision extraction and pair selection once.
-`LineDetector` and its fallback path have been removed.
 
 `CalibrationResult` centralizes the steering angle, control state, observation
 angle, calibration-active flag, telemetry snapshot, and visualization debug

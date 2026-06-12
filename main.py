@@ -56,7 +56,7 @@ from config.settings import (
     MAIN_HTTPS_STREAM_PORT,
     MAIN_HTTPS_STREAM_PUBLIC,
     MAIN_HTTPS_TOKEN,
-    MAIN_SHOW_DETECTOR_DEBUG,
+    MAIN_SHOW_VISION_DEBUG,
     MAIN_SHOW_GUIDANCE_OVERLAY,
     MAIN_SHOW_PREVIEW,
     MAIN_TARGET_HZ,
@@ -83,7 +83,7 @@ from drivers.servo_driver import ServoDriver
 from runtime.https_stream import HttpsMjpegServer, SharedFrameStore, ensure_self_signed_cert
 from runtime.route_logging import RouteSession
 from runtime.video_runtime_helpers import (
-    build_detector_debug_panel,
+    build_vision_debug_panel,
     build_main_arg_parser,
     configure_terminal_logging,
     draw_overlay,
@@ -150,7 +150,7 @@ def main() -> None:
         terminal_log_default=MAIN_TERMINAL_LOG,
         show_preview_default=MAIN_SHOW_PREVIEW,
         show_guidance_overlay_default=MAIN_SHOW_GUIDANCE_OVERLAY,
-        show_detector_debug_default=MAIN_SHOW_DETECTOR_DEBUG,
+        show_vision_debug_default=MAIN_SHOW_VISION_DEBUG,
         write_debug_video_default=MAIN_WRITE_DEBUG_VIDEO,
         debug_video_output_default=MAIN_DEBUG_VIDEO_OUTPUT,
         flip_frame_default=_FLIP_FRAME,
@@ -475,7 +475,7 @@ def main() -> None:
                 break
 
             theta = calibration.observation_angle
-            detector_debug = calibration.debug_data.get("detector_debug")
+            vision_debug = calibration.debug_data.get("vision_debug")
             theta_source = "live" if theta is not None else "none"
             if theta is not None:
                 last_known_theta = theta
@@ -557,7 +557,7 @@ def main() -> None:
                 "theta": f"{theta:.4f}" if theta is not None else "",
                 "theta_source": theta_source,
                 "theta_for_overlay": f"{last_known_theta:.4f}" if last_known_theta is not None else "",
-                "lines_count": detector_debug.get("lines_count", "") if detector_debug else "",
+                "lines_count": vision_debug.get("lines_count", "") if vision_debug else "",
                 "servo_angle": f"{servo_angle:.4f}",
                 "servo_center_angle": f"{state.servo_center_angle:.4f}",
                 "servo_offset": f"{(servo_angle - state.servo_center_angle):.4f}",
@@ -596,19 +596,19 @@ def main() -> None:
                     overlay_scale=args.overlay_scale,
                     route_id=route_session.route_id if route_session is not None else None,
                     route_mode=current_route_mode,
-                    detector_debug=detector_debug,
+                    vision_debug=vision_debug,
                 )
-                if args.show_detector_debug and detector_debug is not None:
+                if args.show_vision_debug and vision_debug is not None:
                     frame_height, frame_width = annotated.shape[:2]
                     debug_panel_height = max(frame_height // 3, 220)
                     if debug_panel_height % 2 != 0:
                         debug_panel_height += 1
-                    detector_panel = build_detector_debug_panel(
+                    vision_panel = build_vision_debug_panel(
                         frame_width=frame_width,
                         panel_height=debug_panel_height,
-                        detector_debug=detector_debug,
+                        vision_debug=vision_debug,
                     )
-                    output_frame = cv2.vconcat([annotated, detector_panel])
+                    output_frame = cv2.vconcat([annotated, vision_panel])
                 else:
                     output_frame = annotated
             elif args.stream_enabled or args.write_debug_video or route_session is not None:
@@ -626,7 +626,7 @@ def main() -> None:
                     overlay_scale=args.overlay_scale,
                     route_id=route_session.route_id if route_session is not None else None,
                     route_mode=current_route_mode,
-                    detector_debug=detector_debug,
+                    vision_debug=vision_debug,
                 )
 
             if args.frame_scale > 1.0:
@@ -702,7 +702,7 @@ def main() -> None:
                     "servo_angle": servo_angle,
                     "route_id": route_session.route_id if route_session is not None else None,
                     "route_mode": current_route_mode,
-                    "lines_count": detector_debug.get("lines_count") if detector_debug else None,
+                    "lines_count": vision_debug.get("lines_count") if vision_debug else None,
                 }
                 frame_store.set_frame(output_frame, telemetry)
 

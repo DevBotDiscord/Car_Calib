@@ -52,10 +52,9 @@ Work proceeds one approved phase at a time.
 
 ## Current Refinement Boundary
 
-The overlapping `LineDetector` implementation has been removed. Live and
-offline entrypoints now share `UnifiedCalibrator.process_frame()` as the single
-calibration computation path, and each frame is processed once by vision and
-pair selection.
+Live and offline entrypoints share `UnifiedCalibrator.process_frame()` as the
+single calibration computation path, and each frame is processed once by
+vision and pair selection.
 
 The current implementation still has mixed telemetry/runtime responsibilities,
 broad dictionary contracts, longest-pair selection, and a PD-only controller.

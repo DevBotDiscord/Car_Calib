@@ -30,7 +30,7 @@ Bidirectional MQTT: RPi publishes mode/route to MiniPC for route session tagging
 
 ```
 car-calib/
-├── main.py                    # Vision entrypoint (MiniPC): camera → detector → PID → MQTT
+├── main.py                    # Vision entrypoint (MiniPC): camera → calibration → PID → MQTT
 ├── process_video.py           # Offline video processor, same pipeline as main.py
 ├── controlv8.py               # Standalone gamepad-to-pigpio reference script (bare metal RPi)
 ├── mpu_home_detect.py         # MPU6050 test script: gyro calibrate, yaw tracking, home detect

@@ -12,7 +12,7 @@ from config.settings import (
     PROCESS_VIDEO_CSV_OUTPUT,
     PROCESS_VIDEO_FRAME_SLEEP_MS,
     PROCESS_VIDEO_OUTPUT,
-    PROCESS_VIDEO_SHOW_DETECTOR_DEBUG,
+    PROCESS_VIDEO_SHOW_VISION_DEBUG,
     PROCESS_VIDEO_SHOW_GUIDANCE_OVERLAY,
     PROCESS_VIDEO_TERMINAL_LOG,
 )
@@ -31,7 +31,7 @@ def _set_env(name: str, value: object) -> None:
 def _configure_shared_runtime(
     input_width: int,
     input_height: int,
-    show_detector_debug: bool,
+    show_vision_debug: bool,
     show_guidance_overlay: bool,
     terminal_log: bool,
     output_name: str,
@@ -45,14 +45,14 @@ def _configure_shared_runtime(
     _set_env("MAIN_DEBUG_VIDEO_OUTPUT", output_name)
     _set_env("MAIN_CSV_LOG_FILE", csv_name)
     _set_env("MAIN_SHOW_GUIDANCE_OVERLAY", str(show_guidance_overlay).lower())
-    _set_env("MAIN_SHOW_DETECTOR_DEBUG", str(show_detector_debug).lower())
+    _set_env("MAIN_SHOW_VISION_DEBUG", str(show_vision_debug).lower())
     _set_env("MAIN_TERMINAL_LOG", str(terminal_log).lower())
     _set_env("MAIN_TARGET_HZ", "0.0")
     _set_env("MAIN_FLIP_FRAME", "false")
     _set_env("MAIN_CAMERA_INDEX", "0")
     _set_env("MAIN_HTTPS_STREAM_ENABLED", "false")
     _set_env("MAIN_FRAME_WIDTH", str(input_width))
-    _set_env("MAIN_FRAME_HEIGHT", str(input_height + (240 if show_detector_debug else 0)))
+    _set_env("MAIN_FRAME_HEIGHT", str(input_height + (240 if show_vision_debug else 0)))
 
 
 def main() -> None:
@@ -80,7 +80,7 @@ def main() -> None:
     _configure_shared_runtime(
         frame_width,
         frame_height,
-        bool(PROCESS_VIDEO_SHOW_DETECTOR_DEBUG),
+        bool(PROCESS_VIDEO_SHOW_VISION_DEBUG),
         bool(PROCESS_VIDEO_SHOW_GUIDANCE_OVERLAY),
         bool(PROCESS_VIDEO_TERMINAL_LOG),
         output_name,

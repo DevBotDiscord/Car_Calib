@@ -331,7 +331,7 @@ class TelemetryLogger:
         ]
 
         self._draw_overlay_fn: Any = None
-        self._build_detector_debug_panel_fn: Any = None
+        self._build_vision_debug_panel_fn: Any = None
         self._sleep_remainder_fn: Any = None
         self._overlay_drawer = OverlayDrawer(
             inner_thresh=self._inner_thresh,
@@ -375,7 +375,7 @@ class TelemetryLogger:
             return
 
         self._draw_overlay_fn = getattr(helpers, "draw_overlay", None)
-        self._build_detector_debug_panel_fn = getattr(helpers, "build_detector_debug_panel", None)
+        self._build_vision_debug_panel_fn = getattr(helpers, "build_vision_debug_panel", None)
         self._sleep_remainder_fn = getattr(helpers, "sleep_remainder", None)
         init_csv_logger = getattr(helpers, "init_csv_logger", None)
         init_video_writer = getattr(helpers, "init_video_writer", None)
@@ -465,7 +465,7 @@ class TelemetryLogger:
         telemetry_data: dict[str, Any],
         debug_data: dict[str, Any],
     ) -> np.ndarray:
-        """Draw the HUD and optional detector debug panel."""
+        """Draw the HUD and optional vision debug panel."""
         output = frame.copy()
         frame_h, frame_w = output.shape[:2]
 
@@ -478,7 +478,7 @@ class TelemetryLogger:
                     "left_intercept_x": telemetry_data.get("left_intercept"),
                     "right_intercept_x": telemetry_data.get("right_intercept"),
                     "final_steering_cmd": telemetry_data.get("servo_angle", 90.0),
-                    "lines": debug_data.get("detector_debug", {}).get("selected_lines", []),
+                    "lines": debug_data.get("vision_debug", {}).get("selected_lines", []),
                     "vp_coord": (
                         int(telemetry_data.get("vp_x")) if telemetry_data.get("vp_x") is not None else frame_w // 2,
                         int(telemetry_data.get("vp_y")) if telemetry_data.get("vp_y") is not None else frame_h // 3,
@@ -523,14 +523,14 @@ class TelemetryLogger:
                     self._inner_thresh,
                 )
 
-        detector_debug = debug_data.get("detector_debug")
-        show_panel = bool(debug_data.get("show_detector_debug", False))
+        vision_debug = debug_data.get("vision_debug")
+        show_panel = bool(debug_data.get("show_vision_debug", False))
         if (
             show_panel
-            and isinstance(detector_debug, dict)
-            and callable(self._build_detector_debug_panel_fn)
+            and isinstance(vision_debug, dict)
+            and callable(self._build_vision_debug_panel_fn)
         ):
-            panel = self._build_detector_debug_panel_fn(frame_w, 240, detector_debug)
+            panel = self._build_vision_debug_panel_fn(frame_w, 240, vision_debug)
             if panel is not None:
                 if panel.shape[1] != frame_w:
                     panel = cv2.resize(panel, (frame_w, panel.shape[0]))
@@ -646,12 +646,12 @@ class UnifiedCalibrator:
         left_intercept: int | None = None
         right_intercept: int | None = None
 
-        lines, detector_debug = self._vision.process_frame_debug(frame)
+        lines, vision_debug = self._vision.process_frame_debug(frame)
         selected = self._vision._apply_geometric_filter(lines)
         if selected is not None:
             line1, line2 = selected
-            detector_debug["selected_lines"] = [line1, line2]
-            grouped_vis = detector_debug["grouped_vis"]
+            vision_debug["selected_lines"] = [line1, line2]
+            grouped_vis = vision_debug["grouped_vis"]
             cv2.line(grouped_vis, (line1[0], line1[1]), (line1[2], line1[3]), (0, 255, 0), 2)
             cv2.line(grouped_vis, (line2[0], line2[1]), (line2[2], line2[3]), (255, 0, 0), 2)
             intercept_a, intercept_b = self._geometry.calculate_bottom_intercepts(
@@ -713,8 +713,8 @@ class UnifiedCalibrator:
             "calibration_active": int(bool(self._robot_state.calibration_active)),
         }
         debug_data: dict[str, Any] = {
-            "show_detector_debug": bool(_get_bool("MAIN_SHOW_DETECTOR_DEBUG", False)),
-            "detector_debug": detector_debug,
+            "show_vision_debug": bool(_get_bool("MAIN_SHOW_VISION_DEBUG", False)),
+            "vision_debug": vision_debug,
         }
         self._robot_state.pid_last_error = pid_error
         return CalibrationResult(

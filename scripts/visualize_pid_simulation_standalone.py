@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Visualize heading-hold CSV logs without any kinematic simulation model.
-Creates a clean time-series plot from logged detector/controller outputs only.
+Creates a clean time-series plot from logged vision/controller outputs only.
 
 Usage:
     python scripts/visualize_pid_simulation_standalone.py <csv_file> [--output-plot <path>]
@@ -30,7 +30,7 @@ import matplotlib.pyplot as plt
 def load_csv_data(
     csv_path: str,
 ) -> tuple[list[Optional[float]], list[float], list[int], list[str], float]:
-    """Load detector/controller values from CSV log."""
+    """Load vision/controller values from CSV log."""
     theta_list: list[Optional[float]] = []
     servo_angle_list: list[float] = []
     frame_nums: list[int] = []
@@ -72,7 +72,7 @@ def plot_logged_signals(
     valid_frames = [frame_nums[i] for i in valid_idx]
     valid_theta = [theta_list[i] for i in valid_idx]
 
-    # Panel 1: Detector theta only.
+    # Panel 1: Vision theta only.
     ax = axes[0]
     ax.plot(valid_frames, valid_theta, label="Detected theta", color="deepskyblue", linewidth=2.0)
     ax.axhline(y=90.0, color="red", linestyle="--", linewidth=1.5, label="90 deg reference", alpha=0.8)

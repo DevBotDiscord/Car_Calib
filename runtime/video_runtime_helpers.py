@@ -179,7 +179,7 @@ def build_main_arg_parser(
         terminal_log=compat_defaults.get("terminal_log_default", True),
         show_preview=compat_defaults.get("show_preview_default", False),
         show_guidance_overlay=compat_defaults.get("show_guidance_overlay_default", True),
-        show_detector_debug=compat_defaults.get("show_detector_debug_default", False),
+        show_vision_debug=compat_defaults.get("show_vision_debug_default", False),
         write_debug_video=compat_defaults.get("write_debug_video_default", False),
         flip_frame=compat_defaults.get("flip_frame_default", False),
         stream_enabled=compat_defaults.get("stream_enabled_default", False),
@@ -193,8 +193,8 @@ def build_main_arg_parser(
     parser.add_argument("--no-preview", action="store_false", dest="show_preview")
     parser.add_argument("--show-guidance-overlay", action="store_true", dest="show_guidance_overlay")
     parser.add_argument("--no-guidance-overlay", action="store_false", dest="show_guidance_overlay")
-    parser.add_argument("--show-detector-debug", action="store_true", dest="show_detector_debug")
-    parser.add_argument("--no-detector-debug", action="store_false", dest="show_detector_debug")
+    parser.add_argument("--show-vision-debug", action="store_true", dest="show_vision_debug")
+    parser.add_argument("--no-vision-debug", action="store_false", dest="show_vision_debug")
     parser.add_argument("--write-debug-video", action="store_true", dest="write_debug_video")
     parser.add_argument("--no-write-debug-video", action="store_false", dest="write_debug_video")
     parser.add_argument("--flip-frame", action="store_true", dest="flip_frame")
@@ -253,10 +253,10 @@ def draw_overlay(
     overlay_scale: float = 1.0,
     route_id: str | None = None,
     route_mode: str | None = None,
-    detector_debug: dict[str, Any] | None = None,
+    vision_debug: dict[str, Any] | None = None,
 ) -> np.ndarray:
     """Render V2 HUD / telemetry overlay and return annotated frame."""
-    debug = detector_debug or {}
+    debug = vision_debug or {}
     selected_lines = debug.get("selected_lines") or []
     vp_x = debug.get("vp_x")
     vp_y = debug.get("vp_y")
@@ -306,8 +306,8 @@ def draw_overlay(
         )
     return output
 
-def build_detector_debug_panel(frame_width: int, panel_height: int, detector_debug: dict[str, Any]) -> np.ndarray:
-    """Build 2x2 detector debug panel from provided stage images."""
+def build_vision_debug_panel(frame_width: int, panel_height: int, vision_debug: dict[str, Any]) -> np.ndarray:
+    """Build 2x2 vision debug panel from provided stage images."""
     panel_h = max(120, int(panel_height))
     panel_w = max(200, int(frame_width))
     tile_h = panel_h // 2
@@ -324,16 +324,16 @@ def build_detector_debug_panel(frame_width: int, panel_height: int, detector_deb
             image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
         return cv2.resize(image, (tile_w, tile_h))
 
-    gray = to_bgr(detector_debug.get("gray"))
-    edges = to_bgr(detector_debug.get("edges"))
-    hough = to_bgr(detector_debug.get("hough_vis"))
-    grouped = to_bgr(detector_debug.get("grouped_vis"))
+    gray = to_bgr(vision_debug.get("gray"))
+    edges = to_bgr(vision_debug.get("edges"))
+    hough = to_bgr(vision_debug.get("hough_vis"))
+    grouped = to_bgr(vision_debug.get("grouped_vis"))
 
     top = np.hstack((gray, edges))
     bottom = np.hstack((hough, grouped))
     panel = np.vstack((top, bottom))
 
-    lines_count = detector_debug.get("lines_count", "")
+    lines_count = vision_debug.get("lines_count", "")
     cv2.putText(
         panel,
         f"lines={lines_count}",

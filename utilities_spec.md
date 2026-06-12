@@ -38,8 +38,7 @@ segments and `debug` contains current visualization intermediates:
 - `lines_count`
 - `selected_lines`
 
-The outer compatibility key used by existing HUD helpers is still named
-`detector_debug`; it does not refer to a separate detector implementation.
+Existing HUD helpers consume the outer `vision_debug` key.
 
 ### `VisionProcessor._apply_geometric_filter`
 
@@ -77,8 +76,7 @@ writers, overlays, the compatibility debug panel, and loop sleeping. These
 responsibilities remain unchanged in this gate and are scheduled for later
 separation.
 
-Consumers of debug dictionaries must use `.get()` for optional values. Removed
-legacy detector-quality fields are not part of new output.
+Consumers of debug dictionaries must use `.get()` for optional values.
 
 ## Telemetry
 

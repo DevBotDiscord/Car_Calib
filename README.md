@@ -44,7 +44,7 @@ controller. True PID control remains a later approved refinement phase.
 
 - `main.py` owns live camera, actuator, route, stream, and shutdown lifecycle.
 - `process_video.py` owns offline video input and artifact lifecycle.
-- Both call `UnifiedCalibrator`; `LineDetector` has been removed.
+- Both call `UnifiedCalibrator` as the only calibration facade.
 - `UnifiedCalibrator.process_frame(frame, frame_num)` returns one typed
   `CalibrationResult`.
 - `UnifiedCalibrator.update(frame, frame_num)` is the offline compatibility
@@ -83,9 +83,7 @@ Runtime and calibration defaults are environment-backed through
 - Calibration components still share one large module.
 - Telemetry, visualization, streaming, and loop timing remain mixed in
   `TelemetryLogger`.
-- The `detector_debug` dictionary key remains temporarily for HUD compatibility;
-  it contains unified vision intermediates and does not represent a second
-  detector.
+- Vision debug data still uses a broad dictionary contract.
 - CSV output is fixed rather than a projection of fully dynamic telemetry.
 - Geometry validation and true time-based PID are not implemented yet.
 

@@ -1,7 +1,6 @@
 # Vision Processing
 
-Vision calibration is exposed through `UnifiedCalibrator`; there is no
-standalone `LineDetector`.
+Vision calibration is exposed through `UnifiedCalibrator`.
 
 `VisionProcessor.process_frame_debug(frame)` performs:
 
@@ -19,10 +18,9 @@ positive-slope lines. The method remains private because pair-selection
 contracts will be extracted in a later approved stage-separation gate.
 
 The approved geometry refinement is to choose the most opposite valid slopes,
-with explicit rejection reasons and tests. It is not part of the detector
-removal and centralization gate.
+with explicit rejection reasons and tests. It is not part of the current
+centralization gate.
 
 Current debug data includes grayscale, ROI, blurred image, edges, Hough
 visualization, selected-line visualization, raw line count, and selected lines.
-The outer key remains named `detector_debug` temporarily for compatibility with
-existing overlay helpers.
+The outer `vision_debug` key is consumed by existing overlay helpers.

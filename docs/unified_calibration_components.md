@@ -1,8 +1,7 @@
 # Unified Calibration Components
 
 `UnifiedCalibrator` is the only calibration facade used by live and offline
-entrypoints. `LineDetector` has been removed, so a frame is no longer processed
-by overlapping detector implementations.
+entrypoints. A frame is processed once by the shared vision path.
 
 ## Current Components
 
@@ -33,9 +32,8 @@ and returns a frozen `CalibrationResult`:
 - `telemetry: dict[str, Any]`
 - `debug_data: dict[str, Any]`
 
-The `detector_debug` entry inside `debug_data` is a temporary compatibility
-name consumed by existing HUD helpers. It now contains only unified vision
-intermediates.
+The `vision_debug` entry inside `debug_data` contains unified vision
+intermediates consumed by existing HUD helpers.
 
 ## Offline Compatibility API
 
