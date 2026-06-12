@@ -1,49 +1,60 @@
-# Unified Calibration Components
+# Unified Calibration Components: Phase 1 Baseline
 
-This module now provides the full unified runtime facade and integrates the utility APIs specified in `utilities_spec.md`.
+`unified_calibration_components.py` currently combines calibration
+computation, runtime orchestration, visualization, logging, streaming, and
+loop timing. Phase 1 documents and characterizes this behavior without
+changing it.
 
-## File Location
+## Current Components
 
-- Module: `unified_calibration_components.py`
+- `ConfigManager` dynamically reads grouped runtime settings.
+- `VisionProcessor` crops the top ROI, applies grayscale/blur/Canny/Hough, and
+  selects the longest line from each slope sign.
+- `GeometryCalculator` calculates line intersection, bottom intercepts, and a
+  linear vanishing-point angle.
+- `TelemetryLogger` owns CSV, overlay, debug panel, video, HTTPS frame
+  publishing, run artifact layout, and loop sleep.
+- `UnifiedCalibrator` runs the detector paths, geometry, steering, telemetry,
+  preview, camera capture, and timing.
 
-## Implemented Classes
+## Current `UnifiedCalibrator.update`
 
-- `ConfigManager`
-  - Loads runtime `.env` values via `config.settings` helper accessors.
-  - Exposes grouped getters: system/debug/video/stream configs + VP/danger thresholds.
+For each frame, `update(frame, frame_num)`:
 
-- `VisionProcessor`
-  - Top-ROI extraction and Canny/Hough line extraction.
-  - Geometric line pair selection with opposite slope filter.
+1. Calls `LineDetector.get_reference_angle_debug`.
+2. Calls `VisionProcessor.process_frame`.
+3. Calls the private `VisionProcessor._apply_geometric_filter`.
+4. Calculates bottom intercepts and vanishing point when a pair exists.
+5. Falls back to the `LineDetector` angle only when geometry has no VP angle.
+6. Calls `SteeringController.compute_steering`.
+7. Builds a fixed telemetry dictionary.
+8. Renders, logs, writes video, publishes a frame, and emits terminal status.
+9. Returns only the final steering angle.
 
-- `GeometryCalculator`
-  - Vanishing point intersection, bottom intercept projection, and VP-to-angle mapping.
+This overlapping detector behavior is locked by Phase 1 characterization
+tests and is scheduled for removal in Phase 3.
 
-- `SteeringController`
-  - 3-stage steering state machine:
-    - `GAPPING`
-    - `DANGER_LEFT` / `DANGER_RIGHT`
-    - `TRACKING_COAST` / `TRACKING_PD`
+## Current Inputs And Outputs
 
-- `TelemetryLogger`
-  - Bridges to `overlay_drawer.OverlayDrawer` for the main HUD.
-  - Bridges to `runtime.video_runtime_helpers` APIs for CSV, legacy overlay fallback, debug panel, video writer, and loop sleep.
-  - Bridges to `runtime.https_stream` for shared-frame publishing and HTTPS MJPEG serving.
-  - Writes a superset main CSV schema aligned to `utilities_spec.md`.
+Input:
 
-- `UnifiedCalibrator`
-  - Main orchestrator for frame capture, processing, steering decision, visualization, telemetry, and loop timing.
-  - Integrates `vision.detector.LineDetector` debug output, including the selected lane pair exposed for the HUD.
-  - Supports debug visualizer mode selection via `MAIN_DEBUG_VISUALIZER` (`imshow`, `video`, or `both`) when `MAIN_DEBUG_MODE=true`.
+- BGR or grayscale NumPy frame.
+- Integer frame number.
 
-## Related Utility Modules
+Output:
 
-- Runtime helpers: `runtime/video_runtime_helpers.py`
-- HTTPS stream: `runtime/https_stream.py`
-- Detector API: `vision/detector.py`
-- Robot state contracts: `models/robot_state.py`
+- Final steering angle as `float`.
 
-## Notes
+Side effects:
 
-- Runtime configuration should be read through `config.settings` helpers and exported constants.
-- The utility modules are intentionally reusable and can be imported independently by future entrypoints.
+- CSV logging.
+- Optional debug video and HTTPS frame publishing.
+- Periodic terminal logging.
+- Updates the internal last PID error and rendered frame.
+
+## Target Direction
+
+Later approved phases will split the classes into computation-only stages,
+return typed calibration results, remove `LineDetector`, add plugin/capability
+contracts, and separate telemetry sinks. See
+[architecture_governance.md](architecture_governance.md).
