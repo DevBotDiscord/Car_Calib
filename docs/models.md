@@ -6,7 +6,7 @@ All state lives in a single canonical file:
 
 | File | `FSMState` values | Used by |
 |------|-------------------|---------|
-| `models/robot_state.py` | `SEARCHING`, `LOCKED`, `GAPPING` | `control.ServoPID`, `control.HeadingController`, `vision.LineDetector`, `main.py` |
+| `models/robot_state.py` | `SEARCHING`, `LOCKED`, `GAPPING` | `UnifiedCalibrator`, `control.SteeringController`, `main.py` |
 
 ---
 
@@ -60,7 +60,7 @@ state = RobotState()
 | `roi_height_pct` | `float` | `0.6` | Height of the trapezoidal ROI as a fraction of frame height (bottom portion). |
 | `roi_top_width_pct` | `float` | `0.75` | Width of the top edge of the trapezoid as a fraction of frame width. |
 | `roi_bottom_width_pct` | `float` | `1.0` | Width of the bottom edge of the trapezoid as a fraction of frame width. |
-| `debug_mode` | `bool` | `False` | When `True`, `LineDetector` saves `debug_mask.jpg` once on first call to verify the trapezoid ROI. |
+| `debug_mode` | `bool` | `False` | Legacy debug flag retained in the state model. |
 
 #### Hold-state and history
 

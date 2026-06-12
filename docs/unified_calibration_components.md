@@ -1,60 +1,62 @@
-# Unified Calibration Components: Phase 1 Baseline
+# Unified Calibration Components
 
-`unified_calibration_components.py` currently combines calibration
-computation, runtime orchestration, visualization, logging, streaming, and
-loop timing. Phase 1 documents and characterizes this behavior without
-changing it.
+`UnifiedCalibrator` is the only calibration facade used by live and offline
+entrypoints. `LineDetector` has been removed, so a frame is no longer processed
+by overlapping detector implementations.
 
 ## Current Components
 
-- `ConfigManager` dynamically reads grouped runtime settings.
-- `VisionProcessor` crops the top ROI, applies grayscale/blur/Canny/Hough, and
-  selects the longest line from each slope sign.
-- `GeometryCalculator` calculates line intersection, bottom intercepts, and a
+- `ConfigManager`: reads grouped runtime settings.
+- `VisionProcessor`: performs ROI, grayscale, blur, Canny, Hough extraction,
+  and current opposite-sign pair selection.
+- `GeometryCalculator`: calculates line intersection, bottom intercepts, and a
   linear vanishing-point angle.
-- `TelemetryLogger` owns CSV, overlay, debug panel, video, HTTPS frame
-  publishing, run artifact layout, and loop sleep.
-- `UnifiedCalibrator` runs the detector paths, geometry, steering, telemetry,
-  preview, camera capture, and timing.
+- `SteeringController`: applies danger overrides, hysteresis, and current PD
+  steering.
+- `TelemetryLogger`: owns current CSV, overlay, debug panel, video, HTTPS frame
+  publishing, artifacts, and loop sleep.
+- `UnifiedCalibrator`: orchestrates one calibration computation.
 
-## Current `UnifiedCalibrator.update`
+## Public Calibration API
 
-For each frame, `update(frame, frame_num)`:
+```python
+result = calibrator.process_frame(frame, frame_num)
+```
 
-1. Calls `LineDetector.get_reference_angle_debug`.
-2. Calls `VisionProcessor.process_frame`.
-3. Calls the private `VisionProcessor._apply_geometric_filter`.
-4. Calculates bottom intercepts and vanishing point when a pair exists.
-5. Falls back to the `LineDetector` angle only when geometry has no VP angle.
-6. Calls `SteeringController.compute_steering`.
-7. Builds a fixed telemetry dictionary.
-8. Renders, logs, writes video, publishes a frame, and emits terminal status.
-9. Returns only the final steering angle.
+`process_frame()` processes vision once, computes geometry and steering once,
+and returns a frozen `CalibrationResult`:
 
-This overlapping detector behavior is locked by Phase 1 characterization
-tests and is scheduled for removal in Phase 3.
+- `steering_angle: float`
+- `control_state: str`
+- `observation_angle: float | None`
+- `calibration_active: bool`
+- `telemetry: dict[str, Any]`
+- `debug_data: dict[str, Any]`
 
-## Current Inputs And Outputs
+The `detector_debug` entry inside `debug_data` is a temporary compatibility
+name consumed by existing HUD helpers. It now contains only unified vision
+intermediates.
 
-Input:
+## Offline Compatibility API
 
-- BGR or grayscale NumPy frame.
-- Integer frame number.
+```python
+angle = calibrator.update(frame, frame_num)
+```
 
-Output:
+`update()` calls `process_frame()` and then applies visualization, CSV, video,
+stream, terminal-log, and timing side effects. It returns the steering angle
+for compatibility with `process_video.py`.
 
-- Final steering angle as `float`.
+## Current Pair Selection
 
-Side effects:
+The current filter rejects vertical and near-horizontal candidates, then
+selects the longest negative-slope and positive-slope segments. The approved
+next refinement will select the most opposite valid slopes and add explicit
+geometry rejection reasons.
 
-- CSV logging.
-- Optional debug video and HTTPS frame publishing.
-- Periodic terminal logging.
-- Updates the internal last PID error and rendered frame.
+## Remaining Work
 
-## Target Direction
-
-Later approved phases will split the classes into computation-only stages,
-return typed calibration results, remove `LineDetector`, add plugin/capability
-contracts, and separate telemetry sinks. See
+Later approved gates will split computation stages into focused modules,
+replace broad dictionaries with stronger contracts, add plugins/capabilities,
+refine validation and PID control, and separate telemetry sinks. See
 [architecture_governance.md](architecture_governance.md).

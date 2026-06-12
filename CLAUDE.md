@@ -46,7 +46,7 @@ car-calib/
 ├── models/                    # RobotState FSM
 ├── runtime/                   # HTTPS MJPEG stream, dashboard, route logging
 │   └── dashboard/             # Static HTML/JS/CSS dashboard (status bar + tables + event log)
-├── vision/                    # LineDetector (OpenCV: CLAHE, Canny, Hough)
+├── vision/                    # Unified calibration vision package
 ├── visualization/             # PID simulation visualizer
 ├── firmware/                  # ESP32 MQTT bridge firmware
 │

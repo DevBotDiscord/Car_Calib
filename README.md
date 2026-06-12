@@ -2,23 +2,30 @@
 
 Vision-based steering calibration for an autonomous RC car. A MiniPC processes
 camera frames, computes a steering command, and publishes it to the vehicle
-control path. The Raspberry Pi bridge, MQTT transport, servo communication,
-and deployment stack are outside the current core-architecture refinement.
+control path. Raspberry Pi control, MQTT transport, servo communication, and
+deployment are outside the current core-architecture refinement.
 
 ## Current Integrated Calibration Method
 
-The active calibration method is a lane-pair and vanishing-point controller:
+Both live and offline processing use `UnifiedCalibrator.process_frame()` as the
+single calibration computation path:
 
 1. Crop the configured top portion of the BGR camera frame.
 2. Convert the ROI to grayscale, apply Gaussian blur, and run Canny.
 3. Extract line segments with probabilistic Hough transform.
-4. Select the longest negative-slope and positive-slope segments.
+4. Exclude vertical and near-horizontal segments, then select the longest
+   negative-slope and positive-slope segments.
 5. Project both lines to the bottom of the frame and calculate their
    intersection as the vanishing point.
 6. Map the vanishing-point x-coordinate linearly into an angle centered at
    `90` degrees.
 7. Apply danger-zone overrides, tracking hysteresis, and a PD steering
    correction.
+
+The approved next geometry refinement is to select the most opposite valid
+negative and positive slopes rather than the longest pair. That behavior is
+documented here but intentionally not implemented in this removal and
+centralization phase.
 
 Current steering states are:
 
@@ -31,103 +38,63 @@ Current steering states are:
 | `TRACKING_PD` | Apply the current proportional-derivative correction. |
 
 `PID_KI` is exposed by configuration but is not used by the current PD
-controller. True PID control is planned for a later approved refinement phase.
+controller. True PID control remains a later approved refinement phase.
 
-## Current Runtime Paths
+## Runtime Paths
 
-The repository is transitional:
-
-- `main.py` is the live MiniPC runtime. It currently calls
-  `vision.detector.LineDetector` and `control.steering_controller.SteeringController`
-  directly.
-- `process_video.py` is the offline entrypoint. It uses
-  `UnifiedCalibrator` from `unified_calibration_components.py`.
-- `UnifiedCalibrator` currently runs both `LineDetector` and `VisionProcessor`
-  on every frame. This overlapping behavior is intentionally characterized in
-  Phase 1 and will be removed only in a later approved phase.
-
-The target architecture and delivery rules are documented in
-[Core Architecture Governance](docs/architecture_governance.md).
+- `main.py` owns live camera, actuator, route, stream, and shutdown lifecycle.
+- `process_video.py` owns offline video input and artifact lifecycle.
+- Both call `UnifiedCalibrator`; `LineDetector` has been removed.
+- `UnifiedCalibrator.process_frame(frame, frame_num)` returns one typed
+  `CalibrationResult`.
+- `UnifiedCalibrator.update(frame, frame_num)` is the offline compatibility
+  wrapper that adds visualization, logging, video, and stream side effects.
 
 ## Core Repository Map
 
 ```text
-main.py                              Live camera/runtime orchestration
+main.py                              Live runtime orchestration
 process_video.py                     Offline video entrypoint
-unified_calibration_components.py    Current unified facade and mixed utilities
+unified_calibration_components.py    Single calibration facade and current components
 control/steering_controller.py       Current danger/hysteresis/PD controller
-vision/detector.py                   Overlapping detector scheduled for removal
 models/robot_state.py                Current control state and PID constants
 runtime/overlay_drawer.py            Calibration visualization
 runtime/video_runtime_helpers.py     CSV, video, camera, CLI, and timing helpers
-tests/                               Pytest tests and characterization coverage
+tests/                               Pytest and characterization coverage
 ```
 
-## Running
+The target architecture and delivery rules are documented in
+[Core Architecture Governance](docs/architecture_governance.md).
 
-Install dependencies:
+## Running
 
 ```bash
 pip install -r requirements.txt
 pip install -r requirements-dev.txt
-```
-
-Live runtime:
-
-```bash
 python main.py
-```
-
-Offline video processing:
-
-```bash
 python process_video.py --input videos/example.mp4 --output processed_video.mp4
-```
-
-Useful offline options:
-
-```text
---input PATH
---output PATH
---csv-output PATH
---send-to-servo
---no-send-to-servo
 ```
 
 Runtime and calibration defaults are environment-backed through
 `config/settings.py`; see `.env.example`.
 
-## Current Telemetry
+## Current Limitations
 
-The current implementation writes CSV telemetry containing runtime timing,
-detector/debug fields, vanishing-point geometry, steering state, steering
-command, and PID snapshots. The current schema is fixed in both `main.py` and
-`TelemetryLogger`.
-
-Known current limitations:
-
-- Live and offline runtime paths are not yet unified.
-- `UnifiedCalibrator` processes overlapping detector paths.
-- Some detector quality fields are diagnostic rather than effective gates.
-- Telemetry, visualization, streaming, and loop timing are mixed in
+- Calibration components still share one large module.
+- Telemetry, visualization, streaming, and loop timing remain mixed in
   `TelemetryLogger`.
-- CSV output is not yet a projection of fully dynamic telemetry.
-
-These limitations are documented rather than changed in Phase 1.
+- The `detector_debug` dictionary key remains temporarily for HUD compatibility;
+  it contains unified vision intermediates and does not represent a second
+  detector.
+- CSV output is fixed rather than a projection of fully dynamic telemetry.
+- Geometry validation and true time-based PID are not implemented yet.
 
 ## Tests
 
-Run the full suite:
-
 ```bash
+python -m pytest tests/test_unified_calibration_characterization.py -q
 python -m pytest tests -q
 ```
 
-Run Phase 1 unified-calibration characterization tests:
-
-```bash
-python -m pytest tests/test_unified_calibration_characterization.py -q
-```
-
-The refinement program requires implementation, tests, documentation, one
-focused commit, and user verification before the next phase starts.
+Each refinement gate requires implementation, tests, documentation, one
+focused commit, and user verification before the next gate starts.

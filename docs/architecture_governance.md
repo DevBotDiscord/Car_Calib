@@ -50,9 +50,13 @@ Work proceeds one approved phase at a time.
 - Full telemetry is persisted as JSONL. CSV is a configured projection for
   compatibility and analysis.
 
-## Current Phase 1 Boundary
+## Current Refinement Boundary
 
-Phase 1 documents and characterizes the current behavior without changing it.
-The current implementation still contains overlapping `LineDetector` and
-`VisionProcessor` paths, mixed telemetry/runtime responsibilities, and a
-PD-only controller. Later approved phases remove those limitations.
+The overlapping `LineDetector` implementation has been removed. Live and
+offline entrypoints now share `UnifiedCalibrator.process_frame()` as the single
+calibration computation path, and each frame is processed once by vision and
+pair selection.
+
+The current implementation still has mixed telemetry/runtime responsibilities,
+broad dictionary contracts, longest-pair selection, and a PD-only controller.
+Each limitation will change only in its own approved gate.

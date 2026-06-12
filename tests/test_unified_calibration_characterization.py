@@ -24,33 +24,21 @@ from unified_calibration_components import (
 )
 
 
-class _DetectorStub:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def get_reference_angle_debug(self, frame: np.ndarray):
-        self.calls += 1
-        return 90.0, {
-            "theta_horizontal": 90.0,
-            "reference_group_index": 0,
-            "selected_group_bbox": (0, 0, 200, 100),
-            "lines_count": 2,
-            "groups_count": 2,
-            "horizontal_ok": True,
-            "sanity_ok": True,
-            "stale_output": False,
-            "selected_lines": [(0, 100, 100, 0), (100, 0, 200, 100)],
-        }
-
-
 class _VisionStub:
     def __init__(self) -> None:
         self.process_calls = 0
         self.filter_calls = 0
 
-    def process_frame(self, frame: np.ndarray):
+    def process_frame_debug(self, frame: np.ndarray):
         self.process_calls += 1
-        return [(0, 100, 100, 0), (100, 0, 200, 100)]
+        return (
+            [(0, 100, 100, 0), (100, 0, 200, 100)],
+            {
+                "lines_count": 2,
+                "selected_lines": [],
+                "grouped_vis": frame.copy(),
+            },
+        )
 
     def _apply_geometric_filter(self, lines):
         self.filter_calls += 1
@@ -82,7 +70,6 @@ def _make_calibrator_for_characterization() -> UnifiedCalibrator:
         servo_center_angle=90.0,
         max_steering_offset=30.0,
     )
-    calibrator._detector = _DetectorStub()
     calibrator._vision = _VisionStub()
     calibrator._geometry = GeometryCalculator()
     calibrator._steering = SteeringController(
@@ -180,27 +167,60 @@ def test_steering_hysteresis_stays_active_until_inner_threshold() -> None:
     assert controller.compute_steering(93.0, 0, 640, 640) == (90.0, "TRACKING_COAST")
 
 
-def test_unified_update_calls_both_current_vision_paths_once() -> None:
+def test_unified_process_frame_uses_one_vision_path() -> None:
     calibrator = _make_calibrator_for_characterization()
     frame = np.zeros((200, 200, 3), dtype=np.uint8)
 
-    angle = calibrator.update(frame, frame_num=7)
+    result = calibrator.process_frame(frame, frame_num=7)
 
-    assert angle == pytest.approx(90.0)
-    assert calibrator._detector.calls == 1
+    assert result.steering_angle == pytest.approx(90.0)
+    assert result.observation_angle == pytest.approx(90.0)
+    assert result.control_state == "TRACKING_COAST"
+    assert result.calibration_active is False
     assert calibrator._vision.process_calls == 1
     assert calibrator._vision.filter_calls == 1
+    assert result.telemetry["frame_num"] == 7
+    assert result.telemetry["vp_angle"] == pytest.approx(90.0)
+    assert result.debug_data["detector_debug"]["selected_lines"] == [
+        (0, 100, 100, 0),
+        (100, 0, 200, 100),
+    ]
+
+
+def test_unified_update_wraps_process_frame_with_telemetry_side_effects() -> None:
+    calibrator = _make_calibrator_for_characterization()
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+
+    angle = calibrator.update(frame, frame_num=8)
+
+    assert angle == pytest.approx(90.0)
     assert calibrator._telemetry.logged is not None
-    assert calibrator._telemetry.logged["frame_num"] == 7
-    assert calibrator._telemetry.logged["vp_angle"] == pytest.approx(90.0)
+    assert calibrator._telemetry.logged["frame_num"] == 8
     assert calibrator._telemetry.logged["fsm_state"] == "TRACKING_COAST"
-    assert calibrator._telemetry.logged["calibration_active"] == 0
 
 
-def test_telemetry_logger_projects_known_fields_and_formats_bbox() -> None:
+def test_live_result_and_offline_wrapper_share_calibration_behavior() -> None:
+    live_calibrator = _make_calibrator_for_characterization()
+    offline_calibrator = _make_calibrator_for_characterization()
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+
+    live_result = live_calibrator.process_frame(frame, frame_num=9)
+    offline_angle = offline_calibrator.update(frame, frame_num=9)
+
+    assert offline_angle == pytest.approx(live_result.steering_angle)
+    assert offline_calibrator._telemetry.logged is not None
+    assert offline_calibrator._telemetry.logged["vp_angle"] == pytest.approx(
+        live_result.observation_angle
+    )
+    assert offline_calibrator._telemetry.logged["fsm_state"] == live_result.control_state
+    assert live_calibrator._vision.process_calls == 1
+    assert offline_calibrator._vision.process_calls == 1
+
+
+def test_telemetry_logger_projects_known_fields() -> None:
     output = io.StringIO()
     logger = TelemetryLogger.__new__(TelemetryLogger)
-    logger._csv_fieldnames = ["frame_num", "vp_angle", "selected_group_bbox", "optional"]
+    logger._csv_fieldnames = ["frame_num", "vp_angle", "lines_count", "optional"]
     logger._csv_writer = csv.DictWriter(output, fieldnames=logger._csv_fieldnames)
     logger._csv_file = None
 
@@ -208,9 +228,9 @@ def test_telemetry_logger_projects_known_fields_and_formats_bbox() -> None:
         3,
         {
             "vp_angle": 91.5,
-            "selected_group_bbox": (1, 2, 3, 4),
+            "lines_count": 4,
             "ignored": "not projected",
         },
     )
 
-    assert output.getvalue().strip() == "3,91.5,\"1,2,3,4\","
+    assert output.getvalue().strip() == "3,91.5,4,"

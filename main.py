@@ -3,9 +3,8 @@
 Orchestrates the 30 Hz control loop:
 
 1. Capture a frame from the camera.
-2. Detect the reference tile-gap angle via
-   :class:`~vision.detector.LineDetector`.
-3. Compute the servo angle via :class:`~control.servo_pid.ServoPID`.
+2. Compute the unified lane-pair geometry and steering result.
+3. Read the resulting steering command and calibration telemetry.
 4. Send the angle to the servo via :class:`~drivers.servo_driver.ServoDriver`.
    The driver publishes the angle as an integer over MQTT to the RPi bridge.
 
@@ -37,8 +36,6 @@ import paho.mqtt.client as mqtt
 from config.settings import (
     CTRL_HYSTERESIS_HIGH,
     CTRL_HYSTERESIS_LOW,
-    DANGER_MARGIN_PX,
-    DANGER_NUDGE_DEG,
     MAIN_CAMERA_INDEX,
     MAIN_CAMERA_RETRY_LIMIT,
     MAIN_CSV_LOG_FILE,
@@ -81,10 +78,8 @@ from config.settings import (
     ESP32_SCAN_TIMEOUT_S,
     ESP32_FQBN,
 )
-from control.steering_controller import SteeringController
 from drivers.mqtt_control_client import MQTTControlClient
 from drivers.servo_driver import ServoDriver
-from models.robot_state import FSMState, RobotState
 from runtime.https_stream import HttpsMjpegServer, SharedFrameStore, ensure_self_signed_cert
 from runtime.route_logging import RouteSession
 from runtime.video_runtime_helpers import (
@@ -99,7 +94,7 @@ from runtime.video_runtime_helpers import (
     maybe_flip_frame,
     sleep_remainder,
 )
-from vision.detector import LineDetector
+from unified_calibration_components import UnifiedCalibrator
 
 # --------------------------------------------------------------------------- #
 # Logging configuration
@@ -132,14 +127,7 @@ _CSV_FIELDNAMES = [
     "theta",
     "theta_source",
     "theta_for_overlay",
-    "theta_horizontal",
-    "reference_group_index",
-    "selected_group_bbox",
     "lines_count",
-    "groups_count",
-    "horizontal_ok",
-    "sanity_ok",
-    "stale_output",
     "servo_angle",
     "servo_center_angle",
     "servo_offset",
@@ -154,15 +142,6 @@ _CSV_FIELDNAMES = [
     "stream_host",
     "stream_port",
 ]
-
-
-def _format_bbox(bbox: tuple[int, int, int, int] | None) -> str:
-    if bbox is None:
-        return ""
-    x, y, w, h = bbox
-    return f"{x},{y},{w},{h}"
-
-
 def main() -> None:
     """Run the 30 Hz heading-hold control loop."""
     parser = build_main_arg_parser(
@@ -189,17 +168,9 @@ def main() -> None:
     args = parser.parse_args()
     configure_terminal_logging(args.terminal_log)
 
-    state = RobotState()
-    detector = LineDetector(state)
-    controller = SteeringController(
-        pid_constants=state.pid,
-        danger_margin=DANGER_MARGIN_PX,
-        nudge_deg=DANGER_NUDGE_DEG,
-        inner_thresh=CTRL_HYSTERESIS_LOW,
-        outer_thresh=CTRL_HYSTERESIS_HIGH,
-        center_angle=state.servo_center_angle,
-        max_offset=state.max_steering_offset,
-    )
+    calibrator = UnifiedCalibrator(telemetry_enabled=False)
+    state = calibrator.robot_state
+    controller = calibrator.steering_controller
     servo = ServoDriver()
     csv_writer, csv_file = init_csv_logger(args.csv_output, _CSV_FIELDNAMES)
 
@@ -491,9 +462,20 @@ def main() -> None:
 
             frame = maybe_flip_frame(frame, args.flip_frame)
 
-            detector_debug: dict[str, Any] | None
-            theta, detector_debug = detector.get_reference_angle_debug(frame)
+            try:
+                calibration = calibrator.process_frame(frame, frame_num)
+            except Exception as ctrl_exc:  # noqa: BLE001
+                logger.error(
+                    "Unified calibration error: %s - centering servo and stopping.",
+                    ctrl_exc,
+                )
+                final_status = "FAILED_CONTROL"
+                rejection_reason = f"controller_error:{type(ctrl_exc).__name__}"
+                servo.center()
+                break
 
+            theta = calibration.observation_angle
+            detector_debug = calibration.debug_data.get("detector_debug")
             theta_source = "live" if theta is not None else "none"
             if theta is not None:
                 last_known_theta = theta
@@ -505,46 +487,22 @@ def main() -> None:
                 frame_num,
                 loop_start,
                 f"{theta:.2f} deg" if theta is not None else "None",
-                state.fsm_state.name,
+                calibration.control_state,
             )
 
-            pid_error = (theta - 90.0) if theta is not None else state.pid_last_error
-            dt_est = max(1e-6, time.monotonic() - loop_start)
-            pid_p_term = state.pid.kp * pid_error
-            pid_i_term = state.pid.ki * state.pid_integral
-            pid_d_term = 0.0 if theta is None else state.pid.kd * ((pid_error - state.pid_last_error) / dt_est)
-
-            try:
-                frame_h, frame_w = frame.shape[:2]
-                vp_angle = detector_debug.get("raw_vp_angle") if detector_debug else None
-                left_intercept = detector_debug.get("left_intercept") if detector_debug else None
-                right_intercept = detector_debug.get("right_intercept") if detector_debug else None
-                servo_angle, fsm_state_str = controller.compute_steering(
-                    vp_angle=vp_angle,
-                    left_intercept=left_intercept,
-                    right_intercept=right_intercept,
-                    frame_width=frame_w,
-                )
-                state.transition_to(FSMState(fsm_state_str))
-                state.calibration_active = fsm_state_str == "TRACKING_PD"
-                state.last_valid_servo_angle = servo_angle
-                state.pid_last_error = pid_error if theta is not None else state.pid_last_error
-            except Exception as ctrl_exc:  # noqa: BLE001
-                logger.error(
-                    "Controller error: %s - centering servo and stopping.",
-                    ctrl_exc,
-                )
-                final_status = "FAILED_CONTROL"
-                rejection_reason = f"controller_error:{type(ctrl_exc).__name__}"
-                servo.center()
-                break
+            servo_angle = calibration.steering_angle
+            fsm_state_str = calibration.control_state
+            pid_error = calibration.telemetry["pid_error"]
+            pid_p_term = calibration.telemetry["pid_p_term"]
+            pid_i_term = calibration.telemetry["pid_i_term"]
+            pid_d_term = calibration.telemetry["pid_d_term"]
 
             if route_session is not None:
                 route_session.update_frame(
                     mono_now=loop_start,
                     theta=theta,
-                    fsm_state=state.fsm_state.name,
-                    calibration_active=state.calibration_active,
+                    fsm_state=calibration.control_state,
+                    calibration_active=calibration.calibration_active,
                 )
 
             try:
@@ -586,8 +544,6 @@ def main() -> None:
             overrun_ms = max(0.0, elapsed_ms - (_LOOP_PERIOD * 1000.0))
             utc_timestamp = datetime.now(timezone.utc).isoformat()
 
-            selected_group_bbox = detector_debug.get("selected_group_bbox") if detector_debug else None
-
             csv_row = {
                 "route_id": route_session.route_id if route_session is not None else "",
                 "route_mode": route_session.route_mode if route_session is not None else "",
@@ -596,34 +552,21 @@ def main() -> None:
                 "utc_timestamp": utc_timestamp,
                 "loop_ms": f"{elapsed_ms:.4f}",
                 "loop_overrun_ms": f"{overrun_ms:.4f}",
-                "fsm_state": state.fsm_state.name,
-                "calibration_active": int(state.calibration_active),
+                "fsm_state": calibration.control_state,
+                "calibration_active": int(calibration.calibration_active),
                 "theta": f"{theta:.4f}" if theta is not None else "",
                 "theta_source": theta_source,
                 "theta_for_overlay": f"{last_known_theta:.4f}" if last_known_theta is not None else "",
-                "theta_horizontal": (
-                    f"{detector_debug.get('theta_horizontal'):.4f}"
-                    if detector_debug and detector_debug.get("theta_horizontal") is not None
-                    else ""
-                ),
-                "reference_group_index": (
-                    detector_debug.get("reference_group_index", "") if detector_debug else ""
-                ),
-                "selected_group_bbox": _format_bbox(selected_group_bbox),
                 "lines_count": detector_debug.get("lines_count", "") if detector_debug else "",
-                "groups_count": detector_debug.get("groups_count", "") if detector_debug else "",
-                "horizontal_ok": detector_debug.get("horizontal_ok", "") if detector_debug else "",
-                "sanity_ok": detector_debug.get("sanity_ok", "") if detector_debug else "",
-                "stale_output": detector_debug.get("stale_output", "") if detector_debug else "",
                 "servo_angle": f"{servo_angle:.4f}",
                 "servo_center_angle": f"{state.servo_center_angle:.4f}",
                 "servo_offset": f"{(servo_angle - state.servo_center_angle):.4f}",
-                "pid_error": f"{pid_error:.6f}",
-                "pid_p_term": f"{pid_p_term:.6f}",
-                "pid_i_term": f"{pid_i_term:.6f}",
-                "pid_d_term": f"{pid_d_term:.6f}",
-                "pid_integral": f"{state.pid_integral:.6f}",
-                "pid_last_error": f"{state.pid_last_error:.6f}",
+                "pid_error": pid_error,
+                "pid_p_term": pid_p_term,
+                "pid_i_term": pid_i_term,
+                "pid_d_term": pid_d_term,
+                "pid_integral": calibration.telemetry["pid_integral"],
+                "pid_last_error": calibration.telemetry["pid_last_error"],
                 "hardware_send_latency_ms": f"{hardware_send_latency_ms:.4f}",
                 "stream_enabled": int(args.stream_enabled),
                 "stream_host": stream_host,
@@ -646,7 +589,7 @@ def main() -> None:
                     theta_for_overlay=last_known_theta,
                     servo_angle=servo_angle,
                     servo_center_angle=state.servo_center_angle,
-                    fsm_state=state.fsm_state.name,
+                    fsm_state=calibration.control_state,
                     show_guidance_overlay=args.show_guidance_overlay,
                     start_calib_threshold_deg=CTRL_HYSTERESIS_HIGH,
                     stop_calib_threshold_deg=CTRL_HYSTERESIS_LOW,
@@ -676,7 +619,7 @@ def main() -> None:
                     theta_for_overlay=last_known_theta,
                     servo_angle=servo_angle,
                     servo_center_angle=state.servo_center_angle,
-                    fsm_state=state.fsm_state.name,
+                    fsm_state=calibration.control_state,
                     show_guidance_overlay=False,
                     start_calib_threshold_deg=CTRL_HYSTERESIS_HIGH,
                     stop_calib_threshold_deg=CTRL_HYSTERESIS_LOW,
@@ -755,12 +698,11 @@ def main() -> None:
                     "frame_num": frame_num,
                     "theta": theta,
                     "theta_source": theta_source,
-                    "fsm_state": state.fsm_state.name,
+                    "fsm_state": calibration.control_state,
                     "servo_angle": servo_angle,
                     "route_id": route_session.route_id if route_session is not None else None,
                     "route_mode": current_route_mode,
-                    "reference_group_index": detector_debug.get("reference_group_index") if detector_debug else None,
-                    "selected_group_bbox": selected_group_bbox,
+                    "lines_count": detector_debug.get("lines_count") if detector_debug else None,
                 }
                 frame_store.set_frame(output_frame, telemetry)
 
@@ -826,6 +768,7 @@ def main() -> None:
                 script_runner.close()
             except Exception:  # noqa: BLE001
                 pass
+        calibrator.close()
         if args.show_preview:
             try:
                 cv2.destroyAllWindows()

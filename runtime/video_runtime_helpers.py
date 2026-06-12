@@ -334,10 +334,9 @@ def build_detector_debug_panel(frame_width: int, panel_height: int, detector_deb
     panel = np.vstack((top, bottom))
 
     lines_count = detector_debug.get("lines_count", "")
-    groups_count = detector_debug.get("groups_count", "")
     cv2.putText(
         panel,
-        f"lines={lines_count} groups={groups_count}",
+        f"lines={lines_count}",
         (8, panel.shape[0] - 8),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.45,

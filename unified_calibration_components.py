@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from importlib import import_module
 from math import hypot
 from pathlib import Path
@@ -14,15 +15,26 @@ import numpy as np
 
 from config.settings import _get_bool, _get_float, _get_int, _get_str
 from control.steering_controller import SteeringController
-from models.robot_state import PIDConstants, RobotState
+from models.robot_state import FSMState, PIDConstants, RobotState
 from runtime.overlay_drawer import OverlayDrawer
-from vision.detector import LineDetector
 
 
 def _normalize_debug_visualizer(value: Any) -> str:
     """Normalize debug visualizer mode from environment/config input."""
     mode = str(value).strip().lower()
     return mode if mode in {"imshow", "video", "both"} else ""
+
+
+@dataclass(frozen=True)
+class CalibrationResult:
+    """Central result returned by one unified calibration computation."""
+
+    steering_angle: float
+    control_state: str
+    observation_angle: float | None
+    calibration_active: bool
+    telemetry: dict[str, Any]
+    debug_data: dict[str, Any]
 
 
 class ConfigManager:
@@ -120,8 +132,26 @@ class VisionProcessor:
 
     def process_frame(self, frame: np.ndarray) -> list[tuple[int, int, int, int]]:
         """Extract raw Hough line segments from the configured top ROI."""
+        lines, _ = self.process_frame_debug(frame)
+        return lines
+
+    def process_frame_debug(
+        self,
+        frame: np.ndarray,
+    ) -> tuple[list[tuple[int, int, int, int]], dict[str, Any]]:
+        """Extract line segments and return the visualization intermediates."""
         if frame is None or frame.size == 0:
-            return []
+            blank = np.zeros((1, 1), dtype=np.uint8)
+            return [], {
+                "gray": blank,
+                "roi": blank,
+                "preprocessed": blank,
+                "edges": blank,
+                "hough_vis": cv2.cvtColor(blank, cv2.COLOR_GRAY2BGR),
+                "grouped_vis": cv2.cvtColor(blank, cv2.COLOR_GRAY2BGR),
+                "lines_count": 0,
+                "selected_lines": [],
+            }
 
         frame_height = frame.shape[0]
         roi_height = max(1, int(frame_height * self._roi_height_pct))
@@ -129,8 +159,10 @@ class VisionProcessor:
 
         if len(roi.shape) == 3 and roi.shape[2] == 3:
             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            roi_bgr = roi.copy()
         else:
             gray = roi
+            roi_bgr = cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
 
         blur_w = self._blur_w if self._blur_w % 2 == 1 else self._blur_w + 1
         blur_h = self._blur_h if self._blur_h % 2 == 1 else self._blur_h + 1
@@ -145,13 +177,23 @@ class VisionProcessor:
             minLineLength=self._hough_min_line_length,
             maxLineGap=self._hough_max_line_gap,
         )
-        if raw_lines is None:
-            return []
-
-        return [
+        lines = [] if raw_lines is None else [
             (int(x1), int(y1), int(x2), int(y2))
             for [[x1, y1, x2, y2]] in raw_lines.tolist()
         ]
+        hough_vis = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+        for x1, y1, x2, y2 in lines:
+            cv2.line(hough_vis, (x1, y1), (x2, y2), (80, 80, 255), 1)
+        return lines, {
+            "gray": gray,
+            "roi": roi_bgr,
+            "preprocessed": preprocessed,
+            "edges": edges,
+            "hough_vis": hough_vis,
+            "grouped_vis": roi_bgr.copy(),
+            "lines_count": len(lines),
+            "selected_lines": [],
+        }
 
     def _apply_geometric_filter(
         self,
@@ -267,14 +309,7 @@ class TelemetryLogger:
             "theta",
             "theta_source",
             "theta_for_overlay",
-            "theta_horizontal",
-            "reference_group_index",
-            "selected_group_bbox",
             "lines_count",
-            "groups_count",
-            "horizontal_ok",
-            "sanity_ok",
-            "stale_output",
             "servo_angle",
             "servo_center_angle",
             "servo_offset",
@@ -420,9 +455,6 @@ class TelemetryLogger:
             return
         row = {key: telemetry_data.get(key, "") for key in self._csv_fieldnames}
         row["frame_num"] = frame_num
-        bbox = row.get("selected_group_bbox")
-        if isinstance(bbox, tuple):
-            row["selected_group_bbox"] = ",".join(str(v) for v in bbox)
         self._csv_writer.writerow(row)
         if self._csv_file is not None:
             self._csv_file.flush()
@@ -550,7 +582,12 @@ class TelemetryLogger:
 class UnifiedCalibrator:
     """Facade orchestrating vision, geometry, steering, telemetry, and loop timing."""
 
-    def __init__(self, config: ConfigManager | None = None) -> None:
+    def __init__(
+        self,
+        config: ConfigManager | None = None,
+        *,
+        telemetry_enabled: bool = True,
+    ) -> None:
         self._logger = logging.getLogger(__name__)
         self._config = config or ConfigManager()
         self._system_configs = self._config.get_system_configs()
@@ -563,7 +600,6 @@ class UnifiedCalibrator:
 
         self._robot_state = RobotState()
         self._vision = VisionProcessor(roi_height_pct=_get_float("ROI_HEIGHT_PCT", 0.6))
-        self._detector = LineDetector(self._robot_state)
         self._geometry = GeometryCalculator()
         inner_thresh, outer_thresh = self._config.get_vp_thresholds()
         danger_margin, danger_nudge = self._config.get_danger_margins()
@@ -576,7 +612,7 @@ class UnifiedCalibrator:
             center_angle=self._robot_state.servo_center_angle,
             max_offset=self._robot_state.max_steering_offset,
         )
-        self._telemetry = TelemetryLogger(self._config)
+        self._telemetry = TelemetryLogger(self._config) if telemetry_enabled else None
         self._target_hz = float(self._system_configs.get("MAIN_TARGET_HZ", 30.0))
         self._terminal_log_enabled = bool(self._system_configs.get("MAIN_TERMINAL_LOG", True))
         self._terminal_log_interval_sec = 1.0
@@ -591,21 +627,33 @@ class UnifiedCalibrator:
             danger_margin_px=danger_margin,
         )
 
-    def update(self, frame: np.ndarray, frame_num: int) -> float:
-        """Run one full frame pipeline and return the final steering angle."""
+    @property
+    def steering_controller(self) -> SteeringController:
+        """Expose the shared controller for the existing runtime tuning API."""
+        return self._steering
+
+    @property
+    def robot_state(self) -> RobotState:
+        """Expose the unified state for compatibility with route/runtime code."""
+        return self._robot_state
+
+    def process_frame(self, frame: np.ndarray, frame_num: int) -> CalibrationResult:
+        """Compute one frame through the single centralized calibration path."""
         loop_start = time.perf_counter()
-        steering_angle = 90.0
         frame_h, frame_w = frame.shape[:2]
         vp: tuple[int, int] | None = None
         vp_angle: float | None = None
         left_intercept: int | None = None
         right_intercept: int | None = None
 
-        theta_from_detector, detector_debug = self._detector.get_reference_angle_debug(frame)
-        lines = self._vision.process_frame(frame)
+        lines, detector_debug = self._vision.process_frame_debug(frame)
         selected = self._vision._apply_geometric_filter(lines)
         if selected is not None:
             line1, line2 = selected
+            detector_debug["selected_lines"] = [line1, line2]
+            grouped_vis = detector_debug["grouped_vis"]
+            cv2.line(grouped_vis, (line1[0], line1[1]), (line1[2], line1[3]), (0, 255, 0), 2)
+            cv2.line(grouped_vis, (line2[0], line2[1]), (line2[2], line2[3]), (255, 0, 0), 2)
             intercept_a, intercept_b = self._geometry.calculate_bottom_intercepts(
                 line1,
                 line2,
@@ -615,8 +663,6 @@ class UnifiedCalibrator:
             vp = self._geometry.calculate_vanishing_point(line1, line2)
             if vp is not None:
                 vp_angle = self._geometry.map_vp_to_angle(vp[0], frame_w)
-        if vp_angle is None:
-            vp_angle = theta_from_detector
 
         steering_angle, fsm_state = self._steering.compute_steering(
             vp_angle=vp_angle,
@@ -624,6 +670,9 @@ class UnifiedCalibrator:
             right_intercept=right_intercept,
             frame_width=frame_w,
         )
+        self._robot_state.transition_to(FSMState(fsm_state))
+        self._robot_state.calibration_active = fsm_state == "TRACKING_PD"
+        self._robot_state.last_valid_servo_angle = steering_angle
 
         loop_ms = (time.perf_counter() - loop_start) * 1000.0
         target_period_ms = 1000.0 / self._target_hz if self._target_hz > 0 else 0.0
@@ -644,14 +693,7 @@ class UnifiedCalibrator:
             "theta": "" if vp_angle is None else f"{vp_angle:.6f}",
             "theta_source": "none" if vp_angle is None else "live",
             "theta_for_overlay": "" if vp_angle is None else f"{vp_angle:.6f}",
-            "theta_horizontal": detector_debug.get("theta_horizontal", ""),
-            "reference_group_index": detector_debug.get("reference_group_index", ""),
-            "selected_group_bbox": detector_debug.get("selected_group_bbox", ""),
-            "lines_count": detector_debug.get("lines_count", len(lines)),
-            "groups_count": detector_debug.get("groups_count", 0),
-            "horizontal_ok": detector_debug.get("horizontal_ok", ""),
-            "sanity_ok": detector_debug.get("sanity_ok", ""),
-            "stale_output": detector_debug.get("stale_output", ""),
+            "lines_count": len(lines),
             "left_intercept": left_intercept,
             "right_intercept": right_intercept,
             "fsm_state": fsm_state,
@@ -674,15 +716,30 @@ class UnifiedCalibrator:
             "show_detector_debug": bool(_get_bool("MAIN_SHOW_DETECTOR_DEBUG", False)),
             "detector_debug": detector_debug,
         }
-
-        rendered = self._telemetry.update_visuals(frame, telemetry_data, debug_data)
-        self._last_rendered_frame = rendered
-        self._telemetry.log_state(frame_num, telemetry_data)
-        self._telemetry.write_video(rendered)
-        self._telemetry.publish_stream(rendered, telemetry_data)
-        self._log_terminal_status(frame_num, telemetry_data)
         self._robot_state.pid_last_error = pid_error
-        return float(steering_angle)
+        return CalibrationResult(
+            steering_angle=float(steering_angle),
+            control_state=fsm_state,
+            observation_angle=vp_angle,
+            calibration_active=self._robot_state.calibration_active,
+            telemetry=telemetry_data,
+            debug_data=debug_data,
+        )
+
+    def update(self, frame: np.ndarray, frame_num: int) -> float:
+        """Process one frame and apply the offline telemetry side effects."""
+        result = self.process_frame(frame, frame_num)
+        if self._telemetry is None:
+            self._last_rendered_frame = frame.copy()
+            return result.steering_angle
+
+        rendered = self._telemetry.update_visuals(frame, result.telemetry, result.debug_data)
+        self._last_rendered_frame = rendered
+        self._telemetry.log_state(frame_num, result.telemetry)
+        self._telemetry.write_video(rendered)
+        self._telemetry.publish_stream(rendered, result.telemetry)
+        self._log_terminal_status(frame_num, result.telemetry)
+        return result.steering_angle
 
     def _log_terminal_status(self, frame_num: int, telemetry_data: dict[str, Any]) -> None:
         """Emit periodic terminal status logs for live runtime visibility."""
@@ -707,7 +764,8 @@ class UnifiedCalibrator:
         if self._target_hz <= 0:
             return
         loop_period = 1.0 / self._target_hz
-        self._telemetry.sleep_remainder(loop_start_time, loop_period)
+        if self._telemetry is not None:
+            self._telemetry.sleep_remainder(loop_start_time, loop_period)
 
     def _resolve_preview_enabled(self) -> bool:
         """Determine if OpenCV preview window should be shown."""
@@ -753,8 +811,10 @@ class UnifiedCalibrator:
                 capture.release()
             if self._preview_enabled:
                 cv2.destroyAllWindows()
-            self._telemetry.close()
+            if self._telemetry is not None:
+                self._telemetry.close()
 
     def close(self) -> None:
         """Release telemetry and video resources without running the loop."""
-        self._telemetry.close()
+        if self._telemetry is not None:
+            self._telemetry.close()
