@@ -65,6 +65,10 @@ failure-process counts for quick comparison between runs.
 The evaluator accepts either plain frames or `(frame_num, timestamp_s, frame)`
 tuples:
 
+The quickstart notebook discovers the experiment worktree root automatically,
+so it works when VS Code starts the kernel from `notebooks/`. Set `VIDEO_PATH`
+in its first code cell to an existing recorded video before running evaluation.
+
 ```python
 from calibration_evaluation import CalibrationEvaluator, iter_video_frames
 
