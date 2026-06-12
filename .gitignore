@@ -208,11 +208,13 @@ marimo/_lsp/
 __marimo__/
 
 # Jupyter Notebooks
-notebooks/
+notebooks/*
+!notebooks/calibration_evaluation_quickstart.ipynb
 
 # Test video sample
 videos/
 logs/
+evaluations/
 temp/
 
 # Codex local worktrees

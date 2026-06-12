@@ -15,6 +15,11 @@ Work proceeds one approved phase at a time.
 5. Stop and provide a verification report.
 6. Do not begin the next phase until the user approves it.
 
+Calibration behavior gates must include evaluation against representative
+recorded frames. Baseline and changed runs must use the same frame range and
+sampling stride so their JSONL records, summaries, and review panels can be
+compared.
+
 ## Module Boundaries
 
 - A module has one primary responsibility.

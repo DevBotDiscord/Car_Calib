@@ -57,12 +57,15 @@ controller. True PID control remains a later approved refinement phase.
 ```text
 main.py                              Live runtime orchestration
 process_video.py                     Offline video entrypoint
+evaluate_calibration.py              Recorded-video evaluation CLI
+calibration_evaluation.py            Notebook-friendly evaluation API
 unified_calibration_components.py    Single calibration facade and current components
 control/steering_controller.py       Current danger/hysteresis/PD controller
 models/robot_state.py                Current control state and PID constants
 runtime/overlay_drawer.py            Calibration visualization
 runtime/video_runtime_helpers.py     CSV, video, camera, CLI, and timing helpers
 tests/                               Pytest and characterization coverage
+notebooks/                           Calibration evaluation quickstart
 ```
 
 The target architecture and delivery rules are documented in
@@ -75,10 +78,15 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 python main.py
 python process_video.py --input videos/example.mp4 --output processed_video.mp4
+python evaluate_calibration.py --input videos/example.mp4 --output-dir evaluations/baseline
 ```
 
 Runtime and calibration defaults are environment-backed through
 `config/settings.py`; see `.env.example`.
+
+Use [Calibration Evaluation Workflow](docs/calibration_evaluation.md) and the
+notebook quickstart before refining preprocessing, pair selection, geometry,
+or steering behavior.
 
 ## Current Limitations
 
