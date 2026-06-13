@@ -4,8 +4,9 @@ Mirrors the SteeringController used by the offline UnifiedCalibrator so the
 live loop and the offline processor share one calibration law. States:
 
 * ``GAPPING``        — vision lost (no VP / no intercepts), hold center
-* ``DANGER_LEFT``    — left intercept past margin, fixed nudge right
-* ``DANGER_RIGHT``   — right intercept past margin, fixed nudge left
+* ``DANGER_LEFT``     — selected right boundary is near; recover left
+* ``DANGER_RIGHT``    — selected left boundary is near; recover right
+* ``AMBIGUOUS_DANGER`` — both selected boundaries crossed; command center
 * ``TRACKING_COAST`` — error inside hysteresis dead-band, hold center
 * ``TRACKING_PD``    — error past outer threshold, PD correction active
 
@@ -63,11 +64,18 @@ class SteeringController:
         # Stage 3: Danger Zone override (bypass PD)
         left_margin = self._danger_margin
         right_margin = max(0, int(frame_width) - self._danger_margin)
-        if left_intercept > left_margin:
+        left_danger = left_intercept > left_margin
+        right_danger = right_intercept < right_margin
+        if left_danger and right_danger:
+            self._tracking_active = False
+            self._last_error = 0.0
+            return center, "AMBIGUOUS_DANGER"
+
+        if left_danger:
             self._tracking_active = False
             self._last_error = 0.0
             return center + self._nudge_deg, "DANGER_RIGHT"
-        if right_intercept < right_margin:
+        if right_danger:
             self._tracking_active = False
             self._last_error = 0.0
             return center - self._nudge_deg, "DANGER_LEFT"
@@ -89,6 +97,32 @@ class SteeringController:
         pd_correction = self._apply_pd(error)
         steering_angle = max(lo, min(hi, center + pd_correction))
         return steering_angle, "TRACKING_PD"
+
+    def describe_control_state(self, state: str, frame_width: int) -> dict[str, str | int | None]:
+        """Describe the active danger boundary and commanded recovery direction."""
+        if state == "DANGER_LEFT":
+            return {
+                "danger_boundary": "RIGHT",
+                "recovery_direction": "LEFT",
+                "danger_threshold_x": max(0, int(frame_width) - self._danger_margin),
+            }
+        if state == "DANGER_RIGHT":
+            return {
+                "danger_boundary": "LEFT",
+                "recovery_direction": "RIGHT",
+                "danger_threshold_x": self._danger_margin,
+            }
+        if state == "AMBIGUOUS_DANGER":
+            return {
+                "danger_boundary": "BOTH",
+                "recovery_direction": None,
+                "danger_threshold_x": None,
+            }
+        return {
+            "danger_boundary": None,
+            "recovery_direction": None,
+            "danger_threshold_x": None,
+        }
 
     def _apply_pd(self, error: float) -> float:
         """Apply proportional-derivative smoothing and return steering correction."""

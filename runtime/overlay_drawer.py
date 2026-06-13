@@ -50,6 +50,9 @@ class OverlayDrawer:
         frame_h, frame_w = output.shape[:2]
 
         state = str(debug_packet.get("state", "VISION_LOST"))
+        danger_boundary = debug_packet.get("danger_boundary")
+        recovery_direction = debug_packet.get("recovery_direction")
+        danger_threshold_x = self._as_int_or_none(debug_packet.get("danger_threshold_x"))
         raw_vp_angle = self._as_float(debug_packet.get("raw_vp_angle"), self.angle_center)
         left_intercept_x = self._as_int_or_none(debug_packet.get("left_intercept_x"))
         right_intercept_x = self._as_int_or_none(debug_packet.get("right_intercept_x"))
@@ -75,6 +78,9 @@ class OverlayDrawer:
         self._draw_telemetry_panel(
             output,
             state=state,
+            danger_boundary=danger_boundary,
+            recovery_direction=recovery_direction,
+            danger_threshold_x=danger_threshold_x,
             raw_vp_angle=raw_vp_angle,
             vp_coord=vp_coord,
             vp_location=vp_location,
@@ -92,6 +98,9 @@ class OverlayDrawer:
         frame: np.ndarray,
         *,
         state: str,
+        danger_boundary: Any,
+        recovery_direction: Any,
+        danger_threshold_x: int | None,
         raw_vp_angle: float,
         vp_coord: tuple[int, int] | None,
         vp_location: str,
@@ -104,7 +113,7 @@ class OverlayDrawer:
         panel_x = 8
         panel_y = 8
         panel_w = 500
-        panel_h = 218
+        panel_h = 262
 
         self._fill_alpha_rect(frame, (panel_x, panel_y), (panel_x + panel_w, panel_y + panel_h), (0, 0, 0), 0.58)
         self._draw_text(frame, "HUD / TELEMETRY", (panel_x + 12, panel_y + 24), self.theme.white, scale=0.58, thickness=1)
@@ -114,6 +123,12 @@ class OverlayDrawer:
 
         entries = [
             (f"STATE: {state}", state_color),
+            (
+                "DANGER: "
+                f"{danger_boundary or '-'} @ X={self._format_value(danger_threshold_x)}",
+                state_color,
+            ),
+            (f"RECOVERY: {recovery_direction or '-'}", state_color),
             (f"RAW VP ANGLE: {raw_vp_angle:.1f}", self.theme.white),
             (f"HEADING ERROR: {heading_error:+.1f}", self.theme.white),
             (
@@ -154,16 +169,20 @@ class OverlayDrawer:
 
         margin = max(0, min(self.danger_margin_px, frame_w))
         if margin > 0:
-            self._fill_alpha_rect(frame, (0, 0), (margin, frame_h), self.theme.red, 0.16)
-            self._fill_alpha_rect(frame, (max(0, frame_w - margin), 0), (frame_w, frame_h), self.theme.red, 0.16)
+            cv2.line(frame, (margin, 0), (margin, frame_h - 1), self.theme.red, 2, cv2.LINE_AA)
+            right_threshold = max(0, frame_w - margin)
+            cv2.line(
+                frame,
+                (right_threshold, 0),
+                (right_threshold, frame_h - 1),
+                self.theme.red,
+                2,
+                cv2.LINE_AA,
+            )
 
         for line in lines:
             x1, y1, x2, y2 = line
             line_color = self.theme.green
-            bottom_x = self._line_bottom_x(line)
-            if bottom_x is not None:
-                if bottom_x < margin or bottom_x > (frame_w - margin):
-                    line_color = self.theme.red
             cv2.line(frame, (x1, y1), (x2, y2), line_color, 3, cv2.LINE_AA)
 
         if left_line is not None:
@@ -175,9 +194,11 @@ class OverlayDrawer:
             self._draw_vp_indicator(frame, vp_coord, vp_location)
 
         if left_intercept_x is not None:
-            self._draw_bottom_marker(frame, left_intercept_x, frame_h - 1, self._marker_color(left_intercept_x, frame_w))
+            color = self.theme.red if left_intercept_x > margin else self.theme.green
+            self._draw_bottom_marker(frame, left_intercept_x, frame_h - 1, color)
         if right_intercept_x is not None:
-            self._draw_bottom_marker(frame, right_intercept_x, frame_h - 1, self._marker_color(right_intercept_x, frame_w))
+            color = self.theme.red if right_intercept_x < (frame_w - margin) else self.theme.green
+            self._draw_bottom_marker(frame, right_intercept_x, frame_h - 1, color)
 
     def _draw_vp_indicator(
         self,
@@ -324,19 +345,13 @@ class OverlayDrawer:
         cv2.circle(frame, (x, bottom_y), 6, color, -1, cv2.LINE_AA)
         cv2.line(frame, (x, bottom_y - 12), (x, bottom_y - 2), color, 2, cv2.LINE_AA)
 
-    def _marker_color(self, x: int, frame_w: int) -> tuple[int, int, int]:
-        margin = max(0, min(self.danger_margin_px, frame_w))
-        if x < margin or x > (frame_w - margin):
-            return self.theme.red
-        return self.theme.green
-
     def _state_color(self, state: str) -> tuple[int, int, int]:
         normalized = state.upper()
         if normalized == "TRACKING":
             return self.theme.green
         if normalized == "VISION_LOST":
             return self.theme.yellow
-        if normalized.startswith("DANGER"):
+        if "DANGER" in normalized:
             return self.theme.red
         return self.theme.white
 

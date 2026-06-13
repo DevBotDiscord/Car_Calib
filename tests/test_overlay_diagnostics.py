@@ -25,6 +25,9 @@ def test_overlay_accepts_explicit_left_and_right_lines_with_unbounded_vp() -> No
         frame,
         {
             "state": "TRACKING_PD",
+            "danger_boundary": "RIGHT",
+            "recovery_direction": "LEFT",
+            "danger_threshold_x": 540,
             "raw_vp_angle": 82.0,
             "vp_coord": (328, -1032),
             "vp_location": "above",

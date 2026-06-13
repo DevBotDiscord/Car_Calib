@@ -35,6 +35,9 @@ class _SequenceCalibrator:
             calibration_active=False,
             telemetry={
                 "lines_count": 2 if observation is not None else 0,
+                "danger_boundary": None,
+                "recovery_direction": None,
+                "danger_threshold_x": None,
                 "vp_x": 50 if observation is not None else None,
                 "vp_y": 10 if observation is not None else None,
                 "vp_location": "inside" if observation is not None else "missing",

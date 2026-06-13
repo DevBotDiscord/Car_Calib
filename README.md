@@ -32,13 +32,22 @@ Current steering states are:
 | State | Current behavior |
 | --- | --- |
 | `GAPPING` | Required vision geometry is missing; return center steering. |
-| `DANGER_RIGHT` | Left bottom intercept crossed its margin; nudge right. |
-| `DANGER_LEFT` | Right bottom intercept crossed its margin; nudge left. |
+| `DANGER_LEFT` | Selected right boundary moved inward; immediately apply a negative/left recovery. |
+| `DANGER_RIGHT` | Selected left boundary moved inward; immediately apply a positive/right recovery. |
+| `AMBIGUOUS_DANGER` | Both selected boundaries moved inward; reject the directional guess and command center. |
 | `TRACKING_COAST` | Error is inside hysteresis or tracking is not active; return center. |
 | `TRACKING_PD` | Apply the current proportional-derivative correction. |
 
 `PID_KI` is exposed by configuration but is not used by the current PD
 controller. True PID control remains a later approved refinement phase.
+
+Danger overrides use one immediate threshold per side and do not use delayed
+confirmation or release hysteresis. For a 640-pixel frame and
+`DANGER_MARGIN_PX=100`, left-boundary danger is `left_intercept > 100` and
+right-boundary danger is `right_intercept < 540`. Normal VP tracking retains
+its existing inner/outer hysteresis. Only the already-selected lane pair is
+used. If both thresholds are crossed in one frame, the geometry is ambiguous;
+the controller does not choose a boundary using frame-center distance.
 
 ## Runtime Paths
 

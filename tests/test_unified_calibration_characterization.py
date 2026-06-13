@@ -34,7 +34,7 @@ class _VisionStub:
     def process_frame_debug(self, frame: np.ndarray):
         self.process_calls += 1
         return (
-            [(0, 100, 100, 0), (100, 0, 200, 100)],
+            [(50, 200, 100, 0), (100, 0, 150, 200)],
             {
                 "lines_count": 2,
                 "selected_lines": [],
@@ -92,7 +92,7 @@ def _make_calibrator_for_characterization() -> UnifiedCalibrator:
     calibrator._geometry = GeometryCalculator()
     calibrator._steering = SteeringController(
         pid_constants=calibrator._robot_state.pid,
-        danger_margin=0,
+        danger_margin=50,
         nudge_deg=5.0,
         inner_thresh=3.0,
         outer_thresh=5.0,
@@ -145,8 +145,11 @@ def test_geometry_maps_intersection_intercepts_and_angle() -> None:
         (None, None, None, 90.0, "GAPPING"),
         (90.0, 101, 600, 95.0, "DANGER_RIGHT"),
         (90.0, 0, 539, 85.0, "DANGER_LEFT"),
-        (92.0, 0, 640, 90.0, "TRACKING_COAST"),
-        (100.0, 0, 640, 101.0, "TRACKING_PD"),
+        (90.0, -250, 449, 85.0, "DANGER_LEFT"),
+        (90.0, 300, 500, 90.0, "AMBIGUOUS_DANGER"),
+        (90.0, 100, 540, 90.0, "TRACKING_COAST"),
+        (92.0, 100, 540, 90.0, "TRACKING_COAST"),
+        (100.0, 100, 540, 101.0, "TRACKING_PD"),
     ],
 )
 def test_steering_state_machine_current_outputs(
@@ -170,6 +173,34 @@ def test_steering_state_machine_current_outputs(
 
     assert angle == pytest.approx(expected_angle)
     assert state == expected_state
+
+
+def test_danger_state_diagnostics_identify_boundary_recovery_and_threshold() -> None:
+    controller = SteeringController(
+        pid_constants=PIDConstants(kp=1.0, ki=0.0, kd=0.0),
+        danger_margin=100,
+        nudge_deg=5.0,
+        inner_thresh=3.0,
+        outer_thresh=5.0,
+        center_angle=90.0,
+        max_offset=30.0,
+    )
+
+    assert controller.describe_control_state("DANGER_LEFT", 640) == {
+        "danger_boundary": "RIGHT",
+        "recovery_direction": "LEFT",
+        "danger_threshold_x": 540,
+    }
+    assert controller.describe_control_state("DANGER_RIGHT", 640) == {
+        "danger_boundary": "LEFT",
+        "recovery_direction": "RIGHT",
+        "danger_threshold_x": 100,
+    }
+    assert controller.describe_control_state("AMBIGUOUS_DANGER", 640) == {
+        "danger_boundary": "BOTH",
+        "recovery_direction": None,
+        "danger_threshold_x": None,
+    }
 
 
 def test_steering_hysteresis_stays_active_until_inner_threshold() -> None:
@@ -203,13 +234,13 @@ def test_unified_process_frame_uses_one_vision_path() -> None:
     assert result.telemetry["frame_num"] == 7
     assert result.telemetry["vp_angle"] == pytest.approx(90.0)
     assert result.debug_data["vision_debug"]["selected_lines"] == [
-        (0, 100, 100, 0),
-        (100, 0, 200, 100),
+        (50, 200, 100, 0),
+        (100, 0, 150, 200),
     ]
-    assert result.debug_data["vision_debug"]["selected_left_line"] == (0, 100, 100, 0)
-    assert result.debug_data["vision_debug"]["selected_right_line"] == (100, 0, 200, 100)
-    assert result.debug_data["vision_debug"]["selected_left_line_info"]["slope"] == -1.0
-    assert result.debug_data["vision_debug"]["selected_right_line_info"]["slope"] == 1.0
+    assert result.debug_data["vision_debug"]["selected_left_line"] == (50, 200, 100, 0)
+    assert result.debug_data["vision_debug"]["selected_right_line"] == (100, 0, 150, 200)
+    assert result.debug_data["vision_debug"]["selected_left_line_info"]["slope"] == -4.0
+    assert result.debug_data["vision_debug"]["selected_right_line_info"]["slope"] == 4.0
     assert result.telemetry["vp_location"] == "inside"
 
 

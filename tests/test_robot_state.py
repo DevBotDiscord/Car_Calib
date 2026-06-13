@@ -21,6 +21,7 @@ class TestFSMState:
         assert FSMState.GAPPING
         assert FSMState.DANGER_LEFT
         assert FSMState.DANGER_RIGHT
+        assert FSMState.AMBIGUOUS_DANGER
         assert FSMState.TRACKING_COAST
         assert FSMState.TRACKING_PD
 
@@ -29,10 +30,11 @@ class TestFSMState:
             FSMState.GAPPING,
             FSMState.DANGER_LEFT,
             FSMState.DANGER_RIGHT,
+            FSMState.AMBIGUOUS_DANGER,
             FSMState.TRACKING_COAST,
             FSMState.TRACKING_PD,
         }
-        assert len(states) == 5
+        assert len(states) == 6
 
 
 class TestPIDConstants:

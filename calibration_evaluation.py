@@ -28,6 +28,9 @@ class EvaluationRecord:
     status: str
     steering_angle: float | None
     control_state: str | None
+    danger_boundary: str | None
+    recovery_direction: str | None
+    danger_threshold_x: int | None
     observation_angle: float | None
     calibration_active: bool
     lines_count: int | None
@@ -181,6 +184,9 @@ class CalibrationEvaluator:
                 status="processing_error",
                 steering_angle=None,
                 control_state=None,
+                danger_boundary=None,
+                recovery_direction=None,
+                danger_threshold_x=None,
                 observation_angle=None,
                 calibration_active=False,
                 lines_count=None,
@@ -256,6 +262,9 @@ class CalibrationEvaluator:
             status=status,
             steering_angle=result.steering_angle,
             control_state=result.control_state,
+            danger_boundary=telemetry.get("danger_boundary"),
+            recovery_direction=telemetry.get("recovery_direction"),
+            danger_threshold_x=telemetry.get("danger_threshold_x"),
             observation_angle=result.observation_angle,
             calibration_active=result.calibration_active,
             lines_count=int(telemetry.get("lines_count", 0)),
@@ -331,6 +340,11 @@ def build_review_panel(
     lines = [
         f"frame={record.frame_num} status={record.status}",
         f"state={record.control_state or '-'} observation={record.observation_angle}",
+        (
+            f"danger={record.danger_boundary or '-'} "
+            f"threshold={record.danger_threshold_x} "
+            f"recovery={record.recovery_direction or '-'}"
+        ),
         f"steering={record.steering_angle} lines={record.lines_count}",
         f"vp=({record.vp_x}, {record.vp_y}) [{record.vp_location}]",
         f"intercepts=({record.left_intercept}, {record.right_intercept})",
@@ -413,6 +427,9 @@ def _build_diagnostic_overlay(frame: np.ndarray, record: EvaluationRecord) -> np
         frame,
         {
             "state": record.control_state or "VISION_LOST",
+            "danger_boundary": record.danger_boundary,
+            "recovery_direction": record.recovery_direction,
+            "danger_threshold_x": record.danger_threshold_x,
             "raw_vp_angle": record.observation_angle,
             "vp_coord": (
                 None

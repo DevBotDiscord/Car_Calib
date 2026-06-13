@@ -284,6 +284,9 @@ def draw_overlay(
         frame,
         {
             "state": fsm_state,
+            "danger_boundary": debug.get("danger_boundary"),
+            "recovery_direction": debug.get("recovery_direction"),
+            "danger_threshold_x": debug.get("danger_threshold_x"),
             "raw_vp_angle": raw_angle,
             "left_intercept_x": left_intercept,
             "right_intercept_x": right_intercept,

@@ -941,6 +941,7 @@ const FSM_COLORS = {
   GAPPING: "#6b6f78",
   DANGER_LEFT: "#f87171",
   DANGER_RIGHT: "#fbbf24",
+  AMBIGUOUS_DANGER: "#fb7185",
   TRACKING_COAST: "#60a5fa",
   TRACKING_PD: "#4ade80",
 };

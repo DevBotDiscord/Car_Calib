@@ -386,6 +386,9 @@ class TelemetryLogger:
             "loop_ms",
             "loop_overrun_ms",
             "fsm_state",
+            "danger_boundary",
+            "recovery_direction",
+            "danger_threshold_x",
             "calibration_active",
             "theta",
             "theta_source",
@@ -560,6 +563,9 @@ class TelemetryLogger:
                 output,
                 {
                     "state": str(telemetry_data.get("fsm_state", "VISION_LOST")),
+                    "danger_boundary": telemetry_data.get("danger_boundary"),
+                    "recovery_direction": telemetry_data.get("recovery_direction"),
+                    "danger_threshold_x": telemetry_data.get("danger_threshold_x"),
                     "raw_vp_angle": telemetry_data.get("vp_angle"),
                     "left_intercept_x": telemetry_data.get("left_intercept"),
                     "right_intercept_x": telemetry_data.get("right_intercept"),
@@ -825,6 +831,8 @@ class UnifiedCalibrator:
                 right_intercept=right_intercept,
                 frame_width=frame_w,
             )
+            control_details = self._steering.describe_control_state(fsm_state, frame_w)
+            vision_debug.update(control_details)
 
             stage = "control_state"
             process = "update_robot_state"
@@ -872,6 +880,7 @@ class UnifiedCalibrator:
                     None if selected_right_info is None else selected_right_info["slope"]
                 ),
                 "fsm_state": fsm_state,
+                **control_details,
                 "servo_angle": steering_angle,
                 "servo_center_angle": self._robot_state.servo_center_angle,
                 "servo_offset": steering_angle - self._robot_state.servo_center_angle,
@@ -950,10 +959,13 @@ class UnifiedCalibrator:
             return
         self._last_terminal_log_time = now
         self._logger.info(
-            "frame=%s state=%s vp=(%s,%s)[%s] vp_angle=%s "
+            "frame=%s state=%s danger=%s threshold=%s recovery=%s vp=(%s,%s)[%s] vp_angle=%s "
             "left=%s m=%s right=%s m=%s steering=%.2f loop_ms=%s overrun_ms=%s",
             frame_num,
             telemetry_data.get("fsm_state", ""),
+            telemetry_data.get("danger_boundary", ""),
+            telemetry_data.get("danger_threshold_x", ""),
+            telemetry_data.get("recovery_direction", ""),
             telemetry_data.get("vp_x", ""),
             telemetry_data.get("vp_y", ""),
             telemetry_data.get("vp_location", "missing"),

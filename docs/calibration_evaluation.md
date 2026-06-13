@@ -41,6 +41,7 @@ evaluations/baseline/
 - valid observation, missing observation, or processing error status;
 - steering angle and control state;
 - observation angle, vanishing point, and bottom intercepts;
+- active danger boundary, threshold, and commanded recovery direction;
 - raw line count and explicitly identified selected pair;
 - structured failure stage/process/type/detail;
 - optional review-panel path.

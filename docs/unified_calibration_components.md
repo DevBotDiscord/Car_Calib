@@ -94,6 +94,23 @@ selects the longest negative-slope and positive-slope segments. The approved
 next refinement will select the most opposite valid slopes and add explicit
 geometry rejection reasons.
 
+## Immediate Danger Override
+
+Danger overrides use projected bottom intercepts and bypass tracking
+hysteresis:
+
+- `left_intercept > DANGER_MARGIN_PX` produces `DANGER_RIGHT` and a
+  positive/right recovery.
+- `right_intercept < frame_width - DANGER_MARGIN_PX` produces `DANGER_LEFT`
+  and a negative/left recovery.
+
+Telemetry and overlays expose `danger_boundary`, `recovery_direction`, and
+`danger_threshold_x`. The danger state names the recovery direction, while
+`danger_boundary` identifies the selected boundary that caused it. If both
+selected boundaries cross their thresholds, the result is `AMBIGUOUS_DANGER`
+and center is commanded instead of guessing from frame-center distance. No
+confirmation-frame or release delay is applied.
+
 ## Remaining Work
 
 Later approved gates will split computation stages into focused modules,
