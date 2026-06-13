@@ -128,6 +128,13 @@ _CSV_FIELDNAMES = [
     "theta_source",
     "theta_for_overlay",
     "lines_count",
+    "vp_x",
+    "vp_y",
+    "vp_location",
+    "selected_left_line",
+    "selected_left_slope",
+    "selected_right_line",
+    "selected_right_slope",
     "servo_angle",
     "servo_center_angle",
     "servo_offset",
@@ -501,11 +508,19 @@ def main() -> None:
                 theta_source = "stale"
 
             logger.info(
-                "frame=%d timestamp=%.3f  theta=%s  state=%s",
+                "frame=%d timestamp=%.3f theta=%s state=%s "
+                "vp=(%s,%s)[%s] left=%s m=%s right=%s m=%s",
                 frame_num,
                 loop_start,
                 f"{theta:.2f} deg" if theta is not None else "None",
                 calibration.control_state,
+                calibration.telemetry.get("vp_x"),
+                calibration.telemetry.get("vp_y"),
+                calibration.telemetry.get("vp_location"),
+                calibration.telemetry.get("selected_left_line"),
+                calibration.telemetry.get("selected_left_slope"),
+                calibration.telemetry.get("selected_right_line"),
+                calibration.telemetry.get("selected_right_slope"),
             )
 
             servo_angle = calibration.steering_angle
@@ -576,6 +591,13 @@ def main() -> None:
                 "theta_source": theta_source,
                 "theta_for_overlay": f"{last_known_theta:.4f}" if last_known_theta is not None else "",
                 "lines_count": vision_debug.get("lines_count", "") if vision_debug else "",
+                "vp_x": calibration.telemetry.get("vp_x"),
+                "vp_y": calibration.telemetry.get("vp_y"),
+                "vp_location": calibration.telemetry.get("vp_location"),
+                "selected_left_line": calibration.telemetry.get("selected_left_line"),
+                "selected_left_slope": calibration.telemetry.get("selected_left_slope"),
+                "selected_right_line": calibration.telemetry.get("selected_right_line"),
+                "selected_right_slope": calibration.telemetry.get("selected_right_slope"),
                 "servo_angle": f"{servo_angle:.4f}",
                 "servo_center_angle": f"{state.servo_center_angle:.4f}",
                 "servo_offset": f"{(servo_angle - state.servo_center_angle):.4f}",
@@ -721,6 +743,11 @@ def main() -> None:
                     "route_id": route_session.route_id if route_session is not None else None,
                     "route_mode": current_route_mode,
                     "lines_count": vision_debug.get("lines_count") if vision_debug else None,
+                    "vp_x": calibration.telemetry.get("vp_x"),
+                    "vp_y": calibration.telemetry.get("vp_y"),
+                    "vp_location": calibration.telemetry.get("vp_location"),
+                    "selected_left_line": calibration.telemetry.get("selected_left_line"),
+                    "selected_right_line": calibration.telemetry.get("selected_right_line"),
                 }
                 frame_store.set_frame(output_frame, telemetry)
 

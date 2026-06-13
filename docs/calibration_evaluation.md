@@ -41,9 +41,21 @@ evaluations/baseline/
 - valid observation, missing observation, or processing error status;
 - steering angle and control state;
 - observation angle, vanishing point, and bottom intercepts;
-- raw line count and selected pair;
+- raw line count and explicitly identified selected pair;
 - structured failure stage/process/type/detail;
 - optional review-panel path.
+
+Selected-pair diagnostics identify:
+
+- `selected_left_line_info`: current negative-slope line, labeled `LEFT / NEG`;
+- `selected_right_line_info`: current positive-slope line, labeled
+  `RIGHT / POS`;
+- endpoints, slope, length, and the line's own bottom intercept.
+
+Vanishing-point coordinates are never clamped in records. `vp_location`
+classifies the raw point as `inside`, `above`, `below`, `left`, `right`, or a
+combined off-frame region such as `above_right`. Review overlays draw an arrow
+to the relevant frame boundary while displaying the original coordinates.
 
 `summary.json` contains aggregate outcome counts, control-state counts, and
 failure-process counts for quick comparison between runs.
@@ -102,8 +114,11 @@ Review panels are saved when:
 The CLI saves at most 200 review panels by default to bound evaluation storage.
 Use `--max-review-panels -1` to remove the limit.
 
-The six-panel contact sheet contains source, grayscale, edges, Hough
-candidates, selected lines, and the structured result/error context.
+The six-panel contact sheet contains the diagnostic overlay, grayscale, edges,
+Hough candidates, explicitly labeled selected lines, and the structured
+result/error context. The overlay shows the off-frame VP boundary indicator;
+the result panel reports raw VP coordinates/location and both selected-line
+descriptions.
 
 ## Calibration Refinement Gate
 

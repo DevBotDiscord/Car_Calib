@@ -35,6 +35,11 @@ and returns a frozen `CalibrationResult`:
 The `vision_debug` entry inside `debug_data` contains unified vision
 intermediates consumed by existing HUD helpers.
 
+Diagnostic geometry includes raw unbounded `vp_x`/`vp_y`, `vp_location`, and
+explicit `selected_left_line_info` / `selected_right_line_info`. Terminal logs,
+runtime CSV, stream telemetry, and evaluation JSONL expose the same identifiers
+so the selected pair can be traced without relying on color alone.
+
 ## Failure Diagnostics
 
 Unexpected processing failures raise `CalibrationProcessingError`. Its

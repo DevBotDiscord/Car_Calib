@@ -24,3 +24,13 @@ centralization gate.
 Current debug data includes grayscale, ROI, blurred image, edges, Hough
 visualization, selected-line visualization, raw line count, and selected lines.
 The outer `vision_debug` key is consumed by existing overlay helpers.
+
+Selected-pair diagnostics explicitly expose the current negative-slope line as
+`selected_left_line` (`LEFT / NEG`) and the positive-slope line as
+`selected_right_line` (`RIGHT / POS`). Each line has endpoints, slope, length,
+and its own projected bottom intercept. This naming describes the current image
+geometry and will be revalidated during direction-convention refinement.
+
+The raw vanishing point remains unbounded. A point above, below, or horizontally
+outside the frame keeps its original coordinates and receives a `vp_location`
+classification rather than being clamped or hidden.

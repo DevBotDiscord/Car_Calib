@@ -37,6 +37,7 @@ class _SequenceCalibrator:
                 "lines_count": 2 if observation is not None else 0,
                 "vp_x": 50 if observation is not None else None,
                 "vp_y": 10 if observation is not None else None,
+                "vp_location": "inside" if observation is not None else "missing",
                 "left_intercept": 0 if observation is not None else None,
                 "right_intercept": 100 if observation is not None else None,
             },
@@ -49,6 +50,24 @@ class _SequenceCalibrator:
                     "selected_lines": [(0, 10, 10, 0), (10, 0, 20, 10)]
                     if observation is not None
                     else [],
+                    "selected_left_line_info": {
+                        "role": "left_negative",
+                        "endpoints": [0, 10, 10, 0],
+                        "slope": -1.0,
+                        "length": 14.14,
+                        "bottom_intercept": 0,
+                    }
+                    if observation is not None
+                    else None,
+                    "selected_right_line_info": {
+                        "role": "right_positive",
+                        "endpoints": [10, 0, 20, 10],
+                        "slope": 1.0,
+                        "length": 14.14,
+                        "bottom_intercept": 100,
+                    }
+                    if observation is not None
+                    else None,
                 }
             },
         )
@@ -112,6 +131,9 @@ def test_evaluator_exports_records_summary_and_review_panels(tmp_path) -> None:
         "failure_processes": {"calculate_vanishing_point": 1},
     }
     assert records[0].selected_lines == [[0, 10, 10, 0], [10, 0, 20, 10]]
+    assert records[0].selected_left_line_info["role"] == "left_negative"
+    assert records[0].selected_right_line_info["role"] == "right_positive"
+    assert records[0].vp_location == "inside"
     assert records[1].review_panel is not None
     assert records[2].failure_stage == "geometry"
     assert records[2].review_panel is not None

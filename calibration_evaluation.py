@@ -11,6 +11,7 @@ from typing import Any, Iterable, Iterator
 import cv2
 import numpy as np
 
+from runtime.overlay_drawer import OverlayDrawer
 from unified_calibration_components import (
     CalibrationProcessingError,
     CalibrationResult,
@@ -31,8 +32,11 @@ class EvaluationRecord:
     calibration_active: bool
     lines_count: int | None
     selected_lines: list[list[int]]
+    selected_left_line_info: dict[str, Any] | None
+    selected_right_line_info: dict[str, Any] | None
     vp_x: int | None
     vp_y: int | None
+    vp_location: str
     left_intercept: int | None
     right_intercept: int | None
     failure_stage: str | None
@@ -181,8 +185,11 @@ class CalibrationEvaluator:
                 calibration_active=False,
                 lines_count=None,
                 selected_lines=[],
+                selected_left_line_info=None,
+                selected_right_line_info=None,
                 vp_x=None,
                 vp_y=None,
+                vp_location="missing",
                 left_intercept=None,
                 right_intercept=None,
                 failure_stage=diagnostic.stage,
@@ -253,8 +260,11 @@ class CalibrationEvaluator:
             calibration_active=result.calibration_active,
             lines_count=int(telemetry.get("lines_count", 0)),
             selected_lines=selected_lines,
+            selected_left_line_info=vision_debug.get("selected_left_line_info"),
+            selected_right_line_info=vision_debug.get("selected_right_line_info"),
             vp_x=telemetry.get("vp_x"),
             vp_y=telemetry.get("vp_y"),
+            vp_location=str(telemetry.get("vp_location", "missing")),
             left_intercept=telemetry.get("left_intercept"),
             right_intercept=telemetry.get("right_intercept"),
             failure_stage=None,
@@ -308,8 +318,9 @@ def build_review_panel(
     source = _to_bgr(frame)
     height, width = source.shape[:2]
     debug = {} if result is None else result.debug_data.get("vision_debug", {})
+    overlay = _build_diagnostic_overlay(source, record)
     tiles = [
-        ("source", source),
+        ("overlay", overlay),
         ("gray", debug.get("gray")),
         ("edges", debug.get("edges")),
         ("hough", debug.get("hough_vis")),
@@ -321,7 +332,10 @@ def build_review_panel(
         f"frame={record.frame_num} status={record.status}",
         f"state={record.control_state or '-'} observation={record.observation_angle}",
         f"steering={record.steering_angle} lines={record.lines_count}",
-        f"vp=({record.vp_x}, {record.vp_y}) intercepts=({record.left_intercept}, {record.right_intercept})",
+        f"vp=({record.vp_x}, {record.vp_y}) [{record.vp_location}]",
+        f"intercepts=({record.left_intercept}, {record.right_intercept})",
+        f"L/NEG: {_format_line_info(record.selected_left_line_info)}",
+        f"R/POS: {_format_line_info(record.selected_right_line_info)}",
     ]
     if error is not None:
         lines.extend(
@@ -370,3 +384,47 @@ def _to_bgr(image: Any) -> np.ndarray:
     if image.shape[2] == 4:
         return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
     return image.copy()
+
+
+def _format_line_info(info: dict[str, Any] | None) -> str:
+    if not info:
+        return "-"
+    endpoints = info.get("endpoints")
+    slope = info.get("slope")
+    length = info.get("length")
+    intercept = info.get("bottom_intercept")
+    slope_text = "vertical" if slope is None else f"{float(slope):+.3f}"
+    length_text = "-" if length is None else f"{float(length):.1f}"
+    return f"{endpoints} m={slope_text} len={length_text} bottom_x={intercept}"
+
+
+def _build_diagnostic_overlay(frame: np.ndarray, record: EvaluationRecord) -> np.ndarray:
+    left_line = (
+        None
+        if not record.selected_left_line_info
+        else record.selected_left_line_info.get("endpoints")
+    )
+    right_line = (
+        None
+        if not record.selected_right_line_info
+        else record.selected_right_line_info.get("endpoints")
+    )
+    return OverlayDrawer().draw(
+        frame,
+        {
+            "state": record.control_state or "VISION_LOST",
+            "raw_vp_angle": record.observation_angle,
+            "vp_coord": (
+                None
+                if record.vp_x is None or record.vp_y is None
+                else (record.vp_x, record.vp_y)
+            ),
+            "vp_location": record.vp_location,
+            "left_intercept_x": record.left_intercept,
+            "right_intercept_x": record.right_intercept,
+            "final_steering_cmd": record.steering_angle,
+            "lines": record.selected_lines,
+            "left_line": left_line,
+            "right_line": right_line,
+        },
+    )

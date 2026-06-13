@@ -134,6 +134,9 @@ def test_geometry_maps_intersection_intercepts_and_angle() -> None:
     assert geometry.calculate_bottom_intercepts(negative, positive, 200) == (-100, 300)
     assert geometry.map_vp_to_angle(100, 200) == pytest.approx(90.0)
     assert geometry.map_vp_to_angle(50, 0) == pytest.approx(90.0)
+    assert geometry.classify_point((100, -20), 200, 100) == "above"
+    assert geometry.classify_point((220, 120), 200, 100) == "below_right"
+    assert geometry.classify_point((100, 20), 200, 100) == "inside"
 
 
 @pytest.mark.parametrize(
@@ -203,6 +206,11 @@ def test_unified_process_frame_uses_one_vision_path() -> None:
         (0, 100, 100, 0),
         (100, 0, 200, 100),
     ]
+    assert result.debug_data["vision_debug"]["selected_left_line"] == (0, 100, 100, 0)
+    assert result.debug_data["vision_debug"]["selected_right_line"] == (100, 0, 200, 100)
+    assert result.debug_data["vision_debug"]["selected_left_line_info"]["slope"] == -1.0
+    assert result.debug_data["vision_debug"]["selected_right_line_info"]["slope"] == 1.0
+    assert result.telemetry["vp_location"] == "inside"
 
 
 def test_unified_update_wraps_process_frame_with_telemetry_side_effects() -> None:

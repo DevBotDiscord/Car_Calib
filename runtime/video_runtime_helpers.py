@@ -289,7 +289,10 @@ def draw_overlay(
             "right_intercept_x": right_intercept,
             "final_steering_cmd": servo_angle,
             "lines": selected_lines,
+            "left_line": debug.get("selected_left_line"),
+            "right_line": debug.get("selected_right_line"),
             "vp_coord": None if vp_x is None or vp_y is None else (vp_x, vp_y),
+            "vp_location": debug.get("vp_location", "missing"),
         },
     )
 
@@ -333,15 +336,22 @@ def build_vision_debug_panel(frame_width: int, panel_height: int, vision_debug: 
     bottom = np.hstack((hough, grouped))
     panel = np.vstack((top, bottom))
 
-    lines_count = vision_debug.get("lines_count", "")
-    cv2.putText(
-        panel,
-        f"lines={lines_count}",
-        (8, panel.shape[0] - 8),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        (255, 255, 255),
-        1,
-        cv2.LINE_AA,
-    )
+    diagnostics = [
+        f"lines={vision_debug.get('lines_count', '')} "
+        f"vp=({vision_debug.get('vp_x')},{vision_debug.get('vp_y')}) "
+        f"[{vision_debug.get('vp_location', 'missing')}]",
+        f"L/NEG {vision_debug.get('selected_left_line_info', {})}",
+        f"R/POS {vision_debug.get('selected_right_line_info', {})}",
+    ]
+    for index, text in enumerate(diagnostics):
+        cv2.putText(
+            panel,
+            text[:150],
+            (8, panel.shape[0] - 48 + index * 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
     return panel

@@ -280,6 +280,42 @@ class GeometryCalculator:
     """Stateless geometry helpers for line intersection and mapping."""
 
     @staticmethod
+    def describe_line(
+        line: tuple[int, int, int, int],
+        *,
+        role: str,
+        bottom_intercept: int | None = None,
+    ) -> dict[str, Any]:
+        """Return explicit diagnostic geometry for a selected line."""
+        x1, y1, x2, y2 = line
+        dx = x2 - x1
+        dy = y2 - y1
+        slope = None if dx == 0 else float(dy) / float(dx)
+        return {
+            "role": role,
+            "endpoints": [int(x1), int(y1), int(x2), int(y2)],
+            "slope": slope,
+            "length": hypot(dx, dy),
+            "bottom_intercept": bottom_intercept,
+        }
+
+    @staticmethod
+    def classify_point(
+        point: tuple[int, int] | None,
+        frame_width: int,
+        frame_height: int,
+    ) -> str:
+        """Classify a point without clamping its raw coordinates."""
+        if point is None:
+            return "missing"
+        x, y = point
+        horizontal = "left" if x < 0 else "right" if x >= frame_width else ""
+        vertical = "above" if y < 0 else "below" if y >= frame_height else ""
+        if not horizontal and not vertical:
+            return "inside"
+        return "_".join(part for part in (vertical, horizontal) if part)
+
+    @staticmethod
     def calculate_vanishing_point(
         line1: tuple[int, int, int, int],
         line2: tuple[int, int, int, int],
@@ -355,6 +391,11 @@ class TelemetryLogger:
             "theta_source",
             "theta_for_overlay",
             "lines_count",
+            "vp_location",
+            "selected_left_line",
+            "selected_left_slope",
+            "selected_right_line",
+            "selected_right_slope",
             "servo_angle",
             "servo_center_angle",
             "servo_offset",
@@ -524,10 +565,18 @@ class TelemetryLogger:
                     "right_intercept_x": telemetry_data.get("right_intercept"),
                     "final_steering_cmd": telemetry_data.get("servo_angle", 90.0),
                     "lines": debug_data.get("vision_debug", {}).get("selected_lines", []),
+                    "left_line": debug_data.get("vision_debug", {}).get("selected_left_line"),
+                    "right_line": debug_data.get("vision_debug", {}).get("selected_right_line"),
                     "vp_coord": (
-                        int(telemetry_data.get("vp_x")) if telemetry_data.get("vp_x") is not None else frame_w // 2,
-                        int(telemetry_data.get("vp_y")) if telemetry_data.get("vp_y") is not None else frame_h // 3,
+                        (
+                            int(telemetry_data["vp_x"]),
+                            int(telemetry_data["vp_y"]),
+                        )
+                        if telemetry_data.get("vp_x") is not None
+                        and telemetry_data.get("vp_y") is not None
+                        else None
                     ),
+                    "vp_location": telemetry_data.get("vp_location", "missing"),
                 },
             )
         else:
@@ -695,6 +744,10 @@ class UnifiedCalibrator:
             vp_angle: float | None = None
             left_intercept: int | None = None
             right_intercept: int | None = None
+            selected_left_line: tuple[int, int, int, int] | None = None
+            selected_right_line: tuple[int, int, int, int] | None = None
+            selected_left_info: dict[str, Any] | None = None
+            selected_right_info: dict[str, Any] | None = None
 
             stage = "vision"
             process = "preprocess_and_extract_lines"
@@ -706,12 +759,34 @@ class UnifiedCalibrator:
             if selected is not None:
                 line1, line2 = selected
                 vision_debug["selected_lines"] = [line1, line2]
+                selected_left_line = line1
+                selected_right_line = line2
 
                 stage = "vision_debug"
                 process = "draw_selected_lines"
                 grouped_vis = vision_debug["grouped_vis"]
                 cv2.line(grouped_vis, (line1[0], line1[1]), (line1[2], line1[3]), (0, 255, 0), 2)
-                cv2.line(grouped_vis, (line2[0], line2[1]), (line2[2], line2[3]), (255, 0, 0), 2)
+                cv2.line(grouped_vis, (line2[0], line2[1]), (line2[2], line2[3]), (255, 0, 255), 2)
+                cv2.putText(
+                    grouped_vis,
+                    "LEFT / NEG",
+                    (max(0, line1[0]), max(18, line1[1])),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    (0, 255, 0),
+                    1,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    grouped_vis,
+                    "RIGHT / POS",
+                    (max(0, line2[0]), max(18, line2[1])),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    (255, 0, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
 
                 stage = "geometry"
                 process = "calculate_bottom_intercepts"
@@ -721,6 +796,20 @@ class UnifiedCalibrator:
                     frame_h,
                 )
                 left_intercept, right_intercept = sorted((intercept_a, intercept_b))
+                selected_left_info = self._geometry.describe_line(
+                    selected_left_line,
+                    role="left_negative",
+                    bottom_intercept=intercept_a,
+                )
+                selected_right_info = self._geometry.describe_line(
+                    selected_right_line,
+                    role="right_positive",
+                    bottom_intercept=intercept_b,
+                )
+                vision_debug["selected_left_line"] = selected_left_line
+                vision_debug["selected_right_line"] = selected_right_line
+                vision_debug["selected_left_line_info"] = selected_left_info
+                vision_debug["selected_right_line_info"] = selected_right_info
 
                 process = "calculate_vanishing_point"
                 vp = self._geometry.calculate_vanishing_point(line1, line2)
@@ -752,6 +841,12 @@ class UnifiedCalibrator:
             pid_p = self._robot_state.pid.kp * pid_error
             pid_d = self._robot_state.pid.kd * (pid_error - self._robot_state.pid_last_error)
             pid_i = self._robot_state.pid.ki * self._robot_state.pid_integral
+            vp_location = self._geometry.classify_point(vp, frame_w, frame_h)
+            vision_debug["vp_x"] = None if vp is None else vp[0]
+            vision_debug["vp_y"] = None if vp is None else vp[1]
+            vision_debug["vp_location"] = vp_location
+            vision_debug["left_intercept"] = left_intercept
+            vision_debug["right_intercept"] = right_intercept
             telemetry_data: dict[str, Any] = {
                 "frame_num": frame_num,
                 "mono_timestamp": f"{time.perf_counter():.6f}",
@@ -760,6 +855,7 @@ class UnifiedCalibrator:
                 "loop_overrun_ms": f"{overrun_ms:.3f}",
                 "vp_x": None if vp is None else vp[0],
                 "vp_y": None if vp is None else vp[1],
+                "vp_location": vp_location,
                 "vp_angle": vp_angle,
                 "theta": "" if vp_angle is None else f"{vp_angle:.6f}",
                 "theta_source": "none" if vp_angle is None else "live",
@@ -767,6 +863,14 @@ class UnifiedCalibrator:
                 "lines_count": len(lines),
                 "left_intercept": left_intercept,
                 "right_intercept": right_intercept,
+                "selected_left_line": selected_left_line,
+                "selected_right_line": selected_right_line,
+                "selected_left_slope": (
+                    None if selected_left_info is None else selected_left_info["slope"]
+                ),
+                "selected_right_slope": (
+                    None if selected_right_info is None else selected_right_info["slope"]
+                ),
                 "fsm_state": fsm_state,
                 "servo_angle": steering_angle,
                 "servo_center_angle": self._robot_state.servo_center_angle,
@@ -846,10 +950,18 @@ class UnifiedCalibrator:
             return
         self._last_terminal_log_time = now
         self._logger.info(
-            "frame=%s state=%s vp_angle=%s steering=%.2f loop_ms=%s overrun_ms=%s",
+            "frame=%s state=%s vp=(%s,%s)[%s] vp_angle=%s "
+            "left=%s m=%s right=%s m=%s steering=%.2f loop_ms=%s overrun_ms=%s",
             frame_num,
             telemetry_data.get("fsm_state", ""),
+            telemetry_data.get("vp_x", ""),
+            telemetry_data.get("vp_y", ""),
+            telemetry_data.get("vp_location", "missing"),
             telemetry_data.get("vp_angle", ""),
+            telemetry_data.get("selected_left_line"),
+            telemetry_data.get("selected_left_slope"),
+            telemetry_data.get("selected_right_line"),
+            telemetry_data.get("selected_right_slope"),
             float(telemetry_data.get("servo_angle", 90.0)),
             telemetry_data.get("loop_ms", ""),
             telemetry_data.get("loop_overrun_ms", ""),
