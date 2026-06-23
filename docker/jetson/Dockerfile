@@ -1,31 +1,46 @@
 # syntax=docker/dockerfile:1.7
-# Jetson Nano (ARM64 / L4T) — self-calibration + direct GPIO
+# Jetson / ARM64 — self-calibration + direct GPIO
 #
-# dusty image already bundles OpenCV + Python3 + pip.
-# Only pip layer can change between deploys → fast rebuilds.
+# Uses arm64v8/ubuntu (no registry auth, works everywhere).
+# Jetson.GPIO installs via pip (needs actual Jetson kernel).
+# OpenCV via pip, not apt → no GPU but works.
 #
 # Build:
 #   DOCKER_BUILDKIT=1 docker build -f docker/jetson/Dockerfile -t car-calib-jetson .
 
-ARG BASE_IMAGE=dustynv/l4t-jetpack:r36.4.0
-FROM ${BASE_IMAGE}
+FROM arm64v8/ubuntu:22.04
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
-# Verify base image has what we need
-RUN python3 -c "import cv2; print('OpenCV', cv2.__version__)" \
-    && python3 -c "import numpy; print('numpy', numpy.__version__)"
+# ------------------------------------------------------------------ #
+# Layer 1 – system packages (cached, rarely changes)
+# ------------------------------------------------------------------ #
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        python3-dev \
+        libglib2.0-0 \
+        libgomp1
 
+# ------------------------------------------------------------------ #
 # Layer 2 – Python deps (cached unless requirements_jetson.txt changes)
+# ------------------------------------------------------------------ #
 COPY requirements_jetson.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     python3 -m pip install -r /tmp/requirements.txt
 
-# Layer 3 – App source (invalidated on any .py change — seconds to rebuild)
+# ------------------------------------------------------------------ #
+# Layer 3 – App source (only layer rebuilt on code change — seconds)
+# ------------------------------------------------------------------ #
 COPY . /app
 RUN mkdir -p /data/logs /data/certs
 
