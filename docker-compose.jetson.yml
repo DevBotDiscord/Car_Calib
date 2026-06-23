@@ -1,0 +1,41 @@
+# Jetson Nano self-calibration stack — no MQTT, no ESP, all direct GPIO.
+#
+# Start:
+#   docker compose -f docker-compose.jetson.yml up -d
+#
+# Dashboard:
+#   http://<jetson-ip>:8080
+
+version: "3.8"
+
+services:
+  vision:
+    build:
+      context: .
+      dockerfile: docker/jetson/Dockerfile
+    image: car-calib-jetson:latest
+    container_name: car-calib-jetson
+    restart: unless-stopped
+    network_mode: host
+    privileged: true
+    devices:
+      - /dev/video0:/dev/video0
+      - /dev/video1:/dev/video1
+    volumes:
+      - /sys/class/gpio:/sys/class/gpio
+      - /sys/devices:/sys/devices
+      - /dev/mem:/dev/mem
+      - ./logs:/data/logs
+    environment:
+      - MAIN_TARGET_HZ=${MAIN_TARGET_HZ:-30}
+      - MAIN_CAMERA_INDEX=${MAIN_CAMERA_INDEX:-0}
+      - SERVO_CENTER_ANGLE=${SERVO_CENTER_ANGLE:--35}
+      - MAX_STEERING_OFFSET=${MAX_STEERING_OFFSET:-60}
+      - SERVO_PIN=${SERVO_PIN:-33}
+      - BASE_BIT2_PIN=${BASE_BIT2_PIN:-15}
+      - BASE_BIT1_PIN=${BASE_BIT1_PIN:-13}
+      - BASE_BIT0_PIN=${BASE_BIT0_PIN:-11}
+      - RELAY_PIN=${RELAY_PIN:-18}
+      - POWER_PIN=${POWER_PIN:-16}
+      - DASHBOARD_HOST=${DASHBOARD_HOST:-0.0.0.0}
+      - DASHBOARD_PORT=${DASHBOARD_PORT:-8080}
