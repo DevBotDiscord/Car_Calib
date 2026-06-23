@@ -1,6 +1,7 @@
-# Jetson Nano self-calibration stack — no MQTT, no ESP, all direct GPIO.
+# Jetson Nano self-calibration stack — direct GPIO, no MQTT/ESP.
 #
 # Start:
+#   cp .env.jetson .env
 #   docker compose -f docker-compose.jetson.yml up -d
 #
 # Dashboard:
@@ -21,21 +22,59 @@ services:
     devices:
       - /dev/video0:/dev/video0
       - /dev/video1:/dev/video1
+      - /dev/video2:/dev/video2
     volumes:
       - /sys/class/gpio:/sys/class/gpio
       - /sys/devices:/sys/devices
       - /dev/mem:/dev/mem
       - ./logs:/data/logs
     environment:
+      # Main loop
       - MAIN_TARGET_HZ=${MAIN_TARGET_HZ:-30}
-      - MAIN_CAMERA_INDEX=${MAIN_CAMERA_INDEX:-0}
+      - MAIN_CAMERA_INDEX=${MAIN_CAMERA_INDEX:-2}
+      - MAIN_CSV_LOG_FILE=${MAIN_CSV_LOG_FILE:-/data/logs/run_log.csv}
+      - MAIN_FLIP_FRAME=${MAIN_FLIP_FRAME:-false}
+      - MAIN_TERMINAL_LOG=${MAIN_TERMINAL_LOG:-true}
+      - MAIN_DEBUG_MODE=${MAIN_DEBUG_MODE:-true}
+      - MAIN_SHOW_DETECTOR_DEBUG=${MAIN_SHOW_DETECTOR_DEBUG:-true}
+      # Servo
+      - SERVO_PIN=${SERVO_PIN:-33}
       - SERVO_CENTER_ANGLE=${SERVO_CENTER_ANGLE:--35}
       - MAX_STEERING_OFFSET=${MAX_STEERING_OFFSET:-60}
-      - SERVO_PIN=${SERVO_PIN:-33}
+      - DRIVER_SERVO_ANGLE_MIN=${DRIVER_SERVO_ANGLE_MIN:--90}
+      - DRIVER_SERVO_ANGLE_MAX=${DRIVER_SERVO_ANGLE_MAX:-90}
+      - DRIVER_SERVO_PULSE_MIN_US=${DRIVER_SERVO_PULSE_MIN_US:-1000}
+      - DRIVER_SERVO_PULSE_MAX_US=${DRIVER_SERVO_PULSE_MAX_US:-2000}
+      # Base motor
       - BASE_BIT2_PIN=${BASE_BIT2_PIN:-15}
       - BASE_BIT1_PIN=${BASE_BIT1_PIN:-13}
       - BASE_BIT0_PIN=${BASE_BIT0_PIN:-11}
+      # Relay + power
       - RELAY_PIN=${RELAY_PIN:-18}
       - POWER_PIN=${POWER_PIN:-16}
+      - RELAY_ACTIVE_LOW=${RELAY_ACTIVE_LOW:-true}
+      - POWER_RELAY_ACTIVE_LOW=${POWER_RELAY_ACTIVE_LOW:-true}
+      - POWER_ON_PULSE_MS=${POWER_ON_PULSE_MS:-100}
+      - POWER_OFF_PULSE_MS=${POWER_OFF_PULSE_MS:-3000}
+      # Vision
+      - ROI_HEIGHT_PCT=${ROI_HEIGHT_PCT:-0.6}
+      - VISION_CANNY_LOW=${VISION_CANNY_LOW:-50}
+      - VISION_CANNY_HIGH=${VISION_CANNY_HIGH:-150}
+      - VISION_HOUGH_THRESHOLD=${VISION_HOUGH_THRESHOLD:-40}
+      - VISION_HOUGH_MIN_LINE_LENGTH=${VISION_HOUGH_MIN_LINE_LENGTH:-40}
+      - VISION_HOUGH_MAX_LINE_GAP=${VISION_HOUGH_MAX_LINE_GAP:-20}
+      - VISION_MIN_ABS_SLOPE=${VISION_MIN_ABS_SLOPE:-0.3}
+      - VISION_CLUSTER_ANGLE_DEG=${VISION_CLUSTER_ANGLE_DEG:-7.5}
+      - VISION_CLUSTER_DIST_PX=${VISION_CLUSTER_DIST_PX:-30.0}
+      # Steering
+      - VP_INNER_THRESH=${VP_INNER_THRESH:-3.0}
+      - VP_OUTER_THRESH=${VP_OUTER_THRESH:-8.0}
+      - DANGER_MARGIN_PX=${DANGER_MARGIN_PX:-130}
+      - DANGER_NUDGE_DEG=${DANGER_NUDGE_DEG:-10.0}
+      - CTRL_HYSTERESIS_HIGH=${CTRL_HYSTERESIS_HIGH:-5.0}
+      - CTRL_HYSTERESIS_LOW=${CTRL_HYSTERESIS_LOW:-3.0}
+      - PID_KP=${PID_KP:-0.9}
+      - PID_KD=${PID_KD:-0.08}
+      # Dashboard
       - DASHBOARD_HOST=${DASHBOARD_HOST:-0.0.0.0}
       - DASHBOARD_PORT=${DASHBOARD_PORT:-8080}

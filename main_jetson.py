@@ -100,6 +100,10 @@ def main() -> None:
     relay = JetsonRelayDriver(
         relay_pin=int(os.getenv("RELAY_PIN", "18")),
         power_relay_pin=int(os.getenv("POWER_PIN", "16")),
+        relay_active_low=os.getenv("RELAY_ACTIVE_LOW", "true").strip().lower() in ("1", "true", "yes", "on"),
+        power_active_low=os.getenv("POWER_RELAY_ACTIVE_LOW", "true").strip().lower() in ("1", "true", "yes", "on"),
+        power_on_pulse_ms=int(os.getenv("POWER_ON_PULSE_MS", "100")),
+        power_off_pulse_ms=int(os.getenv("POWER_OFF_PULSE_MS", "3000")),
     )
 
     # ------------------------------------------------------------------ #
