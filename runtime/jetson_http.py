@@ -57,7 +57,41 @@ class _RequestHandler(BaseHTTPRequestHandler):
 
     def _file(self, path: Path) -> None:
         if not path.is_file():
+            # ---- Route script builder ----
+            runner = getattr(self.server, "script_runner", None)
+            if self.path == "/route/script/status":
+                self._json(runner() if callable(runner) else {"running": False, "steps": [], "current": None})
+                return
+            if self.path == "/route/script/stop":
+                stopper = getattr(self.server, "script_stopper", None)
+                if callable(stopper): stopper()
+                self._text(200, "stopped")
+                return
+            if self.path.startswith("/route/relay"):
+                h = getattr(self.server, "relay_handler", None)
+                if callable(h): h("ON" if "on=1" in self.path.lower() else "OFF")
+                self._text(200, "ok")
+                return
+            if self.path.startswith("/control/power"):
+                h = getattr(self.server, "power_handler", None)
+                if callable(h): h("ON" if "on=1" in self.path.lower() else "OFF")
+                self._text(200, "ok")
+                return
+            # ---- Presets ----
+            if self.path == "/presets":
+                pg = getattr(self.server, "presets_getter", None)
+                self._json({"presets": pg() if callable(pg) else []})
+                return
+            # ---- Routes list ----
+            if self.path.startswith("/routes/list"):
+                rg = getattr(self.server, "routes_getter", None)
+                self._json({"routes": rg() if callable(rg) else []})
+                return
+
             self._text(404, "not found")
+
+            def do_POST(self) -> None:
+                self.do_GET()
             return
         content_type, _ = mimetypes.guess_type(str(path))
         self.send_response(200)
@@ -135,7 +169,41 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._text(200, f"power:{state}")
             return
 
+        # ---- Route script builder ----
+        runner = getattr(self.server, "script_runner", None)
+        if self.path == "/route/script/status":
+            self._json(runner() if callable(runner) else {"running": False, "steps": [], "current": None})
+            return
+        if self.path == "/route/script/stop":
+            stopper = getattr(self.server, "script_stopper", None)
+            if callable(stopper): stopper()
+            self._text(200, "stopped")
+            return
+        if self.path.startswith("/route/relay"):
+            h = getattr(self.server, "relay_handler", None)
+            if callable(h): h("ON" if "on=1" in self.path.lower() else "OFF")
+            self._text(200, "ok")
+            return
+        if self.path.startswith("/control/power"):
+            h = getattr(self.server, "power_handler", None)
+            if callable(h): h("ON" if "on=1" in self.path.lower() else "OFF")
+            self._text(200, "ok")
+            return
+        # ---- Presets ----
+        if self.path == "/presets":
+            pg = getattr(self.server, "presets_getter", None)
+            self._json({"presets": pg() if callable(pg) else []})
+            return
+        # ---- Routes list ----
+        if self.path.startswith("/routes/list"):
+            rg = getattr(self.server, "routes_getter", None)
+            self._json({"routes": rg() if callable(rg) else []})
+            return
+
         self._text(404, "not found")
+
+        def do_POST(self) -> None:
+            self.do_GET()
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -156,6 +224,15 @@ class JetsonHttpServer:
         self._base_handler: Callable[[str], None] | None = None
         self._relay_handler: Callable[[str], None] | None = None
         self._power_handler: Callable[[str], None] | None = None
+        self._script_runner: Callable[[], dict[str, Any]] | None = None
+        self._script_stopper: Callable[[], None] | None = None
+        self._script_submitter: Callable[[str], None] | None = None
+        self._steps_getter: Callable[[], list[dict[str, Any]]] | None = None
+        self._steps_setter: Callable[[str], None] | None = None
+        self._presets_getter: Callable[[], list[dict[str, Any]]] | None = None
+        self._presets_setter: Callable[[str], None] | None = None
+        self._preset_deleter: Callable[[str], None] | None = None
+        self._routes_getter: Callable[[], list[dict[str, Any]]] | None = None
         self._thread: threading.Thread | None = None
 
     def set_frame_getter(self, fn: Callable[[], np.ndarray | None]) -> None:
@@ -172,6 +249,32 @@ class JetsonHttpServer:
 
     def set_power_handler(self, fn: Callable[[str], None]) -> None:
         self._power_handler = fn
+    def set_script_runner(self, fn: Callable[[], dict[str, Any]]) -> None:
+        self._script_runner = fn
+
+    def set_script_stopper(self, fn: Callable[[], None]) -> None:
+        self._script_stopper = fn
+
+    def set_script_submitter(self, fn: Callable[[str], None]) -> None:
+        self._script_submitter = fn
+
+    def set_steps_getter(self, fn: Callable[[], list[dict[str, Any]]]) -> None:
+        self._steps_getter = fn
+
+    def set_steps_setter(self, fn: Callable[[str], None]) -> None:
+        self._steps_setter = fn
+
+    def set_presets_getter(self, fn: Callable[[], list[dict[str, Any]]]) -> None:
+        self._presets_getter = fn
+
+    def set_presets_setter(self, fn: Callable[[str], None]) -> None:
+        self._presets_setter = fn
+
+    def set_preset_deleter(self, fn: Callable[[str], None]) -> None:
+        self._preset_deleter = fn
+
+    def set_routes_getter(self, fn: Callable[[], list[dict[str, Any]]]) -> None:
+        self._routes_getter = fn
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._serve, daemon=True)
@@ -190,4 +293,13 @@ class JetsonHttpServer:
         self._server.base_handler = self._base_handler
         self._server.relay_handler = self._relay_handler
         self._server.power_handler = self._power_handler
+        self._server.script_runner = self._script_runner
+        self._server.script_stopper = self._script_stopper
+        self._server.script_submitter = self._script_submitter
+        self._server.steps_getter = self._steps_getter
+        self._server.steps_setter = self._steps_setter
+        self._server.presets_getter = self._presets_getter
+        self._server.presets_setter = self._presets_setter
+        self._server.preset_deleter = self._preset_deleter
+        self._server.routes_getter = self._routes_getter
         self._server.serve_forever()

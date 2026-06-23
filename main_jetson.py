@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
 import os
 import sys
@@ -75,6 +76,118 @@ def _csv_fieldnames() -> list[str]:
         "pid_error", "pid_p_term", "pid_i_term", "pid_d_term",
         "base_command", "relay_on",
     ]
+
+# --------------------------------------------------------------------------- #
+# In-process route script runner (no MQTT)
+# --------------------------------------------------------------------------- #
+class JetsonScriptRunner:
+    """Runs route steps in a background thread using direct GPIO."""
+
+    def __init__(self) -> None:
+        self._thread: threading.Thread | None = None
+        self._running = False
+        self._steps: list[dict[str, Any]] = []
+        self._current_step_idx: int = -1
+        self._current_step: dict[str, Any] | None = None
+        self._lock = threading.Lock()
+        # callbacks set after init
+        self._base_cb: Callable[[str], None] | None = None
+        self._servo_cb: Callable[[float], None] | None = None
+        self._relay_cb: Callable[[bool], None] | None = None
+
+    def set_handlers(
+        self,
+        base_cb: Callable[[str], None],
+        servo_cb: Callable[[float], None],
+        relay_cb: Callable[[bool], None],
+    ) -> None:
+        self._base_cb = base_cb
+        self._servo_cb = servo_cb
+        self._relay_cb = relay_cb
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "running": self._running,
+                "steps": list(self._steps),
+                "current": self._current_step,
+                "current_idx": self._current_step_idx,
+            }
+
+    def submit(self, steps: list[dict[str, Any]]) -> bool:
+        if not steps:
+            return False
+        with self._lock:
+            self._steps = list(steps)
+        self.stop()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2)
+
+    def _run(self) -> None:
+        self._running = True
+        try:
+            for idx, step in enumerate(self._steps):
+                if not self._running:
+                    break
+                self._current_step_idx = idx
+                self._current_step = dict(step)
+                self._execute_step(step)
+        finally:
+            self._running = False
+            self._current_step = None
+            self._current_step_idx = -1
+            # Stop base
+            if self._base_cb:
+                self._base_cb("STOP")
+            # Center servo
+            if self._servo_cb:
+                self._servo_cb(float(os.getenv("SERVO_CENTER_ANGLE", "-35")))
+
+    def _execute_step(self, step: dict[str, Any]) -> None:
+        action = str(step.get("action", "stop")).lower().replace(" ", "_")
+        duration = max(0.0, float(step.get("duration", 0)))
+        logger.info("Script step %d: %s (%.1fs)", self._current_step_idx, action, duration)
+
+        base_cmd = "STOP"
+        servo_angle = None
+
+        if action in ("forward", "straight"):
+            base_cmd = "FORWARD"
+        elif action in ("backward",):
+            base_cmd = "BACKWARD"
+        elif action in ("left",):
+            base_cmd = "FORWARD"
+            servo_angle = float(os.getenv("SERVO_CENTER_ANGLE", "-35")) + float(os.getenv("MAX_STEERING_OFFSET", "60"))
+        elif action in ("right",):
+            base_cmd = "FORWARD"
+            servo_angle = float(os.getenv("SERVO_CENTER_ANGLE", "-35")) - float(os.getenv("MAX_STEERING_OFFSET", "60"))
+        elif action in ("turn_left",):
+            base_cmd = "TURN_LEFT"
+        elif action in ("turn_right",):
+            base_cmd = "TURN_RIGHT"
+        elif action in ("stop", "pause"):
+            base_cmd = "STOP"
+
+        if self._base_cb:
+            self._base_cb(base_cmd)
+        if servo_angle is not None and self._servo_cb:
+            self._servo_cb(servo_angle)
+
+        if duration > 0:
+            # Sleep in small chunks to allow stop
+            deadline = time.time() + duration
+            while self._running and time.time() < deadline:
+                time.sleep(0.1)
 
 
 def main() -> None:
@@ -161,6 +274,22 @@ def main() -> None:
         http.set_base_handler(_base_handler)
         http.set_relay_handler(_relay_handler)
         http.set_power_handler(_power_handler)
+        # Route script runner + presets
+        _presets: dict[str, list[dict[str, Any]]] = {}
+        _steps: list[dict[str, Any]] = []
+        script_runner = JetsonScriptRunner()
+        script_runner.set_handlers(_base_handler, servo.send_angle, _relay_handler)
+
+        http.set_script_runner(lambda: script_runner.status())
+        http.set_script_stopper(script_runner.stop)
+        http.set_script_submitter(lambda body: script_runner.submit(json.loads(body).get("steps", [])))
+        http.set_steps_getter(lambda: _steps)
+        http.set_steps_setter(lambda body: _steps.extend(json.loads(body).get("steps", [])))
+        http.set_presets_getter(lambda: [{"name": k, "steps": v} for k, v in _presets.items()])
+        http.set_presets_setter(lambda body: (d := json.loads(body), _presets.update({d.get("name", "untitled"): d.get("steps", [])})))
+        http.set_preset_deleter(lambda name: _presets.pop(name, None))
+        http.set_routes_getter(lambda: [])
+
         http.start()
 
     # ------------------------------------------------------------------ #

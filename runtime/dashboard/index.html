@@ -3,103 +3,143 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>car-calib Jetson</title>
+  <title>car-calib route dashboard</title>
   <link rel="stylesheet" href="/dashboard/static/style.css">
 </head>
 <body>
   <header class="app-header">
     <div class="brand">car-calib</div>
     <div class="pills">
-      <span id="pFsm" class="h-pill"><span class="dot"></span><span class="lbl">GAPPING</span></span>
-      <span id="pBase" class="h-pill"><span class="dot"></span><span class="lbl">STOP</span></span>
-      <span id="pRelay" class="h-pill"><span class="dot"></span><span class="lbl">relay</span></span>
+      <span id="modePill" class="h-pill"><span class="dot"></span><span class="lbl">mode</span></span>
+      <span id="hPillEstop" class="h-pill"><span class="dot"></span><span class="lbl">E-stop</span></span>
+      <span id="hPillRpi" class="h-pill"><span class="dot"></span><span class="lbl">Actuator</span><span class="sub" id="hPillRpiSub"></span></span>
+      <span id="hPillMqtt" class="h-pill"><span class="dot"></span><span class="lbl">MQTT</span></span>
     </div>
   </header>
   <div id="healthBanner" class="health-banner"></div>
-  <h1>car-calib · jetson</h1>
+  <h1>car-calib · route dashboard</h1>
   <div class="layout">
     <div class="panel">
       <h2>Live stream</h2>
-      <div class="stream-wrap"><img id="stream" class="stream" alt="camera stream" src="/stream"></div>
+      <div class="stream-wrap"><img id="stream" class="stream" alt="camera stream"></div>
       <h3>Status</h3>
       <div id="statusBar"></div>
       <div id="metricGrid" style="margin-top:12px"></div>
+      <div id="trendChart" style="margin-top:12px"></div>
+      <div id="fsmStrip" style="margin-top:12px"></div>
+      <div id="eventLog" style="margin-top:12px"></div>
     </div>
     <div class="panel">
-      <h2>Controls</h2>
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="script" role="tab">Script</button>
+      </div>
+      <div class="tab-pane active" data-pane="script">
+      <h2>Route script builder</h2>
       <div class="row">
-        <button class="btn primary" onclick="cmd('base','FORWARD')">▶ Forward</button>
-        <button class="btn danger" onclick="cmd('base','STOP')">■ Stop</button>
-        <button class="btn" onclick="cmd('base','BACKWARD')">◀ Backward</button>
+        <select id="action">
+          <option value="forward">forward (FORWARD + center)</option>
+          <option value="backward">backward (BACKWARD + reversed steer)</option>
+          <option value="left">left (FORWARD + max left)</option>
+          <option value="right">right (FORWARD + max right)</option>
+          <option value="turn_left">turn left (base 1 0 0)</option>
+          <option value="turn_right">turn right (base 0 1 1)</option>
+          <option value="straight">straight (alias)</option>
+          <option value="stop">stop / pause</option>
+        </select>
+        <input id="duration" type="number" min="0" step="0.5" value="2">
+        <span class="muted">seconds</span>
+        <button id="add">+ add step</button>
+        <button id="cancelEdit" style="display:none">cancel edit</button>
+        <button id="clear">clear all</button>
       </div>
-      <div class="row" style="margin-top:6px">
-        <button class="btn" onclick="cmd('base','TURN_LEFT')">↰ Left</button>
-        <button class="btn" onclick="cmd('base','TURN_RIGHT')">↱ Right</button>
+
+      <div class="row" style="margin-top:6px;border-top:1px solid #2a2c30;padding-top:10px">
+        <span class="muted">presets:</span>
+        <select id="presetSelect" style="min-width:200px"><option value="">— select preset —</option></select>
+        <button id="presetLoad">load</button>
+        <button id="presetDelete" class="rm" style="padding:9px 12px">delete</button>
+        <input id="presetName" type="text" placeholder="preset name" style="flex:1;min-width:140px">
+        <button id="presetSave">save current</button>
       </div>
-      <div class="row" style="margin-top:12px">
-        <button class="btn" id="btnRelay" onclick="toggleRelay()">💡 Relay OFF</button>
-        <button class="btn primary" onclick="cmd('power','ON')">⏻ Bật xe</button>
-        <button class="btn danger" onclick="cmd('power','OFF')">⭘ Tắt xe</button>
+
+      <h3>Steps</h3>
+      <table id="steps">
+        <thead><tr><th style="width:50px">#</th><th>Action</th><th style="width:120px">Duration</th><th style="width:160px"></th></tr></thead>
+        <tbody></tbody>
+      </table>
+
+      <div class="row" style="margin-top:18px">
+        <button id="run" class="primary">▶ run script (auto-record)</button>
+        <button id="stop" class="danger">■ stop</button>
+        <label class="switch" title="relay light toggle">
+          <input type="checkbox" id="lightToggle">
+          <span class="slider"></span>
+        </label>
+        <span class="muted" id="lightLabel">light off</span>
+        <button id="powerOnBtn" class="primary" title="bật xe (pulse 0.1s)">⏻ bật xe</button>
+        <button id="powerOffBtn" class="danger" title="tắt xe (pulse 3s)">⭘ tắt xe</button>
+        <span class="muted" id="powerLabel"></span>
+        <span id="runPill" class="pill pill-idle">idle</span>
+        <span id="runDetail" class="muted"></span>
       </div>
-      <div id="eventLog" style="margin-top:12px"></div>
+      <div class="progress"><div id="progressBar" style="width:0%"></div></div>
+      <div class="progress-segments" id="progressSegments"></div>
+
+      <h3>JSON preview</h3>
+      <pre id="preview">{
+  "steps": []
+}</pre>
+      </div>
+    </div>
+  </div>
+  <div class="panel" style="margin-top:20px">
+    <h2>Recent routes</h2>
+    <div class="row routes-toolbar">
+      <div class="filter-chips" id="routeFilterChips">
+        <button class="chip active" data-filter="all">All</button>
+        <button class="chip" data-filter="accepted">Accepted</button>
+        <button class="chip" data-filter="rejected">Rejected</button>
+      </div>
+      <select id="routeSort" title="sort">
+        <option value="recent">Recent</option>
+        <option value="longest">Longest elapsed</option>
+        <option value="frames">Most frames</option>
+      </select>
+      <input id="routeSearch" type="text" placeholder="search route_id…" style="flex:1;min-width:140px">
+      <button id="refreshRoutes">↻</button>
+      <button id="compareSelected" style="padding:9px 14px;font-size:13px" disabled>⊟ compare</button>
+      <button id="deleteSelected" class="danger" style="padding:9px 14px;font-size:13px" disabled>🗑 selected</button>
+      <button id="deleteAllRoutes" class="danger" style="padding:9px 14px;font-size:13px">🗑 all</button>
+    </div>
+    <table id="routesTable">
+      <thead><tr><th style="width:24px"><input type="checkbox" id="routeSelectAll"></th><th>Route ID</th><th>Mode</th><th>Preset</th><th>Status</th><th>Frames</th><th>Elapsed</th><th>Zip size</th><th>Ended (UTC)</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div id="summaryModal" class="modal-bg">
+    <div class="modal">
+      <button class="close" id="summaryClose">✕ close</button>
+      <h2 id="summaryTitle">Route summary</h2>
+      <div class="modal-actions">
+        <a id="summaryDownload" class="pill pill-running" style="text-decoration:none;padding:6px 14px;display:none">⬇ download zip</a>
+      </div>
+      <div class="tabs modal-tabs" role="tablist">
+        <button class="tab active" data-mtab="overview" role="tab">Overview</button>
+        <button class="tab" data-mtab="script" role="tab">Script</button>
+        <button class="tab" data-mtab="json" role="tab">Raw JSON</button>
+      </div>
+      <div class="tab-pane active" data-mpane="overview"><div id="summaryOverview"></div></div>
+      <div class="tab-pane" data-mpane="script"><div id="summaryScript"></div></div>
+      <div class="tab-pane" data-mpane="json"><pre id="summaryJson"></pre></div>
     </div>
   </div>
   <script>
-    // ── state ──
-    let lastRelay = false;
-
-    function cmd(cat, val) {
-      fetch('/api/' + cat + '/' + val).then(r => r.text()).catch(e => console.error(e));
-    }
-    function toggleRelay() {
-      cmd('relay', lastRelay ? 'OFF' : 'ON');
-    }
-
-    // ── telemetry poll (5 Hz) ──
-    async function poll() {
-      try {
-        const r = await fetch('/api/status');
-        if (!r.ok) return;
-        const d = await r.json();
-
-        // header pills
-        const fsm = d.fsm || '?';
-        const pFsm = document.getElementById('pFsm');
-        pFsm.querySelector('.lbl').textContent = fsm;
-        pFsm.querySelector('.dot').style.background = d.calib_active ? '#3fb950' : (fsm === 'GAPPING' ? '#f85149' : '#d29922');
-
-        document.getElementById('pBase').querySelector('.lbl').textContent = d.base || 'STOP';
-        lastRelay = d.relay_on === true;
-
-        const btnRelay = document.getElementById('btnRelay');
-        btnRelay.textContent = lastRelay ? '💡 Relay ON' : '💡 Relay OFF';
-        btnRelay.className = 'btn' + (lastRelay ? ' on' : '');
-
-        // status bar
-        document.getElementById('statusBar').innerHTML =
-          'θ: ' + (d.theta || '--') + '° &nbsp;|&nbsp; servo: ' + d.servo + '° &nbsp;|&nbsp; loop: ' + d.loop_ms + 'ms &nbsp;|&nbsp; frame: ' + d.frame;
-
-        // metric grid
-        const theta = d.theta != null ? parseFloat(d.theta) : null;
-        document.getElementById('metricGrid').innerHTML = [
-          ['FSM', fsm, fsm === 'TRACKING_PD' ? 'text-ok' : (fsm === 'GAPPING' ? 'text-bad' : 'text-warn')],
-          ['Theta', theta != null ? theta.toFixed(2) + '°' : '--', ''],
-          ['Servo angle', d.servo + '°', ''],
-          ['Loop time', d.loop_ms + 'ms', ''],
-          ['Base', d.base || 'STOP', ''],
-          ['Relay', lastRelay ? 'ON' : 'OFF', lastRelay ? 'text-ok' : ''],
-          ['Power', d.power_pulsing ? 'pulsing' : 'idle', d.power_pulsing ? 'text-warn' : ''],
-          ['Frame #', d.frame, ''],
-          ['Calib active', d.calib_active ? 'YES' : 'NO', d.calib_active ? 'text-ok' : ''],
-          ['Theta source', d.theta_src || '?', ''],
-        ].map(function(row) {
-          return '<div class="metric"><div class="label">' + row[0] + '</div><div class="value ' + (row[2] || '') + '">' + row[1] + '</div></div>';
-        }).join('');
-
-      } catch(e) { console.error(e); }
-    }
-    setInterval(poll, 200);
-    poll();
+    window.DASHBOARD_CONFIG = {
+      TOKEN: "__TOKEN__",
+      STREAM: "__STREAM_PATH__",
+      STATUS: "__STATUS_PATH__"
+    };
   </script>
+  <script src="/dashboard/static/script.js?v=jetson-20260612-esp-actuator"></script>
 </body>
 </html>
