@@ -166,16 +166,24 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     # Camera
     # ------------------------------------------------------------------ #
-    cap = cv2.VideoCapture(args.camera)
-    if not cap.isOpened():
-        logger.error("Camera index %d failed", args.camera)
+    # Camera auto-detect: try preferred index, fallback 0..4
+    candidates = [args.camera] + [i for i in range(5) if i != args.camera]
+    cap = None
+    for idx in candidates:
+        test = cv2.VideoCapture(idx)
+        if test.isOpened():
+            cap = test
+            logger.info("Camera opened at index %d", idx)
+            break
+        test.release()
+    if cap is None:
+        logger.error("No camera found across %s", candidates)
         servo.close()
         base.close()
         relay.close()
         sys.exit(1)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    logger.info("Camera %d opened", args.camera)
 
     # ------------------------------------------------------------------ #
     # CSV logging
