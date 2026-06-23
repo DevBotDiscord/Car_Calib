@@ -96,6 +96,12 @@ class JetsonScriptRunner:
         self._base_cb: Callable[[str], None] | None = None
         self._servo_cb: Callable[[float], None] | None = None
         self._relay_cb: Callable[[bool], None] | None = None
+        self._center_angle = float(os.getenv("SERVO_CENTER_ANGLE", "-35"))
+        self._max_steer = float(os.getenv("MAX_STEERING_OFFSET", "60"))
+        self._republish_period_s = 1.0 / max(
+            0.1,
+            float(os.getenv("ROUTE_SCRIPT_REPUBLISH_HZ", "10")),
+        )
 
     def set_handlers(
         self,
@@ -175,7 +181,7 @@ class JetsonScriptRunner:
         logger.info("Script step %d: %s (%.1fs)", self._current_step_idx, action, duration)
 
         base_cmd = "STOP"
-        servo_angle = None
+        servo_angle = self._center_angle
 
         if action in ("forward", "straight"):
             base_cmd = "FORWARD"
@@ -183,14 +189,16 @@ class JetsonScriptRunner:
             base_cmd = "BACKWARD"
         elif action in ("left",):
             base_cmd = "FORWARD"
-            servo_angle = float(os.getenv("SERVO_CENTER_ANGLE", "-35")) + float(os.getenv("MAX_STEERING_OFFSET", "60"))
+            servo_angle = self._center_angle + self._max_steer
         elif action in ("right",):
             base_cmd = "FORWARD"
-            servo_angle = float(os.getenv("SERVO_CENTER_ANGLE", "-35")) - float(os.getenv("MAX_STEERING_OFFSET", "60"))
+            servo_angle = self._center_angle - self._max_steer
         elif action in ("turn_left",):
             base_cmd = "TURN_LEFT"
+            servo_angle = None
         elif action in ("turn_right",):
             base_cmd = "TURN_RIGHT"
+            servo_angle = None
         elif action in ("stop", "pause"):
             base_cmd = "STOP"
 
@@ -203,7 +211,9 @@ class JetsonScriptRunner:
             # Sleep in small chunks to allow stop
             deadline = time.time() + duration
             while self._running and time.time() < deadline:
-                time.sleep(0.1)
+                if servo_angle is not None and self._servo_cb:
+                    self._servo_cb(servo_angle)
+                time.sleep(self._republish_period_s)
 
 
 def main() -> None:
@@ -305,6 +315,7 @@ def main() -> None:
     # HTTP Dashboard
     # ------------------------------------------------------------------ #
     http: JetsonHttpServer | None = None
+    script_runner: JetsonScriptRunner | None = None
     if not args.no_dashboard:
         http = JetsonHttpServer(host=args.host, port=args.port)
         http.set_frame_getter(_frame_getter)
@@ -409,7 +420,8 @@ def main() -> None:
                 last_known_theta = theta
 
             # --- servo ---
-            servo.send_angle(servo_angle)
+            if script_runner is None or not script_runner.is_running:
+                servo.send_angle(servo_angle)
 
             # --- telemetry ---
             loop_ms = (time.monotonic() - loop_start) * 1000.0

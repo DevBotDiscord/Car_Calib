@@ -8,12 +8,14 @@ Default pins (BOARD numbering):
   BIT1  → pin 13  (BCM 27)  – middle bit
   BIT0  → pin 11  (BCM 17)  – low bit
 
-Commands:
-  FORWARD    → 001 (BIT2=0, BIT1=0, BIT0=1)
-  BACKWARD   → 010 (BIT2=0, BIT1=1, BIT0=0)
+Commands match the legacy ESP/RPi actuator convention:
+  FORWARD    → 010 (OUT1=0, OUT2=1, OUT3=0)
+  BACKWARD   → 001 (OUT1=0, OUT2=0, OUT3=1)
   STOP       → 000 (all 0)
-  LOCK       → 011 (maintain lock)
-  UNLOCK     → 111 (release)
+  LOCK       → 101 (maintain lock)
+  UNLOCK     → 110 (release)
+  TURN_LEFT  → 100
+  TURN_RIGHT → 011
 """
 
 from __future__ import annotations
@@ -40,12 +42,12 @@ DEFAULT_PINS = {
 # 3-bit command table
 _BASE_MAP: dict[str, tuple[int, int, int]] = {
     "STOP":      (0, 0, 0),
-    "FORWARD":   (0, 0, 1),
-    "BACKWARD":  (0, 1, 0),
-    "LOCK":      (0, 1, 1),
-    "UNLOCK":    (1, 1, 1),
+    "FORWARD":   (0, 1, 0),
+    "BACKWARD":  (0, 0, 1),
+    "LOCK":      (1, 0, 1),
+    "UNLOCK":    (1, 1, 0),
     "TURN_LEFT": (1, 0, 0),
-    "TURN_RIGHT":(1, 0, 1),
+    "TURN_RIGHT":(0, 1, 1),
 }
 
 
@@ -87,7 +89,7 @@ class JetsonBaseDriver:
             return
         b2, b1, b0 = _BASE_MAP[cmd_upper]
         self._write(b2, b1, b0)
-        logger.debug("Base: %s → BIT2=%d BIT1=%d BIT0=%d", cmd_upper, b2, b1, b0)
+        logger.info("Base: %s -> OUT1=%d OUT2=%d OUT3=%d", cmd_upper, b2, b1, b0)
 
     def stop(self) -> None:
         self.command("STOP")
