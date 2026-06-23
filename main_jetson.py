@@ -30,7 +30,7 @@ import time
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -89,6 +89,8 @@ class JetsonScriptRunner:
         self._steps: list[dict[str, Any]] = []
         self._current_step_idx: int = -1
         self._current_step: dict[str, Any] | None = None
+        self._step_started_at: float | None = None
+        self._last_error: str | None = None
         self._lock = threading.Lock()
         # callbacks set after init
         self._base_cb: Callable[[str], None] | None = None
@@ -111,11 +113,17 @@ class JetsonScriptRunner:
 
     def status(self) -> dict[str, Any]:
         with self._lock:
+            elapsed = time.time() - self._step_started_at if self._step_started_at else 0.0
             return {
                 "running": self._running,
                 "steps": list(self._steps),
                 "current": self._current_step,
                 "current_idx": self._current_step_idx,
+                "current_step": self._current_step_idx + 1 if self._running else 0,
+                "total": len(self._steps),
+                "step": self._current_step,
+                "step_elapsed_s": elapsed,
+                "last_error": self._last_error,
             }
 
     def submit(self, steps: list[dict[str, Any]]) -> bool:
@@ -135,17 +143,25 @@ class JetsonScriptRunner:
 
     def _run(self) -> None:
         self._running = True
+        self._last_error = None
         try:
             for idx, step in enumerate(self._steps):
                 if not self._running:
                     break
-                self._current_step_idx = idx
-                self._current_step = dict(step)
+                with self._lock:
+                    self._current_step_idx = idx
+                    self._current_step = dict(step)
+                    self._step_started_at = time.time()
                 self._execute_step(step)
+        except Exception as exc:
+            self._last_error = str(exc)
+            logger.exception("Route script failed")
         finally:
-            self._running = False
-            self._current_step = None
-            self._current_step_idx = -1
+            with self._lock:
+                self._running = False
+                self._current_step = None
+                self._current_step_idx = -1
+                self._step_started_at = None
             # Stop base
             if self._base_cb:
                 self._base_cb("STOP")
@@ -155,7 +171,7 @@ class JetsonScriptRunner:
 
     def _execute_step(self, step: dict[str, Any]) -> None:
         action = str(step.get("action", "stop")).lower().replace(" ", "_")
-        duration = max(0.0, float(step.get("duration", 0)))
+        duration = max(0.0, float(step.get("duration_s", step.get("duration", 0))))
         logger.info("Script step %d: %s (%.1fs)", self._current_step_idx, action, duration)
 
         base_cmd = "STOP"
@@ -244,7 +260,29 @@ def main() -> None:
 
     def _status_getter() -> dict[str, Any]:
         with telemetry_lock:
-            return dict(shared_telemetry)
+            tel = dict(shared_telemetry)
+        return {
+            "telemetry": {
+                "frame_num": tel.get("frame"),
+                "fsm_state": tel.get("fsm"),
+                "calibration_active": tel.get("calib_active"),
+                "theta": tel.get("theta"),
+                "theta_source": tel.get("theta_src"),
+                "servo_angle": tel.get("servo"),
+                "loop_ms": tel.get("loop_ms"),
+                "route_mode": tel.get("current_route_mode"),
+            },
+            "rpi_status": {
+                "online": True,
+                "stale": False,
+                "age_s": 0.0,
+                "payload": tel,
+            },
+            "actuator": {
+                "online": True,
+                "source": "jetson",
+            },
+        }
 
     def _base_handler(cmd: str) -> None:
         nonlocal last_base_cmd
@@ -285,7 +323,7 @@ def main() -> None:
         http.set_script_submitter(lambda body: script_runner.submit(json.loads(body).get("steps", [])))
         http.set_steps_getter(lambda: _steps)
         http.set_steps_setter(lambda body: _steps.extend(json.loads(body).get("steps", [])))
-        http.set_presets_getter(lambda: [{"name": k, "steps": v} for k, v in _presets.items()])
+        http.set_presets_getter(lambda: [{"name": k, "steps": v, "steps_count": len(v)} for k, v in _presets.items()])
         http.set_presets_setter(lambda body: (d := json.loads(body), _presets.update({d.get("name", "untitled"): d.get("steps", [])})))
         http.set_preset_deleter(lambda name: _presets.pop(name, None))
         http.set_routes_getter(lambda: [])

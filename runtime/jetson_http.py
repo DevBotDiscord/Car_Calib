@@ -21,6 +21,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Any, Callable
+from urllib.parse import parse_qs, unquote, urlparse
 
 import cv2
 import numpy as np
@@ -38,7 +39,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
 
     def _cors(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def _text(self, code: int, body: str) -> None:
         self.send_response(code)
@@ -47,51 +49,35 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body.encode())
 
-    def _json(self, data: dict[str, Any]) -> None:
+    def _json(self, data: dict[str, Any], code: int = 200) -> None:
         body = json.dumps(data, default=str)
-        self.send_response(200)
+        self.send_response(code)
         self._cors()
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(body.encode())
 
+    def _request_path(self) -> str:
+        return urlparse(self.path).path
+
+    def _query(self) -> dict[str, list[str]]:
+        return parse_qs(urlparse(self.path).query)
+
+    def _json_body(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length") or "0")
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(length).decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+    def _script_status(self) -> dict[str, Any]:
+        runner = getattr(self.server, "script_runner", None)
+        status = runner() if callable(runner) else {"running": False, "steps": [], "current": None}
+        return {"status": status}
+
     def _file(self, path: Path) -> None:
         if not path.is_file():
-            # ---- Route script builder ----
-            runner = getattr(self.server, "script_runner", None)
-            if self.path == "/route/script/status":
-                self._json(runner() if callable(runner) else {"running": False, "steps": [], "current": None})
-                return
-            if self.path == "/route/script/stop":
-                stopper = getattr(self.server, "script_stopper", None)
-                if callable(stopper): stopper()
-                self._text(200, "stopped")
-                return
-            if self.path.startswith("/route/relay"):
-                h = getattr(self.server, "relay_handler", None)
-                if callable(h): h("ON" if "on=1" in self.path.lower() else "OFF")
-                self._text(200, "ok")
-                return
-            if self.path.startswith("/control/power"):
-                h = getattr(self.server, "power_handler", None)
-                if callable(h): h("ON" if "on=1" in self.path.lower() else "OFF")
-                self._text(200, "ok")
-                return
-            # ---- Presets ----
-            if self.path == "/presets":
-                pg = getattr(self.server, "presets_getter", None)
-                self._json({"presets": pg() if callable(pg) else []})
-                return
-            # ---- Routes list ----
-            if self.path.startswith("/routes/list"):
-                rg = getattr(self.server, "routes_getter", None)
-                self._json({"routes": rg() if callable(rg) else []})
-                return
-
             self._text(404, "not found")
-
-            def do_POST(self) -> None:
-                self.do_GET()
             return
         content_type, _ = mimetypes.guess_type(str(path))
         self.send_response(200)
@@ -99,17 +85,27 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type or "application/octet-stream")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
+        if path.name == "index.html":
+            body = path.read_text(encoding="utf-8").replace("__STREAM_PATH__", "/stream")
+            self.wfile.write(body.encode())
+            return
         self.wfile.write(path.read_bytes())
 
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
+
     def do_GET(self) -> None:
+        path = self._request_path()
         # ---- Dashboard HTML ----
-        if self.path == "/" or self.path == "/dashboard":
+        if path == "/" or path == "/dashboard":
             self._file(_DASHBOARD_DIR / "index.html")
             return
 
         # ---- Static files ----
-        if self.path.startswith("/dashboard/static/"):
-            rel = self.path[len("/dashboard/static/"):]
+        if path.startswith("/dashboard/static/"):
+            rel = path[len("/dashboard/static/"):]
             safe = rel.lstrip("/").replace("\\", "/")
             if ".." in safe:
                 self._text(403, "forbidden")
@@ -118,7 +114,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
 
         # ---- MJPEG stream ----
-        if self.path == "/stream":
+        if path == "/stream":
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
             self.end_headers()
@@ -136,15 +132,15 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
 
         # ---- API /status ----
-        if self.path == "/api/status":
+        if path == "/api/status":
             getter = getattr(self.server, "status_getter", None)
             data = getter() if callable(getter) else {}
             self._json(data)
             return
 
         # ---- API /base/<cmd> ----
-        if self.path.startswith("/api/base/"):
-            cmd = self.path.split("/api/base/")[-1]
+        if path.startswith("/api/base/"):
+            cmd = path.split("/api/base/")[-1]
             handler = getattr(self.server, "base_handler", None)
             if callable(handler):
                 handler(cmd)
@@ -152,8 +148,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
 
         # ---- API /relay/<state> ----
-        if self.path.startswith("/api/relay/"):
-            state = self.path.split("/api/relay/")[-1].upper()
+        if path.startswith("/api/relay/"):
+            state = path.split("/api/relay/")[-1].upper()
             handler = getattr(self.server, "relay_handler", None)
             if callable(handler):
                 handler(state)
@@ -161,8 +157,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
 
         # ---- API /power/<state> ----
-        if self.path.startswith("/api/power/"):
-            state = self.path.split("/api/power/")[-1].upper()
+        if path.startswith("/api/power/"):
+            state = path.split("/api/power/")[-1].upper()
             handler = getattr(self.server, "power_handler", None)
             if callable(handler):
                 handler(state)
@@ -170,40 +166,101 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
 
         # ---- Route script builder ----
-        runner = getattr(self.server, "script_runner", None)
-        if self.path == "/route/script/status":
-            self._json(runner() if callable(runner) else {"running": False, "steps": [], "current": None})
-            return
-        if self.path == "/route/script/stop":
-            stopper = getattr(self.server, "script_stopper", None)
-            if callable(stopper): stopper()
-            self._text(200, "stopped")
-            return
-        if self.path.startswith("/route/relay"):
-            h = getattr(self.server, "relay_handler", None)
-            if callable(h): h("ON" if "on=1" in self.path.lower() else "OFF")
-            self._text(200, "ok")
-            return
-        if self.path.startswith("/control/power"):
-            h = getattr(self.server, "power_handler", None)
-            if callable(h): h("ON" if "on=1" in self.path.lower() else "OFF")
-            self._text(200, "ok")
+        if path == "/route/script/status":
+            self._json(self._script_status())
             return
         # ---- Presets ----
-        if self.path == "/presets":
+        if path == "/presets":
             pg = getattr(self.server, "presets_getter", None)
             self._json({"presets": pg() if callable(pg) else []})
             return
+        if path.startswith("/presets/"):
+            name = unquote(path.split("/presets/", 1)[1])
+            pg = getattr(self.server, "presets_getter", None)
+            presets = pg() if callable(pg) else []
+            preset = next((p for p in presets if p.get("name") == name), None)
+            self._json({"preset": preset} if preset else {"detail": "preset not found"}, 200 if preset else 404)
+            return
         # ---- Routes list ----
-        if self.path.startswith("/routes/list"):
+        if path.startswith("/routes/list"):
             rg = getattr(self.server, "routes_getter", None)
             self._json({"routes": rg() if callable(rg) else []})
+            return
+        if path.startswith("/routes/") and path.endswith("/summary"):
+            route_id = unquote(path[len("/routes/"):-len("/summary")])
+            self._json({"summary": {"route_id": route_id, "status": "not_recorded"}})
             return
 
         self._text(404, "not found")
 
-        def do_POST(self) -> None:
-            self.do_GET()
+    def do_POST(self) -> None:
+        path = self._request_path()
+        if path == "/route/script":
+            submitter = getattr(self.server, "script_submitter", None)
+            body = self._json_body()
+            ok = submitter(json.dumps(body)) if callable(submitter) else False
+            self._json({"ok": bool(ok)}, 200 if ok else 400)
+            return
+        if path == "/route/script/step":
+            submitter = getattr(self.server, "script_submitter", None)
+            step = self._json_body()
+            ok = submitter(json.dumps({"steps": [step]})) if callable(submitter) else False
+            self._json({"ok": bool(ok)}, 200 if ok else 400)
+            return
+        if path == "/route/script/stop":
+            stopper = getattr(self.server, "script_stopper", None)
+            if callable(stopper):
+                stopper()
+            self._json({"ok": True})
+            return
+        if path == "/route/relay":
+            on = (self._query().get("on") or ["0"])[0] == "1"
+            handler = getattr(self.server, "relay_handler", None)
+            if callable(handler):
+                handler("ON" if on else "OFF")
+            self._json({"ok": True, "on": on})
+            return
+        if path == "/control/power":
+            on = (self._query().get("on") or ["0"])[0] == "1"
+            handler = getattr(self.server, "power_handler", None)
+            if callable(handler):
+                handler("ON" if on else "OFF")
+            self._json({"ok": True, "on": on})
+            return
+        if path == "/control/estop_reset":
+            self._json({"ok": True})
+            return
+        if path == "/routes/delete_all":
+            self._json({"removed": 0, "errors": []})
+            return
+        self._text(404, "not found")
+
+    def do_PUT(self) -> None:
+        path = self._request_path()
+        if path.startswith("/presets/"):
+            name = unquote(path.split("/presets/", 1)[1])
+            setter = getattr(self.server, "presets_setter", None)
+            body = self._json_body()
+            body["name"] = name
+            if callable(setter):
+                setter(json.dumps(body))
+            self._json({"ok": True, "preset": body})
+            return
+        self._text(404, "not found")
+
+    def do_DELETE(self) -> None:
+        path = self._request_path()
+        if path.startswith("/presets/"):
+            name = unquote(path.split("/presets/", 1)[1])
+            deleter = getattr(self.server, "preset_deleter", None)
+            if callable(deleter):
+                deleter(name)
+            self._json({"ok": True})
+            return
+        if path.startswith("/routes/"):
+            self._json({"ok": True})
+            return
+        self._text(404, "not found")
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
