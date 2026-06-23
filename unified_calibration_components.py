@@ -726,6 +726,14 @@ class UnifiedCalibrator:
             outer_thresh=outer_thresh,
             danger_margin_px=danger_margin,
         )
+    @property
+    def robot_state(self) -> RobotState:
+        return self._robot_state
+
+    @property
+    def steering_controller(self) -> SteeringController:
+        return self._steering
+
 
     @property
     def steering_controller(self) -> SteeringController:
