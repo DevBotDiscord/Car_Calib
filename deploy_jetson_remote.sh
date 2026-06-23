@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 # =========================================================================== #
 # Jetson Nano remote deploy — archive → SCP → SSH → Docker build & start
@@ -244,7 +244,8 @@ ssh_cmd "$JETSON_PASSWORD" "${JETSON_USER}@${JETSON_HOST}" \
     SKIP_BUILD="$(shell_quote "$SKIP_BUILD")" \
     REMOTE_ENV="$(shell_quote "$remote_env")" \
     bash -s <<'REMOTE_EOF'
-set -euo pipefail
+echo "[remote] START deploy version=$VERSION"
+set -uo pipefail
 
 root_dir="${DEST_DIR%/}"
 release_dir="${root_dir}/releases/${VERSION}"
@@ -262,33 +263,67 @@ echo "[remote] Docker compose..."
 cd "$current_dir"
 
 if ! command -v docker &>/dev/null; then
-    echo "[remote] Docker not installed. Install and re-run."
+    echo "[remote] ERROR: Docker not installed."
     exit 1
 fi
 
+# Detect sudo need
+DOCKER_BIN="docker"
+if ! docker ps &>/dev/null 2>&1; then
+    if sudo -n docker ps &>/dev/null 2>&1; then
+        DOCKER_BIN="sudo docker"
+        echo "[remote] Using sudo docker"
+    else
+        echo "[remote] ERROR: docker not accessible (try: sudo usermod -aG docker \$USER && newgrp docker)"
+        exit 1
+    fi
+fi
+
 COMPOSE_CMD=""
-if docker compose version &>/dev/null 2>&1; then
-    COMPOSE_CMD="docker compose"
+if $DOCKER_BIN compose version &>/dev/null 2>&1; then
+    COMPOSE_CMD="$DOCKER_BIN compose"
 elif command -v docker-compose &>/dev/null; then
     COMPOSE_CMD="docker-compose"
 else
-    echo "[remote] docker compose not found"
+    echo "[remote] ERROR: docker compose not found"
     exit 1
 fi
+
+echo "[remote] Compose: $COMPOSE_CMD -f $COMPOSE_FILE"
 
 # Stop old
 $COMPOSE_CMD -f "$COMPOSE_FILE" down 2>/dev/null || true
 
-# Build & start
+# Build & start (may take 5-10 min first time on Jetson Nano)
+BUILD_LOG="/tmp/car-calib-build-${VERSION}.log"
+echo "[remote] Build starting... (log: $BUILD_LOG)"
 if [[ "$SKIP_BUILD" == "true" ]]; then
-    $COMPOSE_CMD -f "$COMPOSE_FILE" up -d --remove-orphans
+    $COMPOSE_CMD -f "$COMPOSE_FILE" up -d --remove-orphans > "$BUILD_LOG" 2>&1 &
 else
-    $COMPOSE_CMD -f "$COMPOSE_FILE" up --build -d --remove-orphans
+    $COMPOSE_CMD -f "$COMPOSE_FILE" up --build -d --remove-orphans > "$BUILD_LOG" 2>&1 &
 fi
+BUILD_PID=$!
 
-# Status
-sleep 2
-$COMPOSE_CMD -f "$COMPOSE_FILE" ps
+# Show log tail while building (timeout 120s)
+DEADLINE=$((SECONDS + 120))
+while kill -0 $BUILD_PID 2>/dev/null && (( SECONDS < DEADLINE )); do
+    if [[ -s "$BUILD_LOG" ]]; then
+        tail -3 "$BUILD_LOG" 2>/dev/null
+    fi
+    sleep 3
+done
+
+# Final status
+if kill -0 $BUILD_PID 2>/dev/null; then
+    echo "[remote] Build still running (PID=$BUILD_PID) — will continue in background"
+    echo "[remote] Check progress: tail -f $BUILD_LOG"
+else
+    wait $BUILD_PID || true
+    echo "[remote] Build done"
+fi
+sleep 1
+$COMPOSE_CMD -f "$COMPOSE_FILE" ps 2>/dev/null || true
+echo "[remote] Remote deploy complete — check with: docker ps | grep car-calib-jetson"
 
 # Clean old releases (keep 3)
 cd "${root_dir}/releases"
