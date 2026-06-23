@@ -377,6 +377,22 @@ def main() -> None:
             pid_error = 0.0 if theta is None else float(theta) - 90.0
 
             tel = {
+                # Fields matching old dashboard script.js expectations
+                "source": "jetson",
+                "rpi_online": True,
+                "mqtt_connected": True,
+                "estop_active": False,
+                "steer_angle": f"{servo_angle:.1f}",
+                "current_route_mode": "AUTO",
+                "centered": fsm_state == "GAPPING",
+                "relay_on": relay.relay_state,
+                # Servo feedback (stub — no wired feedback on Jetson)
+                "servo_feedback_enabled": False,
+                "servo_feedback_angle": f"{servo_angle:.1f}",
+                "servo_feedback_error": "0.0",
+                "servo_feedback_ok": True,
+                "servo_feedback_raw": 0,
+                # Our extra fields
                 "frame": frame_num,
                 "fsm": fsm_state,
                 "calib_active": calibration.calibration_active,
@@ -385,7 +401,6 @@ def main() -> None:
                 "servo": f"{servo_angle:.2f}",
                 "loop_ms": f"{loop_ms:.1f}",
                 "base": last_base_cmd,
-                "relay_on": relay.relay_state,
                 "power_pulsing": relay.power_pulsing,
             }
             _update_shared(frame, tel)

@@ -3,5 +3,5 @@ opencv-python-headless>=4.8
 python-dotenv>=1.0
 # Jetson.GPIO — only works on Jetson hardware (L4T kernel).
 # Install manually if on actual Jetson Nano/Orin:
-pip install Jetson.GPIO
+Jetson.GPIO
 # On non-Jetson ARM64: skip this, drivers will stub out gracefully.
