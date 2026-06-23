@@ -14,6 +14,8 @@ services:
     build:
       context: .
       dockerfile: docker/jetson/Dockerfile
+      args:
+        BUILDKIT_INLINE_CACHE: "1"
     image: car-calib-jetson:latest
     container_name: car-calib-jetson
     restart: unless-stopped
@@ -29,6 +31,9 @@ services:
       - /dev/mem:/dev/mem
       - ./logs:/data/logs
     environment:
+      - DOCKER_BUILDKIT=1
+      - COMPOSE_DOCKER_CLI_BUILD=1
+      - BUILDKIT_INLINE_CACHE=1
       # Main loop
       - MAIN_TARGET_HZ=${MAIN_TARGET_HZ:-30}
       - MAIN_CAMERA_INDEX=${MAIN_CAMERA_INDEX:-2}

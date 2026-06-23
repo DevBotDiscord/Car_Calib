@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1.7
 # Jetson Nano (ARM64 / L4T) — self-calibration + direct GPIO
 #
-# Build:
-#   docker build -f docker/jetson/Dockerfile -t car-calib-jetson .
+# Cache strategy: slow layers first (apt, pip), source last.
+# BuildKit cache mounts avoid re-downloading packages every build.
 #
-# Run:
-#   docker compose -f docker-compose.jetson.yml up -d
+# Build:
+#   DOCKER_BUILDKIT=1 docker build -f docker/jetson/Dockerfile -t car-calib-jetson .
 
-ARG BASE_IMAGE=nvcr.io/nvidia/l4t-base:r36.4.0
+ARG BASE_IMAGE=nvcr.io/nvidia/l4t-jetpack:r36.4.0
 FROM ${BASE_IMAGE}
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -17,11 +17,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# ------------------------------------------------------------------ #
-# System dependencies
-# ------------------------------------------------------------------ #
+# ===================================================================== #
+# Layer 1 – system packages (cached until Dockerfile or repo changes)
+# ===================================================================== #
 RUN rm -f /etc/apt/apt.conf.d/docker-clean \
-    && apt-get update \
+    && --mount=type=cache,target=/var/cache/apt,sharing=locked \
+       --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
     && apt-get install -y --no-install-recommends \
         python3-pip \
         python3-dev \
@@ -30,16 +32,17 @@ RUN rm -f /etc/apt/apt.conf.d/docker-clean \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# ------------------------------------------------------------------ #
-# Python dependencies
-# ------------------------------------------------------------------ #
+# ===================================================================== #
+# Layer 2 – Python deps (cached until requirements_jetson.txt changes)
+# ===================================================================== #
 COPY requirements_jetson.txt /tmp/requirements.txt
 
-RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install -r /tmp/requirements.txt
 
-# ------------------------------------------------------------------ #
-# App source
-# ------------------------------------------------------------------ #
+# ===================================================================== #
+# Layer 3 – App source (invalidated on any source change)
+# ===================================================================== #
 COPY . /app
 
 RUN mkdir -p /data/logs /data/certs
