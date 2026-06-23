@@ -394,6 +394,7 @@ def main() -> None:
             # --- calibration ---
             try:
                 calibration = calibrator.process_frame(frame, frame_num)
+                display_frame = calibrator.render_frame(frame, calibration)
             except CalibrationProcessingError as exc:
                 logger.exception("Calibration failure: %s", exc)
                 servo.center()
@@ -441,7 +442,7 @@ def main() -> None:
                 "base": last_base_cmd,
                 "power_pulsing": relay.power_pulsing,
             }
-            _update_shared(frame, tel)
+            _update_shared(display_frame, tel)
 
             # --- CSV ---
             csv_writer.writerow({

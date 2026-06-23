@@ -14,12 +14,10 @@ from typing import Any, Optional
 
 import cv2
 
-
-
 try:  # Optional dependency: only needed when stream server is started.
-    from fastapi import Request
+    from fastapi import Request as _FastAPIRequest
 except Exception:  # noqa: BLE001
-    Request = Any  # type: ignore[assignment,misc]
+    _FastAPIRequest = Any  # type: ignore[assignment,misc]
 
 
 @dataclass
@@ -64,6 +62,9 @@ class HttpsMjpegServer:
         frame_store: SharedFrameStore,
         script_runner: Any | None = None,
         rpi_status_provider: Any | None = None,
+        steering_controller: Any | None = None,
+        esp32_bridge: Any | None = None,
+        esp32_flasher: Any | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -76,6 +77,9 @@ class HttpsMjpegServer:
         self._frame_store = frame_store
         self._script_runner = script_runner
         self._rpi_status_provider = rpi_status_provider
+        self._steering_controller = steering_controller
+        self._esp32_bridge = esp32_bridge
+        self._esp32_flasher = esp32_flasher
 
         self._server: Any = None
         self._thread: threading.Thread | None = None
@@ -158,7 +162,6 @@ class HttpsMjpegServer:
                     "last_frame_unix": ts,
                     "telemetry": telemetry,
                     "rpi_status": rpi_status,
-                    "actuator": {"mode": "mqtt"},
                 }
             )
 
@@ -169,6 +172,74 @@ class HttpsMjpegServer:
             if jpeg is None:
                 return Response(status_code=503, content=b"No frame available")
             return Response(content=jpeg, media_type="image/jpeg")
+
+        @app.get("/control/params")
+        def get_control_params(token: str = "") -> Any:
+            _check_token(token)
+            ctrl = self._steering_controller
+            if ctrl is None:
+                return JSONResponse({"available": False, "params": None, "bounds": None})
+            return JSONResponse({
+                "available": True,
+                "params": ctrl.get_params(),
+                "bounds": ctrl.PARAM_BOUNDS,
+            })
+
+        @app.post("/control/params")
+        async def post_control_params(request: Request, token: str = "") -> Any:
+            _check_token(token)
+            ctrl = self._steering_controller
+            if ctrl is None:
+                raise HTTPException(status_code=503, detail="steering controller not available")
+            try:
+                body = await request.json()
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}")
+            try:
+                new_params = ctrl.update_params(body)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            return JSONResponse({"params": new_params, "bounds": ctrl.PARAM_BOUNDS})
+
+        @app.get("/control/presets")
+        def control_presets_list(token: str = "") -> Any:
+            _check_token(token)
+            return JSONResponse({"ok": True, "presets": _tune_presets_list()})
+
+        @app.get("/control/presets/{name}")
+        def control_preset_get(name: str, token: str = "") -> Any:
+            _check_token(token)
+            data = _tune_preset_load(name)
+            if data is None:
+                raise HTTPException(status_code=404, detail="preset_not_found")
+            return JSONResponse({"ok": True, "preset": data})
+
+        @app.put("/control/presets/{name}")
+        async def control_preset_save(name: str, request: Request, token: str = "") -> Any:
+            _check_token(token)
+            ctrl = self._steering_controller
+            if ctrl is None:
+                raise HTTPException(status_code=503, detail="steering controller not available")
+            try:
+                body = await request.json()
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}")
+            # Snapshot the params to store: accept an explicit params object,
+            # otherwise capture the controller's current live values.
+            params = body.get("params") if isinstance(body, dict) else None
+            if params is None:
+                params = ctrl.get_params()
+            try:
+                _tune_preset_save(name, params)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            return JSONResponse({"ok": True, "preset": _tune_preset_load(name)})
+
+        @app.delete("/control/presets/{name}")
+        def control_preset_delete(name: str, token: str = "") -> Any:
+            _check_token(token)
+            removed = _tune_preset_delete(name)
+            return JSONResponse({"ok": True, "removed": removed})
 
         @app.get(self._stream_path)
         def stream(token: str = "") -> Any:
@@ -228,7 +299,7 @@ class HttpsMjpegServer:
             return JSONResponse({"ok": True, "status": self._script_runner.status()})
 
         @app.post("/route/script")
-        async def route_script_submit(request: Request, token: str = "") -> Any:
+        async def route_script_submit(request: _FastAPIRequest, token: str = "") -> Any:
             _check_token(token)
             if self._script_runner is None:
                 raise HTTPException(status_code=503, detail="script_runner_disabled")
@@ -256,7 +327,7 @@ class HttpsMjpegServer:
             return JSONResponse({"ok": True, "status": self._script_runner.status()})
 
         @app.post("/route/script/step")
-        async def route_script_step(request: Request, token: str = "") -> Any:
+        async def route_script_step(request: _FastAPIRequest, token: str = "") -> Any:
             """Run a single step without opening a route session (no recording)."""
             _check_token(token)
             if self._script_runner is None:
@@ -298,14 +369,6 @@ class HttpsMjpegServer:
             self._script_runner.publish_relay(bool(on))
             return JSONResponse({"ok": True, "relay": "ON" if on else "OFF"})
 
-        @app.post("/control/power")
-        def control_power(on: int = 0, token: str = "") -> Any:
-            _check_token(token)
-            if self._script_runner is None:
-                raise HTTPException(status_code=503, detail="script_runner_disabled")
-            self._script_runner.publish_power(bool(on))
-            return JSONResponse({"ok": True, "power": "ON" if on else "OFF"})
-
         @app.post("/control/estop_reset")
         def control_estop_reset(token: str = "") -> Any:
             _check_token(token)
@@ -313,6 +376,59 @@ class HttpsMjpegServer:
                 raise HTTPException(status_code=503, detail="script_runner_disabled")
             self._script_runner.publish_estop_reset()
             return JSONResponse({"ok": True, "requested": True})
+
+        @app.get("/esp32/status")
+        def esp32_status(token: str = "") -> Any:
+            _check_token(token)
+            bridge = self._esp32_bridge
+            connected = False
+            port = None
+            if bridge is not None:
+                try:
+                    connected = bridge.is_connected()
+                    port = bridge.current_port()
+                except Exception:  # noqa: BLE001
+                    pass
+            flash = self._esp32_flasher.status() if self._esp32_flasher is not None else None
+            return JSONResponse({
+                "available": self._esp32_flasher is not None,
+                "connected": connected,
+                "port": port,
+                "flash": flash,
+            })
+
+        @app.post("/esp32/firmware")
+        async def esp32_firmware_upload(request: Request, token: str = "") -> Any:
+            _check_token(token)
+            if self._esp32_flasher is None:
+                raise HTTPException(status_code=503, detail="esp32 flasher not available")
+            form = await request.form()
+            upload = form.get("file")
+            if upload is None or not hasattr(upload, "read"):
+                raise HTTPException(status_code=400, detail="missing 'file' (.ino) upload")
+            raw = await upload.read()
+            try:
+                ino_text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                raise HTTPException(status_code=400, detail="file is not valid UTF-8 text (.ino expected)")
+            if len(ino_text) > 1_000_000:
+                raise HTTPException(status_code=400, detail="sketch too large (>1MB)")
+            try:
+                self._esp32_flasher.save_sketch(ino_text)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+            return JSONResponse({"ok": True, "status": self._esp32_flasher.status()})
+
+        @app.post("/esp32/flash")
+        def esp32_flash(token: str = "") -> Any:
+            _check_token(token)
+            if self._esp32_flasher is None:
+                raise HTTPException(status_code=503, detail="esp32 flasher not available")
+            try:
+                self._esp32_flasher.start_flash()
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+            return JSONResponse({"ok": True, "status": self._esp32_flasher.status()})
 
         @app.get("/routes/list")
         def routes_list(token: str = "", limit: int = 30) -> Any:
@@ -418,7 +534,7 @@ class HttpsMjpegServer:
             return JSONResponse({"ok": True, "preset": data})
 
         @app.put("/presets/{name}")
-        async def presets_put(name: str, request: Request, token: str = "") -> Any:
+        async def presets_put(name: str, request: _FastAPIRequest, token: str = "") -> Any:
             _check_token(token)
             try:
                 payload = await request.json()
@@ -684,4 +800,79 @@ def _normalize_path(path: str) -> str:
     if not path:
         return "/"
     return path if path.startswith("/") else f"/{path}"
+
+
+# ----- tune preset CRUD (steering controller params) ----------------------
+
+def _tune_preset_dir() -> Path:
+    from config.settings import ROUTE_LOG_ROOT
+    root = _resolve_route_root(ROUTE_LOG_ROOT)
+    p = root / "_tune_presets"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _tune_preset_path(name: str) -> Path:
+    if not name or len(name) > _PRESET_NAME_MAX:
+        raise ValueError(f"preset name length must be 1..{_PRESET_NAME_MAX}")
+    safe = _safe_basename(name)
+    for ch in safe:
+        if not (ch.isalnum() or ch in "-_ "):
+            raise ValueError(f"preset name char not allowed: {ch!r}")
+    return _tune_preset_dir() / f"{safe}.json"
+
+
+def _tune_preset_save(name: str, params: dict[str, Any]) -> None:
+    import json as _json
+    path = _tune_preset_path(name)
+    payload = {
+        "name": name,
+        "params": params,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    path.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _tune_preset_load(name: str) -> dict[str, Any] | None:
+    import json as _json
+    try:
+        path = _tune_preset_path(name)
+    except ValueError:
+        return None
+    if not path.exists():
+        return None
+    try:
+        return _json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _tune_preset_delete(name: str) -> bool:
+    try:
+        path = _tune_preset_path(name)
+    except ValueError:
+        return False
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
+def _tune_presets_list() -> list[dict[str, Any]]:
+    import json as _json
+    out: list[dict[str, Any]] = []
+    pdir = _tune_preset_dir()
+    if not pdir.exists():
+        return out
+    for child in sorted(pdir.glob("*.json")):
+        try:
+            data = _json.loads(child.read_text(encoding="utf-8"))
+            out.append({
+                "name": data.get("name", child.stem),
+                "updated_at": data.get("updated_at"),
+            })
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
 

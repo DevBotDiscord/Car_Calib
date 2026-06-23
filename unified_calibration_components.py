@@ -726,14 +726,6 @@ class UnifiedCalibrator:
             outer_thresh=outer_thresh,
             danger_margin_px=danger_margin,
         )
-    @property
-    def robot_state(self) -> RobotState:
-        return self._robot_state
-
-    @property
-    def steering_controller(self) -> SteeringController:
-        return self._steering
-
 
     @property
     def steering_controller(self) -> SteeringController:
@@ -931,7 +923,7 @@ class UnifiedCalibrator:
         """Process one frame and apply the offline telemetry side effects."""
         result = self.process_frame(frame, frame_num)
         if self._telemetry is None:
-            self._last_rendered_frame = frame.copy()
+            self._last_rendered_frame = self.render_frame(frame, result)
             return result.steering_angle
 
         stage = "runtime_output"
@@ -957,6 +949,39 @@ class UnifiedCalibrator:
                 process=process,
                 cause=exc,
             ) from exc
+
+    def render_frame(self, frame: np.ndarray, result: CalibrationResult) -> np.ndarray:
+        """Render Nam-core overlay for wrappers that own their own runtime IO."""
+        telemetry_data = result.telemetry
+        debug_data = result.debug_data
+        rendered = self._overlay_drawer.draw(
+            frame,
+            {
+                "state": str(telemetry_data.get("fsm_state", "VISION_LOST")),
+                "danger_boundary": telemetry_data.get("danger_boundary"),
+                "recovery_direction": telemetry_data.get("recovery_direction"),
+                "danger_threshold_x": telemetry_data.get("danger_threshold_x"),
+                "raw_vp_angle": telemetry_data.get("vp_angle"),
+                "left_intercept_x": telemetry_data.get("left_intercept"),
+                "right_intercept_x": telemetry_data.get("right_intercept"),
+                "final_steering_cmd": telemetry_data.get("servo_angle", 90.0),
+                "lines": debug_data.get("vision_debug", {}).get("selected_lines", []),
+                "left_line": debug_data.get("vision_debug", {}).get("selected_left_line"),
+                "right_line": debug_data.get("vision_debug", {}).get("selected_right_line"),
+                "vp_coord": (
+                    (
+                        int(telemetry_data["vp_x"]),
+                        int(telemetry_data["vp_y"]),
+                    )
+                    if telemetry_data.get("vp_x") is not None
+                    and telemetry_data.get("vp_y") is not None
+                    else None
+                ),
+                "vp_location": telemetry_data.get("vp_location", "missing"),
+            },
+        )
+        self._last_rendered_frame = rendered
+        return rendered
 
     def _log_terminal_status(self, frame_num: int, telemetry_data: dict[str, Any]) -> None:
         """Emit periodic terminal status logs for live runtime visibility."""
