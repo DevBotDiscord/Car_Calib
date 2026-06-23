@@ -166,24 +166,22 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     # Camera
     # ------------------------------------------------------------------ #
-    # Camera auto-detect: try preferred index, fallback 0..4
-    candidates = [args.camera] + [i for i in range(5) if i != args.camera]
-    cap = None
-    for idx in candidates:
-        test = cv2.VideoCapture(idx)
-        if test.isOpened():
-            cap = test
-            logger.info("Camera opened at index %d", idx)
-            break
-        test.release()
-    if cap is None:
-        logger.error("No camera found across %s", candidates)
-        servo.close()
-        base.close()
-        relay.close()
-        sys.exit(1)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    # Camera auto-detect: keep trying until we get one
+    def acquire_camera() -> cv2.VideoCapture:
+        while True:
+            candidates = [args.camera] + [i for i in range(5) if i != args.camera]
+            for idx in candidates:
+                test = cv2.VideoCapture(idx)
+                if test.isOpened():
+                    logger.info("Camera opened at index %d", idx)
+                    test.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    test.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    return test
+                test.release()
+            logger.warning("No camera found across %s, retrying in 2s...", candidates)
+            time.sleep(2)
+
+    cap = acquire_camera()
 
     # ------------------------------------------------------------------ #
     # CSV logging
@@ -213,8 +211,14 @@ def main() -> None:
 
             ret, frame = cap.read()
             if not ret or frame is None:
-                logger.warning("frame %d capture failed", frame_num)
-                time.sleep(0.01)
+                logger.warning("Frame %d capture failed, re-acquiring camera...", frame_num)
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+                base.stop()
+                cap = acquire_camera()
+                time.sleep(0.1)
                 continue
 
             if args.flip:
