@@ -12,7 +12,7 @@ services:
     pid: host
     privileged: true
     env_file:
-      - .env.control-direct
+      - .env.production
     environment:
       CONTROL_MODE: direct
       START_PIGPIOD: ${START_PIGPIOD:-false}
