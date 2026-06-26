@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import import_module
 from math import hypot
 from pathlib import Path
@@ -29,6 +29,7 @@ class CalibrationResult:
     observation_angle: float | None
     calibration_active: bool
     telemetry: dict[str, Any]
+    debug_data: dict[str, Any] = field(default_factory=dict)
 
 
 class CalibrationProcessingError(RuntimeError):
@@ -636,6 +637,7 @@ class UnifiedCalibrator:
         self._stream_enabled = bool(self._stream_configs.get("MAIN_HTTPS_STREAM_ENABLED", False))
         self._last_rendered_frame: np.ndarray | None = None
         self._last_telemetry: dict[str, Any] = {}
+        self._last_debug_data: dict[str, Any] = {}
         self._overlay_drawer = OverlayDrawer(
             inner_thresh=inner_thresh,
             outer_thresh=outer_thresh,
@@ -675,6 +677,9 @@ class UnifiedCalibrator:
         selected = self._vision._apply_geometric_filter(lines)
         if selected is not None:
             line1, line2 = selected
+            detector_debug["selected_lines"] = [line1, line2]
+            detector_debug["selected_left_line"] = line1
+            detector_debug["selected_right_line"] = line2
             intercept_a, intercept_b = self._geometry.calculate_bottom_intercepts(
                 line1,
                 line2,
@@ -742,12 +747,14 @@ class UnifiedCalibrator:
         debug_data: dict[str, Any] = {
             "show_detector_debug": bool(_get_bool("MAIN_SHOW_DETECTOR_DEBUG", False)),
             "detector_debug": detector_debug,
+            "vision_debug": detector_debug,
         }
 
         self._last_telemetry = dict(telemetry_data)
+        self._last_debug_data = dict(debug_data)
         rendered = self._telemetry.update_visuals(frame, telemetry_data, debug_data)
         self._last_rendered_frame = rendered
-        if self._telemetry_enabled:
+        if getattr(self, "_telemetry_enabled", True):
             self._telemetry.log_state(frame_num, telemetry_data)
             self._telemetry.write_video(rendered)
             self._telemetry.publish_stream(rendered, telemetry_data)
@@ -778,6 +785,7 @@ class UnifiedCalibrator:
             observation_angle=observation_angle,
             calibration_active=bool(int(telemetry.get("calibration_active", 0) or 0)),
             telemetry=telemetry,
+            debug_data=dict(getattr(self, "_last_debug_data", {})),
         )
 
     def render_frame(self, frame: np.ndarray, result: CalibrationResult) -> np.ndarray:
