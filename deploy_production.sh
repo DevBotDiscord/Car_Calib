@@ -16,14 +16,8 @@ AUTO_CONFIRM=false
 usage() {
     cat <<'EOF'
 Usage:
-  ./deploy_production.sh [all|minipc|ras] [--yes] [--env <path>] [--no-build] [--env-only]
+  ./deploy_production.sh [all|minipc|ras|rpi] [--yes] [--env <path>] [--no-build] [--env-only]
 
-Targets:
-  all     Deploy both vision (MiniPC) and Raspberry Pi bridge
-  minipc  Deploy only the vision stack
-  ras     Deploy only the Raspberry Pi MQTT bridge
-
-Options:
   --yes         Skip interactive confirmation prompt
   --env <path>  Use custom environment file (default: .env.production)
   --no-build    Skip image build step and reuse existing local images on target
@@ -422,7 +416,7 @@ print_summary() {
     if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
         echo "  MiniPC logs: ssh -p ${MINIPC_SSH_PORT} ${MINIPC_USER}@${MINIPC_HOST} 'cd ${MINIPC_DEST_DIR}/current && ${MINIPC_DOCKER_LOG_CMD}'"
     fi
-    if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
+    if [[ "$TARGET" == "all" || "$TARGET" == "ras" || "$TARGET" == "rpi" ]]; then
         echo "  Raspberry Pi logs: ssh -p ${RPI_SSH_PORT} ${RPI_USER}@${RPI_HOST} 'cd ${RPI_DEST_DIR}/current && ${RPI_DOCKER_LOG_CMD}'"
     fi
     echo ""
@@ -430,7 +424,7 @@ print_summary() {
 
 while (( "$#" > 0 )); do
     case "$1" in
-        all|minipc|ras)
+        all|minipc|ras|rpi)
             TARGET="$1"
             shift
             ;;
@@ -468,7 +462,7 @@ while (( "$#" > 0 )); do
 done
 
 case "$TARGET" in
-    all|minipc|ras) ;;
+    all|minipc|ras|rpi) ;;
     *)
         usage
         exit 1
@@ -521,6 +515,15 @@ RPI_USE_SUDO_DOCKER="${RPI_USE_SUDO_DOCKER:-true}"
 MINIPC_USE_SUDO_REMOTE="${MINIPC_USE_SUDO_REMOTE:-true}"
 RPI_USE_SUDO_REMOTE="${RPI_USE_SUDO_REMOTE:-true}"
 MINIPC_DOCKER_LOG_CMD="docker compose -p ${MINIPC_COMPOSE_PROJECT_NAME} -f ${MINIPC_COMPOSE_FILE} logs -f"
+RPI_DIRECT_DEST_DIR="${RPI_DIRECT_DEST_DIR:-/opt/car-calib/rpi-direct}"
+RPI_DIRECT_COMPOSE_FILE="${RPI_DIRECT_COMPOSE_FILE:-docker-compose.control-direct.yml}"
+RPI_DIRECT_COMPOSE_PROJECT_NAME="${RPI_DIRECT_COMPOSE_PROJECT_NAME:-car-calib-rpi-direct}"
+RPI_DIRECT_USE_SUDO_DOCKER="${RPI_DIRECT_USE_SUDO_DOCKER:-true}"
+RPI_DIRECT_USE_SUDO_REMOTE="${RPI_DIRECT_USE_SUDO_REMOTE:-true}"
+RPI_DIRECT_DOCKER_LOG_CMD="docker compose -p ${RPI_DIRECT_COMPOSE_PROJECT_NAME} -f ${RPI_DIRECT_COMPOSE_FILE} logs -f"
+if [[ "${RPI_DIRECT_USE_SUDO_DOCKER}" == "true" ]]; then
+    RPI_DIRECT_DOCKER_LOG_CMD="sudo ${RPI_DIRECT_DOCKER_LOG_CMD}"
+fi
 RPI_DOCKER_LOG_CMD="docker compose -p ${RPI_COMPOSE_PROJECT_NAME} -f ${RPI_COMPOSE_FILE} logs -f"
 if [[ "${MINIPC_USE_SUDO_DOCKER}" == "true" ]]; then
     MINIPC_DOCKER_LOG_CMD="sudo ${MINIPC_DOCKER_LOG_CMD}"
@@ -532,7 +535,7 @@ fi
 if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
     require_vars MINIPC_HOST MINIPC_USER
 fi
-if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
+if [[ "$TARGET" == "all" || "$TARGET" == "ras" || "$TARGET" == "rpi" ]]; then
     require_vars RPI_HOST RPI_USER
 fi
 
@@ -598,6 +601,16 @@ if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
         echo "  Raspberry Pi host key: pinned"
     fi
 fi
+if [[ "$TARGET" == "all" || "$TARGET" == "rpi" ]]; then
+    echo "  RPi Direct: ${RPI_USER}@${RPI_HOST}:${RPI_SSH_PORT} -> ${RPI_DIRECT_DEST_DIR}"
+    echo "  RPi Direct compose: ${RPI_DIRECT_COMPOSE_FILE} (vision+control unified)"
+    if [[ -n "${RPI_PASSWORD}" ]]; then
+        echo "  RPi Direct auth: password"
+    else
+        echo "  RPi Direct auth: ssh-key"
+    fi
+    echo "  RPi Direct remote sudo: ${RPI_DIRECT_USE_SUDO_REMOTE}"
+fi
 echo ""
 
 deploy_steps=0
@@ -605,6 +618,9 @@ if [[ "$TARGET" == "all" || "$TARGET" == "minipc" ]]; then
     deploy_steps=$((deploy_steps + 1))
 fi
 if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
+    deploy_steps=$((deploy_steps + 1))
+fi
+if [[ "$TARGET" == "all" || "$TARGET" == "rpi" ]]; then
     deploy_steps=$((deploy_steps + 1))
 fi
 
@@ -645,6 +661,25 @@ if [[ "$TARGET" == "all" || "$TARGET" == "ras" ]]; then
         "$RPI_COMPOSE_PROJECT_NAME" \
         "$RPI_USE_SUDO_DOCKER" \
         "$RPI_USE_SUDO_REMOTE" \
+        "${RPI_SSH_HOST_KEY:-}" \
+        "${RPI_SUDO_PASSWORD:-}" \
+        "$DEPLOY_SKIP_BUILD" \
+        "$DEPLOY_ENV_ONLY"
+    step_index=$((step_index + 1))
+fi
+
+if [[ "$TARGET" == "all" || "$TARGET" == "rpi" ]]; then
+    log_step "[${step_index}/${total_steps}] Deploying unified vision+control to Raspberry Pi..."
+    deploy_target "rpi" \
+        "$RPI_HOST" \
+        "$RPI_USER" \
+        "$RPI_SSH_PORT" \
+        "${RPI_PASSWORD:-}" \
+        "$RPI_DIRECT_DEST_DIR" \
+        "$RPI_DIRECT_COMPOSE_FILE" \
+        "$RPI_DIRECT_COMPOSE_PROJECT_NAME" \
+        "$RPI_DIRECT_USE_SUDO_DOCKER" \
+        "$RPI_DIRECT_USE_SUDO_REMOTE" \
         "${RPI_SSH_HOST_KEY:-}" \
         "${RPI_SUDO_PASSWORD:-}" \
         "$DEPLOY_SKIP_BUILD" \
