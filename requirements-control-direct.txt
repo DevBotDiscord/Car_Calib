@@ -1,0 +1,8 @@
+opencv-python-headless>=4.5.0
+numpy>=1.21.0
+python-dotenv>=1.0.0
+paho-mqtt>=2.1.0
+pigpio>=1.78
+fastapi>=0.110.0
+uvicorn>=0.29.0
+cryptography>=42.0.0

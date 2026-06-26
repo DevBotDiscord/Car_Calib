@@ -26,6 +26,7 @@ addition to the standard text log. When a route session is active a parallel
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -76,6 +77,9 @@ from config.settings import (
 )
 from control.steering_controller import SteeringController
 from drivers.mqtt_control_client import MQTTControlClient
+from drivers.pigpio_base import PigpioBaseDriver
+from drivers.pigpio_relay import PigpioRelayDriver
+from drivers.pigpio_servo import PigpioServoDriver
 from drivers.servo_driver import ServoDriver
 from models.robot_state import FSMState, RobotState
 from runtime.https_stream import HttpsMjpegServer, SharedFrameStore, ensure_self_signed_cert
@@ -156,6 +160,20 @@ def _format_bbox(bbox: tuple[int, int, int, int] | None) -> str:
     return f"{x},{y},{w},{h}"
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return int(raw)
+
+
 def main() -> None:
     """Run the 30 Hz heading-hold control loop."""
     parser = build_main_arg_parser(
@@ -193,7 +211,34 @@ def main() -> None:
         center_angle=state.servo_center_angle,
         max_offset=state.max_steering_offset,
     )
-    servo = ServoDriver()
+    control_mode = os.getenv("CONTROL_MODE", "mqtt").strip().lower()
+    direct_control = control_mode in {"direct", "control-direct", "pigpio"}
+    base_driver: PigpioBaseDriver | None = None
+    relay_driver: PigpioRelayDriver | None = None
+    if direct_control:
+        pigpio_host = os.getenv("PIGPIO_HOST", "127.0.0.1")
+        pigpio_port = _env_int("PIGPIO_PORT", 8888)
+        servo = PigpioServoDriver(
+            pin=_env_int("SERVO_PIN", 12),
+            host=pigpio_host,
+            port=pigpio_port,
+        )
+        base_driver = PigpioBaseDriver(
+            out1=_env_int("BASE_OUT1", 17),
+            out2=_env_int("BASE_OUT2", 27),
+            out3=_env_int("BASE_OUT3", 22),
+            host=pigpio_host,
+            port=pigpio_port,
+        )
+        relay_driver = PigpioRelayDriver(
+            relay_pin=_env_int("RELAY_PIN", 13),
+            active_low=_env_bool("RELAY_ACTIVE_LOW", False),
+            host=pigpio_host,
+            port=pigpio_port,
+        )
+        logger.info("Control mode: direct pigpio (%s:%d)", pigpio_host, pigpio_port)
+    else:
+        servo = ServoDriver()
     csv_writer, csv_file = init_csv_logger(args.csv_output, _CSV_FIELDNAMES)
 
     cap = None
@@ -309,6 +354,10 @@ def main() -> None:
         return client
 
     def publish_base_stop(reason: str) -> None:
+        if base_driver is not None:
+            base_driver.stop()
+            logger.warning("Direct base STOP: %s", reason)
+            return
         if base_stop_client is None:
             logger.warning("Cannot publish base STOP (%s): MQTT base client unavailable", reason)
             return
@@ -319,21 +368,22 @@ def main() -> None:
             logger.error("Base STOP publish failed (%s): %s", reason, exc)
 
     mqtt_control_client: MQTTControlClient | None = None
-    try:
-        mqtt_control_client = MQTTControlClient(
-            on_route=on_route_control,
-            on_mode=on_mode_control,
-        )
-        mqtt_control_client.setup()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("MQTT control client setup failed: %s", exc)
-        mqtt_control_client = None
+    if not direct_control:
+        try:
+            mqtt_control_client = MQTTControlClient(
+                on_route=on_route_control,
+                on_mode=on_mode_control,
+            )
+            mqtt_control_client.setup()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MQTT control client setup failed: %s", exc)
+            mqtt_control_client = None
 
-    try:
-        base_stop_client = setup_base_stop_client()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("MQTT base STOP client setup failed: %s", exc)
-        base_stop_client = None
+        try:
+            base_stop_client = setup_base_stop_client()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MQTT base STOP client setup failed: %s", exc)
+            base_stop_client = None
 
     script_runner = None
     if args.stream_enabled:
@@ -345,8 +395,19 @@ def main() -> None:
             valid_days=MAIN_HTTPS_SELF_SIGNED_DAYS,
         )
         try:
-            from runtime.route_script import RouteScriptRunner
-            script_runner = RouteScriptRunner()
+            if direct_control:
+                from runtime.direct_control_script import DirectControlScriptRunner
+                if base_driver is None:
+                    raise RuntimeError("direct base driver unavailable")
+                script_runner = DirectControlScriptRunner(
+                    servo=servo,
+                    base=base_driver,
+                    relay=relay_driver,
+                    on_route=on_route_control,
+                )
+            else:
+                from runtime.route_script import RouteScriptRunner
+                script_runner = RouteScriptRunner()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Route script runner disabled: %s", exc)
             script_runner = None
@@ -483,6 +544,8 @@ def main() -> None:
                     "GAPPING",
                     "TRACKING_COAST",
                 )
+                if script_runner is not None and getattr(script_runner, "is_servo_pinned", lambda: False)():
+                    suppress_send = True
                 if not suppress_send:
                     servo.send_angle(servo_angle)
                 hardware_send_latency_ms = (time.monotonic() - send_start) * 1000.0
@@ -734,6 +797,16 @@ def main() -> None:
                 pass
             try:
                 base_stop_client.loop_stop()
+            except Exception:  # noqa: BLE001
+                pass
+        if base_driver is not None:
+            try:
+                base_driver.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if relay_driver is not None:
+            try:
+                relay_driver.close()
             except Exception:  # noqa: BLE001
                 pass
         if cap is not None:

@@ -1,0 +1,27 @@
+services:
+  control-direct:
+    build:
+      context: .
+      dockerfile: docker/control-direct/Dockerfile
+      args:
+        BASE_IMAGE: ${RPI_BASE_IMAGE:-python:3.11-slim-bookworm}
+    image: ${CONTROL_DIRECT_IMAGE_NAME:-car-calib-control-direct:latest}
+    container_name: ${CONTROL_DIRECT_CONTAINER_NAME:-car-calib-control-direct}
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    privileged: true
+    env_file:
+      - .env.control-direct
+    environment:
+      CONTROL_MODE: direct
+      START_PIGPIOD: ${START_PIGPIOD:-false}
+      PIGPIO_HOST: ${PIGPIO_HOST:-127.0.0.1}
+      PIGPIO_PORT: ${PIGPIO_PORT:-8888}
+    devices:
+      - /dev/vcio:/dev/vcio
+      - /dev/gpiomem:/dev/gpiomem
+      - /dev/mem:/dev/mem
+    command:
+      - python
+      - main.py
