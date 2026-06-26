@@ -17,7 +17,6 @@ class OverlayTheme:
     yellow: tuple[int, int, int] = (0, 255, 255)
     red: tuple[int, int, int] = (0, 0, 255)
     cyan: tuple[int, int, int] = (255, 255, 0)
-    magenta: tuple[int, int, int] = (255, 0, 255)
     vp_yellow: tuple[int, int, int] = (0, 255, 255)
 
 
@@ -50,45 +49,29 @@ class OverlayDrawer:
         frame_h, frame_w = output.shape[:2]
 
         state = str(debug_packet.get("state", "VISION_LOST"))
-        danger_boundary = debug_packet.get("danger_boundary")
-        recovery_direction = debug_packet.get("recovery_direction")
-        danger_threshold_x = self._as_int_or_none(debug_packet.get("danger_threshold_x"))
         raw_vp_angle = self._as_float(debug_packet.get("raw_vp_angle"), self.angle_center)
         left_intercept_x = self._as_int_or_none(debug_packet.get("left_intercept_x"))
         right_intercept_x = self._as_int_or_none(debug_packet.get("right_intercept_x"))
         final_cmd = self._as_float(debug_packet.get("final_steering_cmd"), self.angle_center)
-        vp_coord = self._as_point_or_none(debug_packet.get("vp_coord"))
-        vp_location = str(debug_packet.get("vp_location", "missing"))
+        vp_coord = self._as_point(debug_packet.get("vp_coord"), (frame_w // 2, frame_h // 3))
         lines = self._normalize_lines(debug_packet.get("lines") or [])
-        left_line = self._normalize_line(debug_packet.get("left_line"))
-        right_line = self._normalize_line(debug_packet.get("right_line"))
 
         self._draw_floor_visuals(
             output,
             frame_w=frame_w,
             frame_h=frame_h,
             lines=lines,
-            left_line=left_line,
-            right_line=right_line,
             vp_coord=vp_coord,
-            vp_location=vp_location,
             left_intercept_x=left_intercept_x,
             right_intercept_x=right_intercept_x,
         )
         self._draw_telemetry_panel(
             output,
             state=state,
-            danger_boundary=danger_boundary,
-            recovery_direction=recovery_direction,
-            danger_threshold_x=danger_threshold_x,
             raw_vp_angle=raw_vp_angle,
-            vp_coord=vp_coord,
-            vp_location=vp_location,
             left_intercept_x=left_intercept_x,
             right_intercept_x=right_intercept_x,
             final_cmd=final_cmd,
-            left_line=left_line,
-            right_line=right_line,
         )
         self._draw_hysteresis_gauge(output, frame_w=frame_w, frame_h=frame_h, raw_vp_angle=raw_vp_angle)
         return output
@@ -98,22 +81,15 @@ class OverlayDrawer:
         frame: np.ndarray,
         *,
         state: str,
-        danger_boundary: Any,
-        recovery_direction: Any,
-        danger_threshold_x: int | None,
         raw_vp_angle: float,
-        vp_coord: tuple[int, int] | None,
-        vp_location: str,
         left_intercept_x: int | None,
         right_intercept_x: int | None,
         final_cmd: float,
-        left_line: tuple[int, int, int, int] | None,
-        right_line: tuple[int, int, int, int] | None,
     ) -> None:
         panel_x = 8
         panel_y = 8
-        panel_w = 500
-        panel_h = 262
+        panel_w = 330
+        panel_h = 148
 
         self._fill_alpha_rect(frame, (panel_x, panel_y), (panel_x + panel_w, panel_y + panel_h), (0, 0, 0), 0.58)
         self._draw_text(frame, "HUD / TELEMETRY", (panel_x + 12, panel_y + 24), self.theme.white, scale=0.58, thickness=1)
@@ -123,25 +99,13 @@ class OverlayDrawer:
 
         entries = [
             (f"STATE: {state}", state_color),
-            (
-                "DANGER: "
-                f"{danger_boundary or '-'} @ X={self._format_value(danger_threshold_x)}",
-                state_color,
-            ),
-            (f"RECOVERY: {recovery_direction or '-'}", state_color),
             (f"RAW VP ANGLE: {raw_vp_angle:.1f}", self.theme.white),
             (f"HEADING ERROR: {heading_error:+.1f}", self.theme.white),
-            (
-                f"VP RAW: {self._format_point(vp_coord)} [{vp_location.upper()}]",
-                self.theme.vp_yellow,
-            ),
             (
                 "BOTTOM INTERCEPTS: "
                 f"L={self._format_value(left_intercept_x)} R={self._format_value(right_intercept_x)}",
                 self.theme.white,
             ),
-            (f"LEFT/NEG: {self._format_line(left_line)}", self.theme.green),
-            (f"RIGHT/POS: {self._format_line(right_line)}", self.theme.magenta),
             (f"FINAL CMD: {final_cmd:.1f}", self.theme.white),
         ]
 
@@ -157,10 +121,7 @@ class OverlayDrawer:
         frame_w: int,
         frame_h: int,
         lines: list[tuple[int, int, int, int]],
-        left_line: tuple[int, int, int, int] | None,
-        right_line: tuple[int, int, int, int] | None,
-        vp_coord: tuple[int, int] | None,
-        vp_location: str,
+        vp_coord: tuple[int, int],
         left_intercept_x: int | None,
         right_intercept_x: int | None,
     ) -> None:
@@ -169,91 +130,32 @@ class OverlayDrawer:
 
         margin = max(0, min(self.danger_margin_px, frame_w))
         if margin > 0:
-            cv2.line(frame, (margin, 0), (margin, frame_h - 1), self.theme.red, 2, cv2.LINE_AA)
-            right_threshold = max(0, frame_w - margin)
-            cv2.line(
-                frame,
-                (right_threshold, 0),
-                (right_threshold, frame_h - 1),
-                self.theme.red,
-                2,
-                cv2.LINE_AA,
-            )
+            self._fill_alpha_rect(frame, (0, 0), (margin, frame_h), self.theme.red, 0.16)
+            self._fill_alpha_rect(frame, (max(0, frame_w - margin), 0), (frame_w, frame_h), self.theme.red, 0.16)
 
         for line in lines:
             x1, y1, x2, y2 = line
             line_color = self.theme.green
+            bottom_x = self._line_bottom_x(line)
+            if bottom_x is not None:
+                if bottom_x < margin or bottom_x > (frame_w - margin):
+                    line_color = self.theme.red
             cv2.line(frame, (x1, y1), (x2, y2), line_color, 3, cv2.LINE_AA)
 
-        if left_line is not None:
-            self._draw_labeled_line(frame, left_line, "L / NEG", self.theme.green)
-        if right_line is not None:
-            self._draw_labeled_line(frame, right_line, "R / POS", self.theme.magenta)
-
-        if vp_coord is not None:
-            self._draw_vp_indicator(frame, vp_coord, vp_location)
+        self._draw_vp_crosshair(frame, vp_coord)
 
         if left_intercept_x is not None:
-            color = self.theme.red if left_intercept_x > margin else self.theme.green
-            self._draw_bottom_marker(frame, left_intercept_x, frame_h - 1, color)
+            self._draw_bottom_marker(frame, left_intercept_x, frame_h - 1, self._marker_color(left_intercept_x, frame_w))
         if right_intercept_x is not None:
-            color = self.theme.red if right_intercept_x < (frame_w - margin) else self.theme.green
-            self._draw_bottom_marker(frame, right_intercept_x, frame_h - 1, color)
+            self._draw_bottom_marker(frame, right_intercept_x, frame_h - 1, self._marker_color(right_intercept_x, frame_w))
 
-    def _draw_vp_indicator(
-        self,
-        frame: np.ndarray,
-        vp_coord: tuple[int, int],
-        vp_location: str,
-    ) -> None:
+    def _draw_vp_crosshair(self, frame: np.ndarray, vp_coord: tuple[int, int]) -> None:
         x, y = vp_coord
-        frame_h, frame_w = frame.shape[:2]
-        visible_x = int(np.clip(x, 14, max(14, frame_w - 15)))
-        visible_y = int(np.clip(y, 14, max(14, frame_h - 15)))
-        if vp_location != "inside":
-            cv2.arrowedLine(
-                frame,
-                (frame_w // 2, frame_h // 2),
-                (visible_x, visible_y),
-                self.theme.vp_yellow,
-                2,
-                cv2.LINE_AA,
-                tipLength=0.08,
-            )
-            self._draw_text(
-                frame,
-                f"VP {vp_location.upper()} ({x},{y})",
-                (max(4, min(visible_x + 8, frame_w - 245)), max(18, visible_y)),
-                self.theme.vp_yellow,
-                scale=0.48,
-                thickness=1,
-            )
-        x, y = visible_x, visible_y
         size = 12
         thickness = 2
         cv2.line(frame, (x - size, y), (x + size, y), self.theme.vp_yellow, thickness, cv2.LINE_AA)
         cv2.line(frame, (x, y - size), (x, y + size), self.theme.vp_yellow, thickness, cv2.LINE_AA)
         cv2.circle(frame, (x, y), 4, self.theme.vp_yellow, -1, cv2.LINE_AA)
-
-    def _draw_labeled_line(
-        self,
-        frame: np.ndarray,
-        line: tuple[int, int, int, int],
-        label: str,
-        color: tuple[int, int, int],
-    ) -> None:
-        x1, y1, x2, y2 = line
-        cv2.line(frame, (x1, y1), (x2, y2), color, 4, cv2.LINE_AA)
-        label_x = int(round((x1 + x2) / 2))
-        label_y = int(round((y1 + y2) / 2))
-        self._draw_text(
-            frame,
-            label,
-            (max(4, label_x + 6), max(18, label_y)),
-            color,
-            scale=0.52,
-            thickness=2,
-        )
 
     def _draw_hysteresis_gauge(self, frame: np.ndarray, *, frame_w: int, frame_h: int, raw_vp_angle: float) -> None:
         gauge_w = min(self.gauge_width, max(260, frame_w - 120))
@@ -345,13 +247,19 @@ class OverlayDrawer:
         cv2.circle(frame, (x, bottom_y), 6, color, -1, cv2.LINE_AA)
         cv2.line(frame, (x, bottom_y - 12), (x, bottom_y - 2), color, 2, cv2.LINE_AA)
 
+    def _marker_color(self, x: int, frame_w: int) -> tuple[int, int, int]:
+        margin = max(0, min(self.danger_margin_px, frame_w))
+        if x < margin or x > (frame_w - margin):
+            return self.theme.red
+        return self.theme.green
+
     def _state_color(self, state: str) -> tuple[int, int, int]:
         normalized = state.upper()
         if normalized == "TRACKING":
             return self.theme.green
         if normalized == "VISION_LOST":
             return self.theme.yellow
-        if "DANGER" in normalized:
+        if normalized.startswith("DANGER"):
             return self.theme.red
         return self.theme.white
 
@@ -431,17 +339,13 @@ class OverlayDrawer:
                 continue
         return normalized
 
-    def _normalize_line(self, value: Any) -> tuple[int, int, int, int] | None:
-        normalized = self._normalize_lines([value])
-        return normalized[0] if normalized else None
-
-    def _as_point_or_none(self, value: Any) -> tuple[int, int] | None:
+    def _as_point(self, value: Any, fallback: tuple[int, int]) -> tuple[int, int]:
         if isinstance(value, (tuple, list)) and len(value) == 2:
             try:
                 return int(round(float(value[0]))), int(round(float(value[1])))
             except (TypeError, ValueError):
-                return None
-        return None
+                return fallback
+        return fallback
 
     def _as_int_or_none(self, value: Any) -> int | None:
         if value is None:
@@ -461,18 +365,6 @@ class OverlayDrawer:
 
     def _format_value(self, value: int | None) -> str:
         return "-" if value is None else str(value)
-
-    def _format_point(self, value: tuple[int, int] | None) -> str:
-        return "-" if value is None else f"({value[0]},{value[1]})"
-
-    def _format_line(self, value: tuple[int, int, int, int] | None) -> str:
-        if value is None:
-            return "-"
-        x1, y1, x2, y2 = value
-        dx = x2 - x1
-        slope = None if dx == 0 else (y2 - y1) / dx
-        slope_text = "vertical" if slope is None else f"m={slope:+.2f}"
-        return f"({x1},{y1})->({x2},{y2}) {slope_text}"
 
 
 if __name__ == "__main__":

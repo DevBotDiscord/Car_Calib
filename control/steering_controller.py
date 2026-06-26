@@ -4,9 +4,8 @@ Mirrors the SteeringController used by the offline UnifiedCalibrator so the
 live loop and the offline processor share one calibration law. States:
 
 * ``GAPPING``        — vision lost (no VP / no intercepts), hold center
-* ``DANGER_LEFT``     — selected right boundary is near; recover left
-* ``DANGER_RIGHT``    — selected left boundary is near; recover right
-* ``AMBIGUOUS_DANGER`` — both selected boundaries crossed; command center
+* ``DANGER_LEFT``    — left intercept past margin, fixed nudge right
+* ``DANGER_RIGHT``   — right intercept past margin, fixed nudge left
 * ``TRACKING_COAST`` — error inside hysteresis dead-band, hold center
 * ``TRACKING_PD``    — error past outer threshold, PD correction active
 
@@ -64,18 +63,11 @@ class SteeringController:
         # Stage 3: Danger Zone override (bypass PD)
         left_margin = self._danger_margin
         right_margin = max(0, int(frame_width) - self._danger_margin)
-        left_danger = left_intercept > left_margin
-        right_danger = right_intercept < right_margin
-        if left_danger and right_danger:
-            self._tracking_active = False
-            self._last_error = 0.0
-            return center, "AMBIGUOUS_DANGER"
-
-        if left_danger:
+        if left_intercept > left_margin:
             self._tracking_active = False
             self._last_error = 0.0
             return center - self._nudge_deg, "DANGER_RIGHT"
-        if right_danger:
+        if right_intercept < right_margin:
             self._tracking_active = False
             self._last_error = 0.0
             return center + self._nudge_deg, "DANGER_LEFT"
@@ -98,94 +90,8 @@ class SteeringController:
         steering_angle = max(lo, min(hi, center + pd_correction))
         return steering_angle, "TRACKING_PD"
 
-    def describe_control_state(self, state: str, frame_width: int) -> dict[str, str | int | None]:
-        """Describe the active danger boundary and commanded recovery direction."""
-        if state == "DANGER_LEFT":
-            return {
-                "danger_boundary": "RIGHT",
-                "recovery_direction": "LEFT",
-                "danger_threshold_x": max(0, int(frame_width) - self._danger_margin),
-            }
-        if state == "DANGER_RIGHT":
-            return {
-                "danger_boundary": "LEFT",
-                "recovery_direction": "RIGHT",
-                "danger_threshold_x": self._danger_margin,
-            }
-        if state == "AMBIGUOUS_DANGER":
-            return {
-                "danger_boundary": "BOTH",
-                "recovery_direction": None,
-                "danger_threshold_x": None,
-            }
-        return {
-            "danger_boundary": None,
-            "recovery_direction": None,
-            "danger_threshold_x": None,
-        }
-
     def _apply_pd(self, error: float) -> float:
         """Apply proportional-derivative smoothing and return steering correction."""
         derivative = error - self._last_error
         self._last_error = error
         return (self._pid.kp * error) + (self._pid.kd * derivative)
-
-    # ------------------------------------------------------------------ #
-    # Runtime parameter API (used by dashboard /control/params)
-    # ------------------------------------------------------------------ #
-    PARAM_BOUNDS: dict[str, tuple[float, float]] = {
-        "kp": (0.0, 5.0),
-        "ki": (0.0, 2.0),
-        "kd": (0.0, 5.0),
-        "danger_margin": (0.0, 400.0),
-        "nudge_deg": (0.0, 45.0),
-        "inner_thresh": (0.0, 30.0),
-        "outer_thresh": (0.0, 60.0),
-        "max_offset": (0.0, 90.0),
-    }
-
-    def get_params(self) -> dict[str, float]:
-        return {
-            "kp": float(self._pid.kp),
-            "ki": float(self._pid.ki),
-            "kd": float(self._pid.kd),
-            "danger_margin": float(self._danger_margin),
-            "nudge_deg": float(self._nudge_deg),
-            "inner_thresh": float(self._inner_thresh),
-            "outer_thresh": float(self._outer_thresh),
-            "max_offset": float(self._max_offset),
-        }
-
-    def update_params(self, patch: dict[str, float]) -> dict[str, float]:
-        """Apply a partial update; clamps every value to PARAM_BOUNDS. Returns new params."""
-        if not isinstance(patch, dict):
-            raise ValueError("params patch must be a JSON object")
-        for key, raw in patch.items():
-            if key not in self.PARAM_BOUNDS:
-                raise ValueError(f"unknown param: {key}")
-            try:
-                value = float(raw)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"param {key} must be numeric: {exc}") from exc
-            lo, hi = self.PARAM_BOUNDS[key]
-            value = max(lo, min(hi, value))
-            if key == "kp":
-                self._pid.kp = value
-            elif key == "ki":
-                self._pid.ki = value
-            elif key == "kd":
-                self._pid.kd = value
-            elif key == "danger_margin":
-                self._danger_margin = max(0, int(value))
-            elif key == "nudge_deg":
-                self._nudge_deg = value
-            elif key == "inner_thresh":
-                self._inner_thresh = abs(value)
-            elif key == "outer_thresh":
-                self._outer_thresh = abs(value)
-            elif key == "max_offset":
-                self._max_offset = abs(value)
-        # keep outer_thresh >= inner_thresh after a partial update
-        if self._outer_thresh < self._inner_thresh:
-            self._outer_thresh = self._inner_thresh
-        return self.get_params()

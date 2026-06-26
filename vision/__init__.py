@@ -1,4 +1,5 @@
-"""Vision package.
+"""Vision package for the autonomous robot heading-stability system."""
 
-Calibration vision processing is exposed through ``UnifiedCalibrator``.
-"""
+from vision.detector import LineDetector
+
+__all__ = ["LineDetector"]
