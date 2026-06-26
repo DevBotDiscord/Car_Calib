@@ -9,13 +9,12 @@ services:
     container_name: ${CONTROL_DIRECT_CONTAINER_NAME:-car-calib-control-direct}
     restart: unless-stopped
     network_mode: host
-    pid: host
     privileged: true
     env_file:
       - .env.control-direct
     environment:
       CONTROL_HARDWARE: pigpio
-      START_PIGPIOD: ${START_PIGPIOD:-true}
+      START_PIGPIOD: ${START_PIGPIOD:-false}
       PIGPIO_HOST: 127.0.0.1
       PIGPIO_PORT: 8888
     devices:

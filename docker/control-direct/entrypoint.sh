@@ -19,13 +19,9 @@ esac
 
 case "${START_PIGPIOD:-true}" in
   1|true|TRUE|yes|YES|on|ON)
-    if pidof pigpiod >/dev/null 2>&1 || pigs t >/dev/null 2>&1; then
-      echo "pigpiod already running; killing for fresh start"
-      pkill -x pigpiod 2>/dev/null || true
-      for _ in 1 2 3 4 5 6 7 8 9 10; do
-        pidof pigpiod >/dev/null 2>&1 || break
-        sleep 0.5
-      done
+    if pigs t >/dev/null 2>&1; then
+      echo "pigpiod already reachable; reusing existing daemon"
+      exec "$@"
     fi
 
     pigpiod
