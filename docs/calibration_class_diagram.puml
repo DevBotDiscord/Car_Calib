@@ -1,0 +1,306 @@
+@startuml
+title car-calib Jetson calibration - UML class diagram
+
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam linetype ortho
+skinparam packageStyle rectangle
+
+package "Core calibration" {
+  class UnifiedCalibrator {
+    - _config: ConfigManager
+    - _robot_state: RobotState
+    - _vision: VisionProcessor
+    - _geometry: GeometryCalculator
+    - _steering: SteeringController
+    - _telemetry: TelemetryLogger?
+    - _overlay_drawer: OverlayDrawer
+    + process_frame(frame, frame_num): CalibrationResult
+    + render_frame(frame, result): ndarray
+    + update(frame, frame_num): float
+    + run(): void
+    + close(): void
+  }
+
+  class ConfigManager {
+    - _system_configs: dict
+    - _debug_configs: dict
+    - _video_configs: dict
+    - _stream_configs: dict
+    - _vp_inner_thresh: float
+    - _vp_outer_thresh: float
+    - _danger_margin_px: int
+    - _danger_nudge_deg: float
+    + get_system_configs(): dict
+    + get_debug_configs(): dict
+    + get_video_configs(): dict
+    + get_stream_configs(): dict
+    + get_vp_thresholds(): tuple
+    + get_danger_margins(): tuple
+  }
+
+  class VisionProcessor {
+    - _roi_height_pct: float
+    - _blur_w: int
+    - _blur_h: int
+    - _canny_low: int
+    - _canny_high: int
+    - _hough_threshold: int
+    - _hough_min_line_length: int
+    - _hough_max_line_gap: int
+    - _min_abs_slope: float
+    + process_frame(frame): list
+    + process_frame_debug(frame): tuple
+    - _apply_geometric_filter(lines): tuple?
+  }
+
+  class GeometryCalculator {
+    + describe_line(line, role, bottom_intercept): dict
+    + classify_point(point, frame_width, frame_height): str
+    + calculate_vanishing_point(line1, line2): tuple?
+    + calculate_bottom_intercepts(line1, line2, frame_height): tuple
+    + map_vp_to_angle(vp_x, frame_width): float
+  }
+
+  class SteeringController {
+    - _pid: PIDConstants
+    - _danger_margin: int
+    - _nudge_deg: float
+    - _inner_thresh: float
+    - _outer_thresh: float
+    - _center: float
+    - _max_offset: float
+    - _tracking_active: bool
+    - _last_error: float
+    + compute_steering(vp_angle, left_intercept, right_intercept, frame_width): tuple
+    + describe_control_state(state, frame_width): dict
+    + get_params(): dict
+    + update_params(patch): dict
+    - _apply_pd(error): float
+  }
+
+  class RobotState {
+    + pid: PIDConstants
+    + servo_center_angle: float
+    + max_steering_offset: float
+    + last_valid_servo_angle: float
+    + last_valid_command: float
+    + fsm_state: FSMState
+    + calibration_active: bool
+    + pid_integral: float
+    + pid_last_error: float
+    + transition_to(new_state): void
+    + reset_pid_integral(): void
+  }
+
+  class PIDConstants {
+    + kp: float
+    + ki: float
+    + kd: float
+  }
+
+  enum FSMState {
+    GAPPING
+    DANGER_LEFT
+    DANGER_RIGHT
+    AMBIGUOUS_DANGER
+    TRACKING_COAST
+    TRACKING_PD
+  }
+
+  class CalibrationResult {
+    + steering_angle: float
+    + control_state: str
+    + observation_angle: float?
+    + calibration_active: bool
+    + telemetry: dict
+    + debug_data: dict
+  }
+
+  class TelemetryLogger {
+    - _overlay_drawer: OverlayDrawer
+    - _csv_writer: Any
+    - _video_writer: Any
+    - _frame_store: Any
+    + log_state(frame_num, telemetry_data): void
+    + update_visuals(frame, telemetry_data, debug_data): ndarray
+    + publish_stream(frame, telemetry_data): void
+    + write_video(frame): void
+    + close(): void
+    + sleep_remainder(loop_start, loop_period): void
+  }
+
+  class OverlayDrawer {
+    + inner_thresh: float
+    + outer_thresh: float
+    + danger_margin_px: int
+    + angle_center: float
+    + angle_span: float
+    + draw(frame, debug_packet): ndarray
+  }
+}
+
+package "Jetson wrapper and hardware" {
+  class MainJetsonRuntime <<module>> {
+    + main(): void
+    + build_parser(): ArgumentParser
+    - acquire_camera(): VideoCapture
+    - _update_shared(frame, tel): void
+    - _frame_getter(): ndarray?
+    - _status_getter(): dict
+    - _base_handler(cmd): void
+    - _relay_handler(state): void
+    - _power_handler(state): void
+  }
+
+  class JetsonScriptRunner {
+    - _thread: Thread?
+    - _running: bool
+    - _steps: list
+    - _current_step: dict?
+    - _base_cb: Callable
+    - _servo_cb: Callable
+    - _relay_cb: Callable
+    - _center_angle: float
+    - _max_steer: float
+    + set_handlers(base_cb, servo_cb, relay_cb): void
+    + is_running(): bool
+    + status(): dict
+    + submit(steps): bool
+    + stop(): void
+    - _run(): void
+    - _execute_step(step): void
+  }
+
+  class JetsonServoDriver {
+    - _pin: int
+    - _center_angle: float
+    - _pulse_min_us: int
+    - _pulse_max_us: int
+    - _pwm: Any
+    + send_angle(angle): void
+    + center(): void
+    + close(): void
+    - _angle_to_duty(angle): float
+  }
+
+  class JetsonBaseDriver {
+    - _pins: dict
+    - _initialized: bool
+    + command(cmd): void
+    + stop(): void
+    + close(): void
+    - _write(bit2, bit1, bit0): void
+  }
+
+  class JetsonRelayDriver {
+    - _relay_pin: int
+    - _power_pin: int
+    - _relay_active_low: bool
+    - _power_active_low: bool
+    - _relay_on: bool
+    - _power_pulsing: bool
+    + relay_on(): void
+    + relay_off(): void
+    + relay_toggle(): bool
+    + power_on(): void
+    + power_off(): void
+    + relay_state(): bool
+    + power_pulsing(): bool
+    + close(): void
+    - _pulse(duration_ms, label): void
+  }
+}
+
+package "HTTP dashboard" {
+  class JetsonHttpServer {
+    - _host: str
+    - _port: int
+    - _server: ThreadedHTTPServer?
+    - _thread: Thread?
+    + set_frame_getter(fn): void
+    + set_status_getter(fn): void
+    + set_base_handler(fn): void
+    + set_relay_handler(fn): void
+    + set_power_handler(fn): void
+    + set_script_runner(fn): void
+    + set_script_stopper(fn): void
+    + set_script_submitter(fn): void
+    + start(): void
+    + stop(): void
+    - _serve(): void
+  }
+
+  class ThreadedHTTPServer {
+    + allow_reuse_address: bool
+    + daemon_threads: bool
+    + frame_getter: Callable
+    + status_getter: Callable
+    + base_handler: Callable
+    + relay_handler: Callable
+    + power_handler: Callable
+    + script_runner: Callable
+    + script_submitter: Callable
+  }
+
+  class _RequestHandler {
+    + do_GET(): void
+    + do_POST(): void
+    + do_PUT(): void
+    + do_DELETE(): void
+    - _json_body(): dict
+    - _script_status(): dict
+    - _file(path): void
+  }
+}
+
+UnifiedCalibrator *-- ConfigManager
+UnifiedCalibrator *-- RobotState
+UnifiedCalibrator *-- VisionProcessor
+UnifiedCalibrator *-- GeometryCalculator
+UnifiedCalibrator *-- SteeringController
+UnifiedCalibrator o-- TelemetryLogger
+UnifiedCalibrator *-- OverlayDrawer
+UnifiedCalibrator ..> CalibrationResult : returns
+
+RobotState *-- PIDConstants
+RobotState --> FSMState
+SteeringController o-- PIDConstants
+TelemetryLogger *-- OverlayDrawer
+
+MainJetsonRuntime *-- UnifiedCalibrator
+MainJetsonRuntime *-- JetsonServoDriver
+MainJetsonRuntime *-- JetsonBaseDriver
+MainJetsonRuntime *-- JetsonRelayDriver
+MainJetsonRuntime *-- JetsonHttpServer
+MainJetsonRuntime o-- JetsonScriptRunner
+MainJetsonRuntime ..> CalibrationResult : reads steering_angle
+
+JetsonScriptRunner ..> JetsonBaseDriver : via _base_handler()
+JetsonScriptRunner ..> JetsonServoDriver : via _servo_cb()
+JetsonScriptRunner ..> JetsonRelayDriver : via _relay_cb()
+
+JetsonHttpServer *-- ThreadedHTTPServer
+ThreadedHTTPServer ..> _RequestHandler : request handler
+_RequestHandler ..> ThreadedHTTPServer : callback attributes
+JetsonHttpServer ..> MainJetsonRuntime : registered callbacks
+
+note right of JetsonBaseDriver
+Base GPIO command table:
+STOP       = 000
+FORWARD    = 010
+BACKWARD   = 001
+LOCK       = 101
+UNLOCK     = 110
+TURN_LEFT  = 100
+TURN_RIGHT = 011
+end note
+
+note bottom of MainJetsonRuntime
+Auto servo write is skipped while
+JetsonScriptRunner is running, so
+route-script steering is not stolen
+by vision PID.
+end note
+
+@enduml
