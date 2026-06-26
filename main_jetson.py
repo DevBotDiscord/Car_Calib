@@ -47,11 +47,27 @@ from config.settings import (
 from drivers.jetson_base import JetsonBaseDriver
 from drivers.jetson_relay import JetsonRelayDriver
 from drivers.jetson_servo import JetsonServoDriver
+from drivers.pigpio_base import PigpioBaseDriver
+from drivers.pigpio_relay import PigpioRelayDriver
+from drivers.pigpio_servo import PigpioServoDriver
 from models.robot_state import RobotState, FSMState
 from runtime.jetson_http import JetsonHttpServer
 from unified_calibration_components import UnifiedCalibrator, CalibrationProcessingError
 
 logger = logging.getLogger("jetson")
+
+def _env_int(names: tuple[str, ...], default: int) -> int:
+    for name in names:
+        value = os.getenv(name)
+        if value is not None:
+            return int(value)
+    return default
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,7 +78,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--flip", action="store_true", default=False)
     p.add_argument("--port", type=int, default=int(os.getenv("DASHBOARD_PORT", "8080")))
     p.add_argument("--host", type=str, default=os.getenv("DASHBOARD_HOST", "0.0.0.0"))
-    p.add_argument("--servo-pin", type=int, default=int(os.getenv("SERVO_PIN", "33")))
+    hardware_default = os.getenv("CONTROL_HARDWARE", "jetson")
+    servo_pin_default = "12" if hardware_default == "pigpio" else "33"
+    p.add_argument("--hardware", choices=("jetson", "pigpio"), default=hardware_default)
+    p.add_argument("--servo-pin", type=int, default=int(os.getenv("SERVO_PIN", servo_pin_default)))
     p.add_argument("--no-dashboard", action="store_true", default=False)
     return p
 
@@ -228,22 +247,50 @@ def main() -> None:
     controller = calibrator.steering_controller
 
     # ------------------------------------------------------------------ #
-    # Jetson GPIO drivers
+    # Direct hardware drivers
     # ------------------------------------------------------------------ #
-    servo = JetsonServoDriver(pin=args.servo_pin)
-    base = JetsonBaseDriver(
-        pin_bit2=int(os.getenv("BASE_BIT2_PIN", "15")),
-        pin_bit1=int(os.getenv("BASE_BIT1_PIN", "13")),
-        pin_bit0=int(os.getenv("BASE_BIT0_PIN", "11")),
-    )
-    relay = JetsonRelayDriver(
-        relay_pin=int(os.getenv("RELAY_PIN", "18")),
-        power_relay_pin=int(os.getenv("POWER_PIN", "16")),
-        relay_active_low=os.getenv("RELAY_ACTIVE_LOW", "true").strip().lower() in ("1", "true", "yes", "on"),
-        power_active_low=os.getenv("POWER_RELAY_ACTIVE_LOW", "true").strip().lower() in ("1", "true", "yes", "on"),
-        power_on_pulse_ms=int(os.getenv("POWER_ON_PULSE_MS", "100")),
-        power_off_pulse_ms=int(os.getenv("POWER_OFF_PULSE_MS", "3000")),
-    )
+    if args.hardware == "pigpio":
+        pigpio_host = os.getenv("PIGPIO_HOST", "127.0.0.1")
+        pigpio_port = int(os.getenv("PIGPIO_PORT", "8888"))
+        servo = PigpioServoDriver(
+            pin=args.servo_pin,
+            host=pigpio_host,
+            port=pigpio_port,
+        )
+        base = PigpioBaseDriver(
+            out1=_env_int(("BASE_OUT1", "BASE_BIT2_PIN"), 17),
+            out2=_env_int(("BASE_OUT2", "BASE_BIT1_PIN"), 27),
+            out3=_env_int(("BASE_OUT3", "BASE_BIT0_PIN"), 22),
+            host=pigpio_host,
+            port=pigpio_port,
+        )
+        relay = PigpioRelayDriver(
+            relay_pin=_env_int(("RELAY_PIN",), 13),
+            power_relay_pin=_env_int(("POWER_RELAY_PIN", "POWER_PIN"), 5),
+            relay_active_low=_env_bool("RELAY_ACTIVE_LOW", False),
+            power_active_low=_env_bool("POWER_RELAY_ACTIVE_LOW", False),
+            power_on_pulse_ms=_env_int(("POWER_ON_PULSE_MS",), 100),
+            power_off_pulse_ms=_env_int(("POWER_OFF_PULSE_MS",), 3000),
+            host=pigpio_host,
+            port=pigpio_port,
+        )
+        hardware_source = "control-direct"
+    else:
+        servo = JetsonServoDriver(pin=args.servo_pin)
+        base = JetsonBaseDriver(
+            pin_bit2=_env_int(("BASE_BIT2_PIN",), 15),
+            pin_bit1=_env_int(("BASE_BIT1_PIN",), 13),
+            pin_bit0=_env_int(("BASE_BIT0_PIN",), 11),
+        )
+        relay = JetsonRelayDriver(
+            relay_pin=_env_int(("RELAY_PIN",), 18),
+            power_relay_pin=_env_int(("POWER_PIN", "POWER_RELAY_PIN"), 16),
+            relay_active_low=_env_bool("RELAY_ACTIVE_LOW", True),
+            power_active_low=_env_bool("POWER_RELAY_ACTIVE_LOW", True),
+            power_on_pulse_ms=_env_int(("POWER_ON_PULSE_MS",), 100),
+            power_off_pulse_ms=_env_int(("POWER_OFF_PULSE_MS",), 3000),
+        )
+        hardware_source = "jetson"
 
     # ------------------------------------------------------------------ #
     # Shared telemetry
@@ -290,7 +337,7 @@ def main() -> None:
             },
             "actuator": {
                 "online": True,
-                "source": "jetson",
+                "source": hardware_source,
             },
         }
 
@@ -429,7 +476,7 @@ def main() -> None:
 
             tel = {
                 # Fields matching old dashboard script.js expectations
-                "source": "jetson",
+                "source": hardware_source,
                 "rpi_online": True,
                 "mqtt_connected": True,
                 "estop_active": False,
