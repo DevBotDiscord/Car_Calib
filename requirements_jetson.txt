@@ -5,3 +5,4 @@ python-dotenv>=1.0
 # Install manually if on actual Jetson Nano/Orin:
 Jetson.GPIO
 # On non-Jetson ARM64: skip this, drivers will stub out gracefully.
+debugpy>=1.8

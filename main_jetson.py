@@ -327,6 +327,17 @@ def main() -> None:
     args = build_parser().parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+    # --- debugpy remote debugging (set DEBUGPY_ENABLED=true) ---
+    if os.getenv("DEBUGPY_ENABLED", "").strip().lower() in ("1", "true", "yes", "on"):
+        import debugpy
+        debugpy.listen(("0.0.0.0", int(os.getenv("DEBUGPY_PORT", "5678"))))
+        if os.getenv("DEBUGPY_WAIT", "").strip().lower() in ("1", "true", "yes", "on"):
+            logger.info("debugpy: waiting for client on port %s ...", os.getenv("DEBUGPY_PORT", "5678"))
+            debugpy.wait_for_client()
+            logger.info("debugpy: client attached")
+        else:
+            logger.info("debugpy: listening on port %s (non-blocking)", os.getenv("DEBUGPY_PORT", "5678"))
+
     # ------------------------------------------------------------------ #
     # Core algorithm
     # ------------------------------------------------------------------ #
