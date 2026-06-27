@@ -555,6 +555,9 @@ def main() -> None:
             if script_runner is None or not script_runner.is_running:
                 servo.send_angle(output_angle)
             final_angle = output_angle
+
+            # --- telemetry ---
+            loop_ms = (time.monotonic() - loop_start) * 1000.0
             if frame_num % 10 == 1:
                 logger.info(
                     "frame=%d state=%s vp=%.1f° steer=%.1f° loop=%.0fms",
@@ -562,9 +565,6 @@ def main() -> None:
                     theta if theta is not None else float('nan'),
                     final_angle, loop_ms,
                 )
-            
-            # --- telemetry ---
-            loop_ms = (time.monotonic() - loop_start) * 1000.0
             pid_error = 0.0 if theta is None else float(theta) - 90.0
 
             # Build dashboard telemetry, merging calibrator output with hardware state
