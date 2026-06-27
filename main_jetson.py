@@ -49,6 +49,7 @@ from drivers.pigpio_relay import PigpioRelayDriver
 from drivers.pigpio_servo import PigpioServoDriver
 from models.robot_state import RobotState, FSMState
 from runtime.jetson_http import JetsonHttpServer
+from runtime.jetson_script_runner import JetsonScriptRunner
 from unified_calibration_components import UnifiedCalibrator, CalibrationProcessingError
 
 logger = logging.getLogger("jetson")
@@ -508,10 +509,6 @@ def main() -> None:
     cap = acquire_camera()
 
     # ------------------------------------------------------------------ #
-    # Telemetry (CSV + stream) handled by UnifiedCalibrator internals
-    # ------------------------------------------------------------------ #
-
-    # ------------------------------------------------------------------ #
     # Main loop
     # ------------------------------------------------------------------ #
     target_period = 1.0 / max(0.1, args.hz)
@@ -563,7 +560,8 @@ def main() -> None:
                 limit_deg=_env_int(("MAX_STEERING_OFFSET",), 60),
                 reverse=_env_bool("SERVO_REVERSE", False),
             )
-            if script_runner is None or not script_runner.is_running:
+            # print(script_runner.is_running)
+            if script_runner.is_running:
                 servo.send_angle(output_angle)
             final_angle = output_angle
 
