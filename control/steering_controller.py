@@ -95,3 +95,13 @@ class SteeringController:
         derivative = error - self._last_error
         self._last_error = error
         return (self._pid.kp * error) + (self._pid.kd * derivative)
+
+    def describe_control_state(self, state: str, frame_width: int) -> dict[str, Any]:
+        """Return per-frame control metadata for telemetry/debug."""
+        margin = self._danger_margin
+        return {
+            "danger_boundary": f"LEFT < {margin}px | RIGHT > {frame_width - margin}px",
+            "recovery_direction": "LEFT" if state == "DANGER_RIGHT" else ("RIGHT" if state == "DANGER_LEFT" else "NONE"),
+            "danger_threshold_x": str(margin),
+        }
+

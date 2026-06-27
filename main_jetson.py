@@ -607,7 +607,6 @@ def main() -> None:
         base.close()
         relay.close()
         cap.release()
-        csv_fh.close()
         if http is not None:
             http.stop()
         cv2.destroyAllWindows()
