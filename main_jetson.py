@@ -276,6 +276,53 @@ def map_calibrated_servo(
 
     return servo_cmd
 
+def _scan_routes() -> list[dict[str, Any]]:
+    """Scan ROUTE_LOG_ROOT for completed route directories."""
+    import json as _json
+    from pathlib import Path as _Path
+    root = _Path(os.getenv("ROUTE_LOG_ROOT", "/data/routes"))
+    if not root.is_dir():
+        root = _Path("run_logs/routes")
+    if not root.is_dir():
+        return []
+    routes: list[dict[str, Any]] = []
+    for d in sorted(root.iterdir(), reverse=True):
+        if not d.is_dir() or not d.name.startswith("route-"):
+            continue
+        summary_file = d / "summary.json"
+        info: dict[str, Any] = {
+            "route_id": d.name,
+            "route_mode": "",
+            "preset": "",
+            "status": "not_recorded",
+            "frames": 0,
+            "elapsed": "0s",
+            "zip_size": "—",
+            "ended_utc": "",
+        }
+        if summary_file.is_file():
+            try:
+                s = _json.loads(summary_file.read_text())
+                info.update({
+                    "route_id": s.get("route_id", d.name),
+                    "route_mode": s.get("route_mode", ""),
+                    "preset": s.get("preset_name", ""),
+                    "status": s.get("status", "not_recorded"),
+                    "frames": s.get("total_frames", 0),
+                    "elapsed": s.get("elapsed", "0s"),
+                    "ended_utc": s.get("ended_utc", ""),
+                })
+            except Exception:
+                pass
+        # Check for zip
+        zip_path = d / f"{d.name}.zip"
+        if zip_path.is_file():
+            sz = zip_path.stat().st_size
+            info["zip_size"] = f"{sz/1024:.0f} KB" if sz < 1024*1024 else f"{sz/1024/1024:.1f} MB"
+        routes.append(info)
+    return routes
+
+
 def main() -> None:
     args = build_parser().parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -425,7 +472,7 @@ def main() -> None:
         http.set_presets_getter(lambda: [{"name": k, "steps": v, "steps_count": len(v)} for k, v in _presets.items()])
         http.set_presets_setter(lambda body: (d := json.loads(body), _presets.update({d.get("name", "untitled"): d.get("steps", [])})))
         http.set_preset_deleter(lambda name: _presets.pop(name, None))
-        http.set_routes_getter(lambda: [])
+        http.set_routes_getter(_scan_routes)
 
         http.start()
 
@@ -507,7 +554,7 @@ def main() -> None:
             )
             if script_runner is None or not script_runner.is_running:
                 final_angle = servo.send_angle(output_angle)
-
+                
             # --- telemetry ---
             loop_ms = (time.monotonic() - loop_start) * 1000.0
             pid_error = 0.0 if theta is None else float(theta) - 90.0
@@ -541,6 +588,7 @@ def main() -> None:
             _update_shared(display_frame, tel)
 
             # --- CSV telemetry (delegated to calibrator) ---
+            calibration.telemetry.update({"final_servo_angle": final_angle})
             if calibrator._telemetry is not None:
                 calibrator._telemetry.log_state(frame_num, calibration.telemetry)
 
