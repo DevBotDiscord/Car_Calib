@@ -84,6 +84,7 @@ from drivers.servo_driver import ServoDriver
 from models.robot_state import FSMState, RobotState
 from runtime.https_stream import HttpsMjpegServer, SharedFrameStore, ensure_self_signed_cert
 from runtime.route_logging import RouteSession
+from runtime.telemetry_logger import TelemetryLogger
 from runtime.video_runtime_helpers import (
     build_detector_debug_panel,
     build_main_arg_parser,
@@ -240,6 +241,14 @@ def main() -> None:
     else:
         servo = ServoDriver()
     csv_writer, csv_file = init_csv_logger(args.csv_output, _CSV_FIELDNAMES)
+
+    telemetry = TelemetryLogger(
+        csv_writer=csv_writer,
+        csv_file=csv_file,
+        stream_enabled=args.stream_enabled,
+        stream_host=args.host,
+        stream_port=args.port,
+    )
 
     cap = None
     video_writer = None
@@ -577,54 +586,26 @@ def main() -> None:
 
             selected_group_bbox = detector_debug.get("selected_group_bbox") if detector_debug else None
 
-            csv_row = {
-                "route_id": route_session.route_id if route_session is not None else "",
-                "route_mode": route_session.route_mode if route_session is not None else "",
-                "frame_num": frame_num,
-                "mono_timestamp": f"{loop_start:.6f}",
-                "utc_timestamp": utc_timestamp,
-                "loop_ms": f"{elapsed_ms:.4f}",
-                "loop_overrun_ms": f"{overrun_ms:.4f}",
-                "fsm_state": state.fsm_state.name,
-                "calibration_active": int(state.calibration_active),
-                "theta": f"{theta:.4f}" if theta is not None else "",
-                "theta_source": theta_source,
-                "theta_for_overlay": f"{last_known_theta:.4f}" if last_known_theta is not None else "",
-                "theta_horizontal": (
-                    f"{detector_debug.get('theta_horizontal'):.4f}"
-                    if detector_debug and detector_debug.get("theta_horizontal") is not None
-                    else ""
-                ),
-                "reference_group_index": (
-                    detector_debug.get("reference_group_index", "") if detector_debug else ""
-                ),
-                "selected_group_bbox": _format_bbox(selected_group_bbox),
-                "lines_count": detector_debug.get("lines_count", "") if detector_debug else "",
-                "groups_count": detector_debug.get("groups_count", "") if detector_debug else "",
-                "horizontal_ok": detector_debug.get("horizontal_ok", "") if detector_debug else "",
-                "sanity_ok": detector_debug.get("sanity_ok", "") if detector_debug else "",
-                "stale_output": detector_debug.get("stale_output", "") if detector_debug else "",
-                "servo_angle": f"{servo_angle:.4f}",
-                "servo_center_angle": f"{state.servo_center_angle:.4f}",
-                "servo_offset": f"{(servo_angle - state.servo_center_angle):.4f}",
-                "pid_error": f"{pid_error:.6f}",
-                "pid_p_term": f"{pid_p_term:.6f}",
-                "pid_i_term": f"{pid_i_term:.6f}",
-                "pid_d_term": f"{pid_d_term:.6f}",
-                "pid_integral": f"{state.pid_integral:.6f}",
-                "pid_last_error": f"{state.pid_last_error:.6f}",
-                "hardware_send_latency_ms": f"{hardware_send_latency_ms:.4f}",
-                "stream_enabled": int(args.stream_enabled),
-                "stream_host": stream_host,
-                "stream_port": args.port if args.stream_enabled else "",
-            }
-
-            csv_writer.writerow(csv_row)
-            csv_file.flush()
-            if route_session is not None and route_csv_writer is not None:
-                route_csv_writer.writerow(csv_row)
-                if route_csv_file is not None:
-                    route_csv_file.flush()
+            telemetry.log_state(
+                frame_num=frame_num,
+                loop_start=loop_start,
+                overrun_ms=overrun_ms,
+                state=state,
+                theta=theta,
+                last_known_theta=last_known_theta,
+                theta_source=theta_source,
+                servo_angle=servo_angle,
+                pid_error=pid_error,
+                pid_p_term=pid_p_term,
+                pid_i_term=pid_i_term,
+                pid_d_term=pid_d_term,
+                hardware_send_latency_ms=hardware_send_latency_ms,
+                route_session=route_session,
+                detector_debug=detector_debug,
+                route_csv_writer=route_csv_writer,
+                route_csv_file=route_csv_file,
+                current_route_mode=current_route_mode,
+            )
 
             output_frame = frame
             if args.debug_mode:
@@ -740,7 +721,7 @@ def main() -> None:
                         logger.warning("Route video write error: %s", route_video_exc)
 
             if args.stream_enabled:
-                telemetry = {
+                telemetry.publish_frame(output_frame, {
                     "frame_num": frame_num,
                     "theta": theta,
                     "theta_source": theta_source,
@@ -750,8 +731,7 @@ def main() -> None:
                     "route_mode": current_route_mode,
                     "reference_group_index": detector_debug.get("reference_group_index") if detector_debug else None,
                     "selected_group_bbox": selected_group_bbox,
-                }
-                frame_store.set_frame(output_frame, telemetry)
+                })
 
             if args.show_preview:
                 cv2.imshow("main_debug", output_frame)
@@ -811,8 +791,7 @@ def main() -> None:
                 pass
         if cap is not None:
             cap.release()
-        if video_writer is not None:
-            video_writer.release()
+        telemetry.close()
         if stream_server is not None:
             stream_server.stop()
         if script_runner is not None:
