@@ -71,7 +71,8 @@ class PigpioServoDriver:
         pulse_us = self._angle_to_pulse_us(clamped)
         if self._pi is not None:
             self._pi.set_servo_pulsewidth(self._pin, pulse_us)
-        logger.debug("PigpioServo: %.2f deg -> %dus", clamped, pulse_us)
+        logger.info("PigpioServo: %.2f deg -> %dus", clamped, pulse_us)
+        return clamped
 
     def center(self) -> None:
         self.send_angle(self._center_angle)
