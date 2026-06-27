@@ -908,6 +908,18 @@ class UnifiedCalibrator:
                 "vision_debug": vision_debug,
             }
             self._robot_state.pid_last_error = pid_error
+
+            # Render overlay now so render_frame() has something to return
+            if self._telemetry is not None:
+                try:
+                    self._last_rendered_frame = self._telemetry.update_visuals(
+                        frame, telemetry_data, debug_data
+                    )
+                except Exception:
+                    self._last_rendered_frame = frame.copy()
+            elif self._last_rendered_frame is None:
+                self._last_rendered_frame = frame.copy()
+
             return CalibrationResult(
                 steering_angle=float(steering_angle),
                 control_state=fsm_state,
