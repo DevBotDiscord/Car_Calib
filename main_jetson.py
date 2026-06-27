@@ -553,8 +553,16 @@ def main() -> None:
                 reverse=_env_bool("SERVO_REVERSE", False),
             )
             if script_runner is None or not script_runner.is_running:
-                final_angle = servo.send_angle(output_angle)
-                
+                servo.send_angle(output_angle)
+            final_angle = output_angle
+            if frame_num % 10 == 1:
+                logger.info(
+                    "frame=%d state=%s vp=%.1f° steer=%.1f° loop=%.0fms",
+                    frame_num, fsm_state,
+                    theta if theta is not None else float('nan'),
+                    final_angle, loop_ms,
+                )
+            
             # --- telemetry ---
             loop_ms = (time.monotonic() - loop_start) * 1000.0
             pid_error = 0.0 if theta is None else float(theta) - 90.0
