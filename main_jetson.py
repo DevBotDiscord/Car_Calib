@@ -21,15 +21,12 @@ Env vars:
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import logging
 import os
 import sys
 import time
 import threading
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable
 
 import cv2
@@ -235,6 +232,50 @@ class JetsonScriptRunner:
                 time.sleep(self._republish_period_s)
 
 
+def constrain(value, min_value, max_value):
+    return max(min_value, min(value, max_value))
+
+
+def map_calibrated_servo(
+    input_cmd,
+    home_offset_deg=-8,
+    limit_deg=60,
+    reverse=False
+):
+    """
+    input_cmd: lệnh logic từ 0 -> 180
+            90 là home logic
+
+    home_offset_deg: offset calibration của home
+                    ví dụ home lệch -8 độ thì servo home = 90 + (-8) = 82
+
+    limit_deg: giới hạn vật lý mỗi bên
+            ví dụ 60 nghĩa là chỉ chạy từ -60 -> +60 quanh home
+
+    reverse: đảo chiều servo nếu cần
+    """
+
+    # Giới hạn input logic
+    input_cmd = constrain(input_cmd, 0, 180)
+
+    # Tính home servo thật sau calibration
+    home_cmd = 90 + home_offset_deg
+
+    # Đổi input 0..180 thành ratio -1..1
+    ratio = (input_cmd - 90) / 90
+
+    # Đảo chiều nếu cần
+    if reverse:
+        ratio = -ratio
+
+    # Map ratio ra góc servo thật
+    servo_cmd = home_cmd + ratio * limit_deg
+
+    # Giới hạn an toàn servo 0..180
+    servo_cmd = constrain(servo_cmd, 0, 180)
+
+    return servo_cmd
+
 def main() -> None:
     args = build_parser().parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -242,7 +283,7 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     # Core algorithm
     # ------------------------------------------------------------------ #
-    calibrator = UnifiedCalibrator(telemetry_enabled=False)
+    calibrator = UnifiedCalibrator(telemetry_enabled=True)
     state: RobotState = calibrator.robot_state
     controller = calibrator.steering_controller
 
@@ -394,7 +435,7 @@ def main() -> None:
     # Camera auto-detect: keep trying until we get one
     def acquire_camera() -> cv2.VideoCapture:
         while True:
-            candidates = [args.camera] + [i for i in range(5) if i != args.camera]
+            candidates = [args.camera] + [i for i in range(10) if i != args.camera]
             for idx in candidates:
                 test = cv2.VideoCapture(idx)
                 if test.isOpened():
@@ -403,23 +444,14 @@ def main() -> None:
                     test.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                     return test
                 test.release()
-            logger.warning("No camera found across %s, retrying in 2s...", candidates)
-            time.sleep(2)
+            logger.warning("No camera found across %s, retrying in 0.5s...", candidates)
+            time.sleep(0.5)
 
     cap = acquire_camera()
 
     # ------------------------------------------------------------------ #
-    # CSV logging
+    # Telemetry (CSV + stream) handled by UnifiedCalibrator internals
     # ------------------------------------------------------------------ #
-    csv_path = Path(args.csv)
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    existed = csv_path.exists() and csv_path.stat().st_size > 0
-    csv_fields = _csv_fieldnames()
-    csv_fh = csv_path.open("a", newline="", encoding="utf-8")
-    csv_writer = csv.DictWriter(csv_fh, fieldnames=csv_fields)
-    if not existed:
-        csv_writer.writeheader()
-        csv_fh.flush()
 
     # ------------------------------------------------------------------ #
     # Main loop
@@ -428,7 +460,7 @@ def main() -> None:
     frame_num = 0
     last_known_theta: float | None = None
 
-    logger.info("Starting Jetson Nano loop at %.0f Hz", args.hz)
+    logger.info("Starting Calibration control loop at %.0f Hz", args.hz)
     try:
         while True:
             loop_start = time.monotonic()
@@ -467,30 +499,35 @@ def main() -> None:
                 last_known_theta = theta
 
             # --- servo ---
+            output_angle = map_calibrated_servo(
+                servo_angle,
+                home_offset_deg=state.servo_center_angle,
+                limit_deg=_env_int(("MAX_STEERING_OFFSET",), 60),
+                reverse=_env_bool("SERVO_REVERSE", False),
+            )
             if script_runner is None or not script_runner.is_running:
-                servo.send_angle(servo_angle)
+                final_angle = servo.send_angle(output_angle)
 
             # --- telemetry ---
             loop_ms = (time.monotonic() - loop_start) * 1000.0
             pid_error = 0.0 if theta is None else float(theta) - 90.0
 
-            tel = {
-                # Fields matching old dashboard script.js expectations
+            # Build dashboard telemetry, merging calibrator output with hardware state
+            tel = dict(calibration.telemetry)
+            tel.update({
                 "source": hardware_source,
                 "rpi_online": True,
                 "mqtt_connected": True,
                 "estop_active": False,
-                "steer_angle": f"{servo_angle:.1f}",
+                "steer_angle": f"{final_angle:.1f}",
                 "current_route_mode": "AUTO",
                 "centered": fsm_state == "GAPPING",
                 "relay_on": relay.relay_state,
-                # Servo feedback (stub — no wired feedback on Jetson)
                 "servo_feedback_enabled": False,
                 "servo_feedback_angle": f"{servo_angle:.1f}",
                 "servo_feedback_error": "0.0",
                 "servo_feedback_ok": True,
                 "servo_feedback_raw": 0,
-                # Our extra fields
                 "frame": frame_num,
                 "fsm": fsm_state,
                 "calib_active": calibration.calibration_active,
@@ -500,32 +537,12 @@ def main() -> None:
                 "loop_ms": f"{loop_ms:.1f}",
                 "base": last_base_cmd,
                 "power_pulsing": relay.power_pulsing,
-            }
+            })
             _update_shared(display_frame, tel)
 
-            # --- CSV ---
-            csv_writer.writerow({
-                "frame_num": frame_num,
-                "mono_timestamp": f"{loop_start:.6f}",
-                "utc_timestamp": datetime.now(timezone.utc).isoformat(),
-                "loop_ms": f"{loop_ms:.4f}",
-                "fsm_state": fsm_state,
-                "calibration_active": int(calibration.calibration_active),
-                "theta": f"{theta:.4f}" if theta is not None else "",
-                "theta_source": "live" if theta is not None else ("stale" if last_known_theta is not None else "none"),
-                "servo_angle": f"{servo_angle:.4f}",
-                "servo_center_angle": f"{state.servo_center_angle:.4f}",
-                "servo_offset": f"{(servo_angle - state.servo_center_angle):.4f}",
-                "pid_error": f"{pid_error:.6f}",
-                "pid_p_term": f"{state.pid.kp * pid_error:.6f}",
-                "pid_i_term": f"{state.pid.ki * state.pid_integral:.6f}",
-                "pid_d_term": "0.000000",
-                "base_command": last_base_cmd,
-                "relay_on": int(relay.relay_state),
-            })
-
-            if frame_num % 30 == 0:
-                csv_fh.flush()
+            # --- CSV telemetry (delegated to calibrator) ---
+            if calibrator._telemetry is not None:
+                calibrator._telemetry.log_state(frame_num, calibration.telemetry)
 
             # --- sleep remainder ---
             remaining = target_period - (time.monotonic() - loop_start)
