@@ -87,7 +87,7 @@ class SteeringController:
             return center, "TRACKING_COAST"
 
         pd_correction = self._apply_pd(error)
-        steering_angle = max(lo, min(hi, center + pd_correction))
+        steering_angle = max(lo, min(hi, center - pd_correction))
         return steering_angle, "TRACKING_PD"
 
     def _apply_pd(self, error: float) -> float:

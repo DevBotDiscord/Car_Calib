@@ -33,7 +33,7 @@ class PigpioServoDriver:
     def __init__(
         self,
         pin: int = 12,
-        center_angle: float = SERVO_CENTER_ANGLE,
+        center_angle: float = 90.0 + SERVO_CENTER_ANGLE,
         pulse_min_us: int = DRIVER_SERVO_PULSE_MIN_US,
         pulse_max_us: int = DRIVER_SERVO_PULSE_MAX_US,
         host: str = "127.0.0.1",
@@ -70,11 +70,14 @@ class PigpioServoDriver:
         clamped = max(DRIVER_SERVO_ANGLE_MIN, min(DRIVER_SERVO_ANGLE_MAX, float(angle)))
         pulse_us = self._angle_to_pulse_us(clamped)
         if self._pi is not None:
-            self._pi.set_servo_pulsewidth(self._pin, pulse_us)
+            rc = self._pi.set_servo_pulsewidth(self._pin, pulse_us)
+            if rc != 0:
+                logger.error("PigpioServo: set_servo_pulsewidth BCM%d failed rc=%s", self._pin, rc)
         logger.info("PigpioServo: %.2f deg -> %dus", clamped, pulse_us)
         return clamped
 
     def center(self) -> None:
+        logger.info("pigpio servo: centering to %.2f deg", self._center_angle)
         self.send_angle(self._center_angle)
 
     def close(self) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import Any, Callable
@@ -30,11 +31,12 @@ class JetsonScriptRunner:
         self._running = False
         self._steps: list[dict[str, Any]] = []
         self._current_step: dict[str, Any] | None = None
+        self._current_step_idx = -1
         self._base_cb: Callable[[str], None] | None = None
         self._servo_cb: Callable[[float], None] | None = None
         self._relay_cb: Callable[[str], None] | None = None
-        self._center_angle: float = -8.0
-        self._max_steer: float = 60.0
+        self._center_angle: float = 90.0 + float(os.getenv("SERVO_CENTER_ANGLE", "-8"))
+        self._max_steer: float = float(os.getenv("MAX_STEERING_OFFSET", "60"))
 
     def set_handlers(
         self,
@@ -49,10 +51,20 @@ class JetsonScriptRunner:
     def is_running(self) -> bool:
         return self._running
 
+
+    def vision_pid_active(self) -> bool:
+        """True when current step should let vision PID control servo."""
+        if not self._running or self._current_step is None:
+            return True
+        action = self._current_step.get("action", "stop")
+        # Script takes over servo only for left/right/backward
+        return action not in ("left", "right", "backward")
+
     def status(self) -> dict[str, Any]:
         return {
             "running": self._running,
-            "current_step": self._current_step,
+            "current_step": self._current_step_idx + 1 if self._running else 0,
+            "step": self._current_step,
             "total": len(self._steps),
         }
 
@@ -75,18 +87,22 @@ class JetsonScriptRunner:
     def _run(self) -> None:
         logger.info("Route script start (%d steps)", len(self._steps))
         try:
-            for step in self._steps:
+            for idx, step in enumerate(self._steps):
                 if not self._running:
                     break
+                self._current_step_idx = idx
                 self._current_step = step
                 self._execute_step(step)
         except Exception as exc:
             logger.exception("Route script crashed: %s", exc)
         finally:
             self._current_step = None
+            self._current_step_idx = -1
             self._running = False
             if self._base_cb is not None:
                 self._base_cb("STOP")
+            if self._servo_cb is not None:
+                self._servo_cb(self._center_angle)
             logger.info("Route script finished")
 
     def _execute_step(self, step: dict[str, Any]) -> None:

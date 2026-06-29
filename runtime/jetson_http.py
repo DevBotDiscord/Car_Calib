@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import os
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -188,7 +189,21 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
         if path.startswith("/routes/") and path.endswith("/summary"):
             route_id = unquote(path[len("/routes/"):-len("/summary")])
-            self._json({"summary": {"route_id": route_id, "status": "not_recorded"}})
+            root = Path(os.getenv("ROUTE_LOG_ROOT", "/data/routes")).resolve()
+            summary_path = (root / route_id / "route_summary.json").resolve()
+            if root not in summary_path.parents or not summary_path.is_file():
+                self._json({"summary": {"route_id": route_id, "status": "not_recorded"}}, 404)
+                return
+            self._json({"summary": json.loads(summary_path.read_text(encoding="utf-8"))})
+            return
+        if path.startswith("/routes/download/"):
+            route_id = unquote(path[len("/routes/download/"):])
+            root = Path(os.getenv("ROUTE_LOG_ROOT", "/data/routes")).resolve()
+            zip_path = (root / f"{route_id}.zip").resolve()
+            if root not in zip_path.parents:
+                self._text(400, "bad route")
+                return
+            self._file(zip_path)
             return
 
         self._text(404, "not found")

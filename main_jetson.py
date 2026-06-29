@@ -49,6 +49,7 @@ from drivers.pigpio_relay import PigpioRelayDriver
 from drivers.pigpio_servo import PigpioServoDriver
 from models.robot_state import RobotState, FSMState
 from runtime.jetson_http import JetsonHttpServer
+from runtime.route_logging import RouteSession
 from runtime.jetson_script_runner import JetsonScriptRunner
 from unified_calibration_components import UnifiedCalibrator, CalibrationProcessingError
 
@@ -59,6 +60,13 @@ def _env_int(names: tuple[str, ...], default: int) -> int:
         value = os.getenv(name)
         if value is not None:
             return int(value)
+    return default
+
+def _env_float(names: tuple[str, ...], default: float) -> float:
+    for name in names:
+        value = os.getenv(name)
+        if value is not None:
+            return float(value)
     return default
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -97,142 +105,6 @@ def _csv_fieldnames() -> list[str]:
 # --------------------------------------------------------------------------- #
 # In-process route script runner (no MQTT)
 # --------------------------------------------------------------------------- #
-class JetsonScriptRunner:
-    """Runs route steps in a background thread using direct GPIO."""
-
-    def __init__(self) -> None:
-        self._thread: threading.Thread | None = None
-        self._running = False
-        self._steps: list[dict[str, Any]] = []
-        self._current_step_idx: int = -1
-        self._current_step: dict[str, Any] | None = None
-        self._step_started_at: float | None = None
-        self._last_error: str | None = None
-        self._lock = threading.Lock()
-        # callbacks set after init
-        self._base_cb: Callable[[str], None] | None = None
-        self._servo_cb: Callable[[float], None] | None = None
-        self._relay_cb: Callable[[bool], None] | None = None
-        self._center_angle = float(os.getenv("SERVO_CENTER_ANGLE", "-35"))
-        self._max_steer = float(os.getenv("MAX_STEERING_OFFSET", "60"))
-        self._republish_period_s = 1.0 / max(
-            0.1,
-            float(os.getenv("ROUTE_SCRIPT_REPUBLISH_HZ", "10")),
-        )
-
-    def set_handlers(
-        self,
-        base_cb: Callable[[str], None],
-        servo_cb: Callable[[float], None],
-        relay_cb: Callable[[bool], None],
-    ) -> None:
-        self._base_cb = base_cb
-        self._servo_cb = servo_cb
-        self._relay_cb = relay_cb
-
-    @property
-    def is_running(self) -> bool:
-        return self._running
-
-    def status(self) -> dict[str, Any]:
-        with self._lock:
-            elapsed = time.time() - self._step_started_at if self._step_started_at else 0.0
-            return {
-                "running": self._running,
-                "steps": list(self._steps),
-                "current": self._current_step,
-                "current_idx": self._current_step_idx,
-                "current_step": self._current_step_idx + 1 if self._running else 0,
-                "total": len(self._steps),
-                "step": self._current_step,
-                "step_elapsed_s": elapsed,
-                "last_error": self._last_error,
-            }
-
-    def submit(self, steps: list[dict[str, Any]]) -> bool:
-        if not steps:
-            return False
-        with self._lock:
-            self._steps = list(steps)
-        self.stop()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        return True
-
-    def stop(self) -> None:
-        self._running = False
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=2)
-
-    def _run(self) -> None:
-        self._running = True
-        self._last_error = None
-        try:
-            for idx, step in enumerate(self._steps):
-                if not self._running:
-                    break
-                with self._lock:
-                    self._current_step_idx = idx
-                    self._current_step = dict(step)
-                    self._step_started_at = time.time()
-                self._execute_step(step)
-        except Exception as exc:
-            self._last_error = str(exc)
-            logger.exception("Route script failed")
-        finally:
-            with self._lock:
-                self._running = False
-                self._current_step = None
-                self._current_step_idx = -1
-                self._step_started_at = None
-            # Stop base
-            if self._base_cb:
-                self._base_cb("STOP")
-            # Center servo
-            if self._servo_cb:
-                self._servo_cb(float(os.getenv("SERVO_CENTER_ANGLE", "-35")))
-
-    def _execute_step(self, step: dict[str, Any]) -> None:
-        action = str(step.get("action", "stop")).lower().replace(" ", "_")
-        duration = max(0.0, float(step.get("duration_s", step.get("duration", 0))))
-        logger.info("Script step %d: %s (%.1fs)", self._current_step_idx, action, duration)
-
-        base_cmd = "STOP"
-        servo_angle = self._center_angle
-
-        if action in ("forward", "straight"):
-            base_cmd = "FORWARD"
-        elif action in ("backward",):
-            base_cmd = "BACKWARD"
-        elif action in ("left",):
-            base_cmd = "FORWARD"
-            servo_angle = self._center_angle + self._max_steer
-        elif action in ("right",):
-            base_cmd = "FORWARD"
-            servo_angle = self._center_angle - self._max_steer
-        elif action in ("turn_left",):
-            base_cmd = "TURN_LEFT"
-            servo_angle = None
-        elif action in ("turn_right",):
-            base_cmd = "TURN_RIGHT"
-            servo_angle = None
-        elif action in ("stop", "pause"):
-            base_cmd = "STOP"
-
-        if self._base_cb:
-            self._base_cb(base_cmd)
-        if servo_angle is not None and self._servo_cb:
-            self._servo_cb(servo_angle)
-
-        if duration > 0:
-            # Sleep in small chunks to allow stop
-            deadline = time.time() + duration
-            while self._running and time.time() < deadline:
-                if servo_angle is not None and self._servo_cb:
-                    self._servo_cb(servo_angle)
-                time.sleep(self._republish_period_s)
-
-
 def constrain(value, min_value, max_value):
     return max(min_value, min(value, max_value))
 
@@ -247,8 +119,8 @@ def map_calibrated_servo(
     input_cmd: lệnh logic từ 0 -> 180
             90 là home logic
 
-    home_offset_deg: offset calibration của home
-                    ví dụ home lệch -8 độ thì servo home = 90 + (-8) = 82
+    home_offset_deg: physical offset của home
+                    ví dụ home lệch -8 độ thì servo physical home = 90 + (-8) = 82
 
     limit_deg: giới hạn vật lý mỗi bên
             ví dụ 60 nghĩa là chỉ chạy từ -60 -> +60 quanh home
@@ -265,13 +137,20 @@ def map_calibrated_servo(
     # Đổi input 0..180 thành ratio -1..1
     ratio = (input_cmd - 90) / 90
 
-    # Đảo chiều nếu cần
-    if reverse:
-        ratio = -ratio
-
     # Map ratio ra góc servo thật
-    servo_cmd = home_cmd + ratio * limit_deg
+    calib_deg = input_cmd - 90
+    # Cap error nếu vượt quá limit
+    if abs(calib_deg) > limit_deg:
+        calib_deg = limit_deg if calib_deg > 0 else -limit_deg
+        
+    servo_cmd = home_cmd + calib_deg
 
+    # Due to hardware limitation of servo, we need to add some offset to avoid hitting the physical limit
+    if servo_cmd < home_cmd: #increase power of right side
+        servo_cmd -= 10
+    elif servo_cmd > home_cmd: #increase power of left side
+        servo_cmd += -5
+    
     # Giới hạn an toàn servo 0..180
     servo_cmd = constrain(servo_cmd, 0, 180)
 
@@ -290,15 +169,16 @@ def _scan_routes() -> list[dict[str, Any]]:
     for d in sorted(root.iterdir(), reverse=True):
         if not d.is_dir() or not d.name.startswith("route-"):
             continue
-        summary_file = d / "summary.json"
+        summary_file = d / "route_summary.json"
         info: dict[str, Any] = {
             "route_id": d.name,
             "route_mode": "",
             "preset": "",
             "status": "not_recorded",
             "frames": 0,
-            "elapsed": "0s",
-            "zip_size": "—",
+            "elapsed": 0.0,
+            "zip_size": None,
+            "has_zip": False,
             "ended_utc": "",
         }
         if summary_file.is_file():
@@ -310,16 +190,17 @@ def _scan_routes() -> list[dict[str, Any]]:
                     "preset": s.get("preset_name", ""),
                     "status": s.get("status", "not_recorded"),
                     "frames": s.get("total_frames", 0),
-                    "elapsed": s.get("elapsed", "0s"),
-                    "ended_utc": s.get("ended_utc", ""),
+                    "elapsed": float(s.get("total_elapsed_seconds", 0.0)),
+                    "accepted": s.get("accepted"),
+                    "ended_utc": s.get("end_timestamp_utc", ""),
                 })
             except Exception:
                 pass
         # Check for zip
-        zip_path = d / f"{d.name}.zip"
+        zip_path = d.with_suffix(".zip")
         if zip_path.is_file():
-            sz = zip_path.stat().st_size
-            info["zip_size"] = f"{sz/1024:.0f} KB" if sz < 1024*1024 else f"{sz/1024/1024:.1f} MB"
+            info["has_zip"] = True
+            info["zip_size"] = zip_path.stat().st_size
         routes.append(info)
     return routes
 
@@ -345,6 +226,14 @@ def main() -> None:
     calibrator = UnifiedCalibrator(telemetry_enabled=True)
     state: RobotState = calibrator.robot_state
     controller = calibrator.steering_controller
+    # SERVO_CENTER_ANGLE is physical home offset in direct-control mode.
+    # Keep calibration output centered at logic 90 so mapping remains 0..180.
+    state.servo_center_angle = 90.0
+    state.max_steering_offset = 90.0
+    state.last_valid_servo_angle = 90.0
+    state.last_valid_command = 90.0
+    controller._center = 90.0
+    controller._max_offset = 90.0
 
     # ------------------------------------------------------------------ #
     # Direct hardware drivers
@@ -463,6 +352,8 @@ def main() -> None:
     # ------------------------------------------------------------------ #
     http: JetsonHttpServer | None = None
     script_runner: JetsonScriptRunner | None = None
+    route_session: RouteSession | None = None
+    route_video_writer: cv2.VideoWriter | None = None
     if not args.no_dashboard:
         http = JetsonHttpServer(host=args.host, port=args.port)
         http.set_frame_getter(_frame_getter)
@@ -476,9 +367,26 @@ def main() -> None:
         script_runner = JetsonScriptRunner()
         script_runner.set_handlers(_base_handler, servo.send_angle, _relay_handler)
 
+        def _submit_script(body: str) -> bool:
+            nonlocal route_session, route_video_writer
+            payload = json.loads(body)
+            steps = payload.get("steps", [])
+            ok = script_runner.submit(steps)
+            if ok:
+                if route_video_writer is not None:
+                    route_video_writer.release()
+                    route_video_writer = None
+                route_session = RouteSession(route_mode="SCRIPT")
+                route_session.attach_meta("script_steps", steps)
+                route_session.attach_meta("source", "dashboard_direct")
+                route_session.attach_meta("video_file", "route.mp4")
+                route_session.start(time.monotonic())
+                logger.info("Route recording started: %s", route_session.route_id)
+            return ok
+
         http.set_script_runner(lambda: script_runner.status())
         http.set_script_stopper(script_runner.stop)
-        http.set_script_submitter(lambda body: script_runner.submit(json.loads(body).get("steps", [])))
+        http.set_script_submitter(_submit_script)
         http.set_steps_getter(lambda: _steps)
         http.set_steps_setter(lambda body: _steps.extend(json.loads(body).get("steps", [])))
         http.set_presets_getter(lambda: [{"name": k, "steps": v, "steps_count": len(v)} for k, v in _presets.items()])
@@ -487,6 +395,22 @@ def main() -> None:
         http.set_routes_getter(_scan_routes)
 
         http.start()
+
+    def _finalize_route(status: str) -> None:
+        nonlocal route_session, route_video_writer
+        if route_video_writer is not None:
+            route_video_writer.release()
+            route_video_writer = None
+        if route_session is None:
+            return
+        result = route_session.finalize(mono_now=time.monotonic(), status=status)
+        logger.info(
+            "Route recording finalized: %s accepted=%s reason=%s",
+            result.route_id,
+            result.accepted,
+            result.rejection_reason,
+        )
+        route_session = None
 
     # ------------------------------------------------------------------ #
     # Camera
@@ -556,12 +480,11 @@ def main() -> None:
             # --- servo ---
             output_angle = map_calibrated_servo(
                 servo_angle,
-                home_offset_deg=state.servo_center_angle,
+                home_offset_deg=_env_float(("SERVO_CENTER_ANGLE",), -8.0),
                 limit_deg=_env_int(("MAX_STEERING_OFFSET",), 60),
                 reverse=_env_bool("SERVO_REVERSE", False),
             )
-            # print(script_runner.is_running)
-            if script_runner.is_running:
+            if script_runner is not None and script_runner.is_running() and script_runner.vision_pid_active():
                 servo.send_angle(output_angle)
             final_angle = output_angle
 
@@ -575,6 +498,28 @@ def main() -> None:
                     final_angle, loop_ms,
                 )
             pid_error = 0.0 if theta is None else float(theta) - 90.0
+            current_route_id = route_session.route_id if route_session is not None else None
+            if route_session is not None:
+                if route_video_writer is None:
+                    video_path = route_session.route_dir / "route.mp4"
+                    frame_h, frame_w = display_frame.shape[:2]
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    route_video_writer = cv2.VideoWriter(
+                        str(video_path),
+                        fourcc,
+                        float(args.hz),
+                        (frame_w, frame_h),
+                    )
+                    logger.info("Route video recording to %s", video_path)
+                route_video_writer.write(display_frame)
+                route_session.update_frame(
+                    mono_now=time.monotonic(),
+                    theta=theta,
+                    fsm_state=fsm_state,
+                    calibration_active=calibration.calibration_active,
+                )
+                if script_runner is None or not script_runner.is_running():
+                    _finalize_route("COMPLETED")
 
             # Build dashboard telemetry, merging calibrator output with hardware state
             tel = dict(calibration.telemetry)
@@ -585,6 +530,7 @@ def main() -> None:
                 "estop_active": False,
                 "steer_angle": f"{final_angle:.1f}",
                 "current_route_mode": "AUTO",
+                "route_id": current_route_id,
                 "centered": fsm_state == "GAPPING",
                 "relay_on": relay.relay_state,
                 "servo_feedback_enabled": False,
@@ -617,6 +563,7 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
     finally:
+        _finalize_route("INTERRUPTED")
         servo.center()
         time.sleep(0.3)
         base.stop()
@@ -626,7 +573,10 @@ def main() -> None:
         cap.release()
         if http is not None:
             http.stop()
-        cv2.destroyAllWindows()
+        try:
+            cv2.destroyAllWindows()
+        except cv2.error:
+            pass
         logger.info("Shutdown complete")
 
 
