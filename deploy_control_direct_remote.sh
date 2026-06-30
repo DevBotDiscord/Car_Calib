@@ -211,7 +211,10 @@ ln -sfn "$release_dir" "$current_dir"
 rm -f "$remote_archive" "$REMOTE_ENV"
 
 cd "$current_dir"
-mkdir -p logs routes
+mkdir -p "$root_dir/data/logs" "$root_dir/data/routes"
+rm -rf logs routes
+ln -sfn "$root_dir/data/logs" logs
+ln -sfn "$root_dir/data/routes" routes
 
 if ! command -v docker &>/dev/null; then
     echo "[remote] ERROR: Docker not installed."

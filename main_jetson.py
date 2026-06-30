@@ -21,12 +21,14 @@ Env vars:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import os
 import sys
 import time
 import threading
+from pathlib import Path
 from typing import Any, Callable
 
 import cv2
@@ -354,6 +356,8 @@ def main() -> None:
     script_runner: JetsonScriptRunner | None = None
     route_session: RouteSession | None = None
     route_video_writer: cv2.VideoWriter | None = None
+    route_csv_file: Any | None = None
+    route_csv_writer: csv.DictWriter | None = None
     if not args.no_dashboard:
         http = JetsonHttpServer(host=args.host, port=args.port)
         http.set_frame_getter(_frame_getter)
@@ -362,13 +366,33 @@ def main() -> None:
         http.set_relay_handler(_relay_handler)
         http.set_power_handler(_power_handler)
         # Route script runner + presets
-        _presets: dict[str, list[dict[str, Any]]] = {}
+        presets_path = Path(os.getenv("ROUTE_LOG_ROOT", "/data/routes")) / "presets.json"
+        try:
+            _presets: dict[str, list[dict[str, Any]]] = json.loads(
+                presets_path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            _presets = {}
+
+        def _save_presets() -> None:
+            presets_path.parent.mkdir(parents=True, exist_ok=True)
+            presets_path.write_text(json.dumps(_presets, indent=2), encoding="utf-8")
+
+        def _set_preset(body: str) -> None:
+            data = json.loads(body)
+            _presets[data.get("name", "untitled")] = data.get("steps", [])
+            _save_presets()
+
+        def _delete_preset(name: str) -> None:
+            _presets.pop(name, None)
+            _save_presets()
+
         _steps: list[dict[str, Any]] = []
         script_runner = JetsonScriptRunner()
         script_runner.set_handlers(_base_handler, servo.send_angle, _relay_handler)
 
         def _submit_script(body: str) -> bool:
-            nonlocal route_session, route_video_writer
+            nonlocal route_session, route_video_writer, route_csv_file, route_csv_writer
             payload = json.loads(body)
             steps = payload.get("steps", [])
             ok = script_runner.submit(steps)
@@ -376,10 +400,15 @@ def main() -> None:
                 if route_video_writer is not None:
                     route_video_writer.release()
                     route_video_writer = None
+                if route_csv_file is not None:
+                    route_csv_file.close()
+                    route_csv_file = None
+                    route_csv_writer = None
                 route_session = RouteSession(route_mode="SCRIPT")
                 route_session.attach_meta("script_steps", steps)
                 route_session.attach_meta("source", "dashboard_direct")
-                route_session.attach_meta("video_file", "route.mp4")
+                route_session.attach_meta("video_file", "")
+                route_session.attach_meta("csv_file", "route_frames.csv")
                 route_session.start(time.monotonic())
                 logger.info("Route recording started: %s", route_session.route_id)
             return ok
@@ -390,17 +419,22 @@ def main() -> None:
         http.set_steps_getter(lambda: _steps)
         http.set_steps_setter(lambda body: _steps.extend(json.loads(body).get("steps", [])))
         http.set_presets_getter(lambda: [{"name": k, "steps": v, "steps_count": len(v)} for k, v in _presets.items()])
-        http.set_presets_setter(lambda body: (d := json.loads(body), _presets.update({d.get("name", "untitled"): d.get("steps", [])})))
-        http.set_preset_deleter(lambda name: _presets.pop(name, None))
+        http.set_presets_setter(_set_preset)
+        http.set_preset_deleter(_delete_preset)
         http.set_routes_getter(_scan_routes)
 
         http.start()
 
     def _finalize_route(status: str) -> None:
-        nonlocal route_session, route_video_writer
+        nonlocal route_session, route_video_writer, route_csv_file, route_csv_writer
         if route_video_writer is not None:
             route_video_writer.release()
             route_video_writer = None
+        if route_csv_file is not None:
+            route_csv_file.flush()
+            route_csv_file.close()
+            route_csv_file = None
+            route_csv_writer = None
         if route_session is None:
             return
         result = route_session.finalize(mono_now=time.monotonic(), status=status)
@@ -411,6 +445,30 @@ def main() -> None:
             result.rejection_reason,
         )
         route_session = None
+
+    def _open_route_video_writer(frame_w: int, frame_h: int) -> cv2.VideoWriter | None:
+        if route_session is None:
+            return None
+        candidates = [
+            ("route.avi", "MJPG"),
+            ("route.mp4", "mp4v"),
+        ]
+        for filename, codec in candidates:
+            path = route_session.route_dir / filename
+            writer = cv2.VideoWriter(
+                str(path),
+                cv2.VideoWriter_fourcc(*codec),
+                float(args.hz),
+                (frame_w, frame_h),
+            )
+            if writer.isOpened():
+                route_session.attach_meta("video_file", filename)
+                logger.info("Route video recording to %s codec=%s", path, codec)
+                return writer
+            writer.release()
+            logger.warning("Route video writer unavailable: %s codec=%s", path, codec)
+        route_session.attach_meta("video_file", "")
+        return None
 
     # ------------------------------------------------------------------ #
     # Camera
@@ -501,17 +559,10 @@ def main() -> None:
             current_route_id = route_session.route_id if route_session is not None else None
             if route_session is not None:
                 if route_video_writer is None:
-                    video_path = route_session.route_dir / "route.mp4"
                     frame_h, frame_w = display_frame.shape[:2]
-                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                    route_video_writer = cv2.VideoWriter(
-                        str(video_path),
-                        fourcc,
-                        float(args.hz),
-                        (frame_w, frame_h),
-                    )
-                    logger.info("Route video recording to %s", video_path)
-                route_video_writer.write(display_frame)
+                    route_video_writer = _open_route_video_writer(frame_w, frame_h)
+                if route_video_writer is not None:
+                    route_video_writer.write(display_frame)
                 route_session.update_frame(
                     mono_now=time.monotonic(),
                     theta=theta,
@@ -548,6 +599,24 @@ def main() -> None:
                 "base": last_base_cmd,
                 "power_pulsing": relay.power_pulsing,
             })
+            if route_session is not None:
+                if route_csv_writer is None:
+                    route_csv_file = (route_session.route_dir / "route_frames.csv").open(
+                        "w",
+                        newline="",
+                        encoding="utf-8",
+                    )
+                    fieldnames = sorted(tel.keys())
+                    route_csv_writer = csv.DictWriter(
+                        route_csv_file,
+                        fieldnames=fieldnames,
+                        extrasaction="ignore",
+                    )
+                    route_csv_writer.writeheader()
+                    logger.info("Route CSV recording to %s", route_session.route_dir / "route_frames.csv")
+                route_csv_writer.writerow(tel)
+                if route_csv_file is not None:
+                    route_csv_file.flush()
             _update_shared(display_frame, tel)
 
             # --- CSV telemetry (delegated to calibrator) ---
