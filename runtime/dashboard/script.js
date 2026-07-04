@@ -832,6 +832,147 @@ document.getElementById("presetDelete").onclick = async () => {
 refreshPresets();
 setInterval(refreshPresets, 10000);
 
+// ---------- tune panel ----------
+const tuneFields = document.getElementById("tuneFields");
+const tuneStatus = document.getElementById("tuneStatus");
+const tuneApplyBtn = document.getElementById("tuneApply");
+const tuneSaveBtn = document.getElementById("tuneSave");
+const tuneResetSavedBtn = document.getElementById("tuneResetSaved");
+const tuneResetDefaultsBtn = document.getElementById("tuneResetDefaults");
+let tuneState = null;
+let tuneDraft = {};
+let tuneTouched = false;
+
+function tuneSame(a, b, schema) {
+  if (!a || !b || !schema) return false;
+  return schema.every(s => Math.abs(Number(a[s.key]) - Number(b[s.key])) <= 1e-9);
+}
+
+function tuneFmt(value, spec) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "-";
+  return spec.type === "int" ? String(Math.round(n)) : n.toFixed(spec.step < 0.1 ? 2 : 1);
+}
+
+function tuneLocalDirty() {
+  return !!(tuneState && tuneTouched && !tuneSame(tuneDraft, tuneState.values, tuneState.schema));
+}
+
+function renderTuneStatus() {
+  if (!tuneStatus || !tuneState) return;
+  const idle = tuneState.idle || {};
+  const saved = tuneState.saved || {};
+  const localDirty = tuneLocalDirty();
+  const parts = [
+    idle.ok ? "idle" : safeText(idle.reason || "blocked"),
+    localDirty ? "staged changes" : (tuneState.dirty ? "unsaved active values" : "active saved/default"),
+    saved.exists ? `saved ${safeText(saved.updated_utc || "")}` : "not saved",
+  ];
+  tuneStatus.textContent = parts.filter(Boolean).join(" · ");
+  if (tuneApplyBtn) tuneApplyBtn.disabled = !idle.ok || !localDirty;
+  if (tuneSaveBtn) tuneSaveBtn.disabled = localDirty;
+  if (tuneResetSavedBtn) tuneResetSavedBtn.disabled = !idle.ok || !saved.exists;
+  if (tuneResetDefaultsBtn) tuneResetDefaultsBtn.disabled = !idle.ok;
+}
+
+function renderTuneFields() {
+  if (!tuneFields || !tuneState) return;
+  const byGroup = {};
+  (tuneState.schema || []).forEach(spec => {
+    if (!byGroup[spec.group]) byGroup[spec.group] = [];
+    byGroup[spec.group].push(spec);
+  });
+  let html = "";
+  Object.keys(byGroup).forEach(group => {
+    html += `<h3>${safeText(group)}</h3>`;
+    byGroup[group].forEach(spec => {
+      const key = spec.key;
+      const value = tuneDraft[key] ?? tuneState.values[key];
+      html += `
+        <div class="tune-field" data-key="${safeText(key)}">
+          <label for="tune_${safeText(key)}">${safeText(spec.label)}</label>
+          <input id="tune_${safeText(key)}_range" data-tune-input="1" data-key="${safeText(key)}" type="range" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${safeText(value)}">
+          <input id="tune_${safeText(key)}" data-tune-input="1" data-key="${safeText(key)}" type="number" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${safeText(value)}">
+          <div class="tune-meta">current ${safeText(tuneFmt(tuneState.values[key], spec))} · default ${safeText(tuneFmt(tuneState.defaults[key], spec))}</div>
+        </div>`;
+    });
+  });
+  tuneFields.innerHTML = html;
+  renderTuneStatus();
+}
+
+async function refreshTune(forceRender) {
+  if (!tuneFields) return;
+  try {
+    const r = await fetch("/api/tune" + qp);
+    if (!r.ok) {
+      if (tuneStatus) tuneStatus.textContent = "tune unavailable";
+      return;
+    }
+    const data = await r.json();
+    tuneState = data;
+    if (!tuneTouched || forceRender) {
+      tuneDraft = Object.assign({}, data.values || {});
+      tuneTouched = false;
+      renderTuneFields();
+    } else {
+      renderTuneStatus();
+    }
+  } catch (e) {
+    if (tuneStatus) tuneStatus.textContent = "tune network error";
+  }
+}
+
+function updateTunePair(key, value) {
+  document.querySelectorAll(`[data-tune-input][data-key="${key}"]`).forEach(input => {
+    input.value = String(value);
+  });
+}
+
+async function tunePost(path, body, method) {
+  try {
+    const r = await fetch(path + qp, {
+      method: method || "POST",
+      headers: {"Content-Type": "application/json"},
+      body: body == null ? undefined : JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      if (tuneStatus) tuneStatus.textContent = "tune error: " + (j.detail || r.status);
+      return;
+    }
+    tuneState = j;
+    tuneDraft = Object.assign({}, j.values || {});
+    tuneTouched = false;
+    renderTuneFields();
+  } catch (e) {
+    if (tuneStatus) tuneStatus.textContent = "tune network error";
+  }
+}
+
+if (tuneFields) {
+  tuneFields.addEventListener("input", e => {
+    const input = e.target;
+    if (!input || !input.dataset || !input.dataset.key || !tuneState) return;
+    const key = input.dataset.key;
+    const spec = (tuneState.schema || []).find(s => s.key === key);
+    if (!spec) return;
+    const n = Number(input.value);
+    if (!Number.isFinite(n)) return;
+    const value = spec.type === "int" ? Math.round(n) : n;
+    tuneDraft[key] = value;
+    tuneTouched = true;
+    updateTunePair(key, value);
+    renderTuneStatus();
+  });
+}
+if (tuneApplyBtn) tuneApplyBtn.onclick = () => tunePost("/api/tune", {values: tuneDraft}, "PUT");
+if (tuneSaveBtn) tuneSaveBtn.onclick = () => tunePost("/api/tune/save");
+if (tuneResetSavedBtn) tuneResetSavedBtn.onclick = () => tunePost("/api/tune/reset", {target: "saved"});
+if (tuneResetDefaultsBtn) tuneResetDefaultsBtn.onclick = () => tunePost("/api/tune/reset", {target: "defaults"});
+refreshTune(true);
+setInterval(() => refreshTune(false), 1000);
+
 // §13 ─ Telemetry trends (F1 chart), FSM strip (F2), health banner (F3) ──
 const _telHistory = [];           // {t, theta, servo, fsm}
 const TEL_HISTORY_MS = 30000;     // keep last 30s

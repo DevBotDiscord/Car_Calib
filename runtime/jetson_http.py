@@ -27,6 +27,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 import cv2
 import numpy as np
 
+from runtime.calib_tuning import TuneBlockedError, TuneValidationError
+
 logger = logging.getLogger(__name__)
 
 _DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
@@ -139,6 +141,14 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._json(data)
             return
 
+        if path == "/api/tune":
+            getter = getattr(self.server, "tune_getter", None)
+            if not callable(getter):
+                self._json({"detail": "tune unavailable"}, 404)
+                return
+            self._json(getter())
+            return
+
         # ---- API /base/<cmd> ----
         if path.startswith("/api/base/"):
             cmd = path.split("/api/base/")[-1]
@@ -248,10 +258,44 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if path == "/routes/delete_all":
             self._json({"removed": 0, "errors": []})
             return
+        if path == "/api/tune/save":
+            saver = getattr(self.server, "tune_saver", None)
+            if not callable(saver):
+                self._json({"detail": "tune unavailable"}, 404)
+                return
+            try:
+                self._json(saver())
+            except TuneValidationError as exc:
+                self._json({"detail": str(exc)}, 400)
+            return
+        if path == "/api/tune/reset":
+            resetter = getattr(self.server, "tune_resetter", None)
+            if not callable(resetter):
+                self._json({"detail": "tune unavailable"}, 404)
+                return
+            try:
+                self._json(resetter(str(self._json_body().get("target", ""))))
+            except TuneBlockedError as exc:
+                self._json({"detail": str(exc)}, 409)
+            except TuneValidationError as exc:
+                self._json({"detail": str(exc)}, 400)
+            return
         self._text(404, "not found")
 
     def do_PUT(self) -> None:
         path = self._request_path()
+        if path == "/api/tune":
+            applier = getattr(self.server, "tune_applier", None)
+            if not callable(applier):
+                self._json({"detail": "tune unavailable"}, 404)
+                return
+            try:
+                self._json(applier(self._json_body().get("values", {})))
+            except TuneBlockedError as exc:
+                self._json({"detail": str(exc)}, 409)
+            except TuneValidationError as exc:
+                self._json({"detail": str(exc)}, 400)
+            return
         if path.startswith("/presets/"):
             name = unquote(path.split("/presets/", 1)[1])
             setter = getattr(self.server, "presets_setter", None)
@@ -305,6 +349,10 @@ class JetsonHttpServer:
         self._presets_setter: Callable[[str], None] | None = None
         self._preset_deleter: Callable[[str], None] | None = None
         self._routes_getter: Callable[[], list[dict[str, Any]]] | None = None
+        self._tune_getter: Callable[[], dict[str, Any]] | None = None
+        self._tune_applier: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+        self._tune_saver: Callable[[], dict[str, Any]] | None = None
+        self._tune_resetter: Callable[[str], dict[str, Any]] | None = None
         self._thread: threading.Thread | None = None
 
     def set_frame_getter(self, fn: Callable[[], np.ndarray | None]) -> None:
@@ -348,6 +396,19 @@ class JetsonHttpServer:
     def set_routes_getter(self, fn: Callable[[], list[dict[str, Any]]]) -> None:
         self._routes_getter = fn
 
+    def set_tune_handlers(
+        self,
+        *,
+        getter: Callable[[], dict[str, Any]],
+        applier: Callable[[dict[str, Any]], dict[str, Any]],
+        saver: Callable[[], dict[str, Any]],
+        resetter: Callable[[str], dict[str, Any]],
+    ) -> None:
+        self._tune_getter = getter
+        self._tune_applier = applier
+        self._tune_saver = saver
+        self._tune_resetter = resetter
+
     def start(self) -> None:
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
@@ -374,4 +435,8 @@ class JetsonHttpServer:
         self._server.presets_setter = self._presets_setter
         self._server.preset_deleter = self._preset_deleter
         self._server.routes_getter = self._routes_getter
+        self._server.tune_getter = self._tune_getter
+        self._server.tune_applier = self._tune_applier
+        self._server.tune_saver = self._tune_saver
+        self._server.tune_resetter = self._tune_resetter
         self._server.serve_forever()

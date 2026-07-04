@@ -53,6 +53,7 @@ from models.robot_state import RobotState, FSMState
 from runtime.jetson_http import JetsonHttpServer
 from runtime.route_logging import RouteSession
 from runtime.jetson_script_runner import JetsonScriptRunner
+from runtime.calib_tuning import CalibTuneManager
 from unified_calibration_components import UnifiedCalibrator, CalibrationProcessingError
 
 logger = logging.getLogger("jetson")
@@ -358,6 +359,23 @@ def main() -> None:
     route_video_writer: cv2.VideoWriter | None = None
     route_csv_file: Any | None = None
     route_csv_writer: csv.DictWriter | None = None
+
+    def _tune_idle_state() -> tuple[bool, str]:
+        if script_runner is not None and script_runner.is_running():
+            return False, "blocked: script running"
+        if last_base_cmd.upper() != "STOP":
+            return False, "blocked: base not STOP"
+        return True, "idle"
+
+    tune_file = os.getenv("CALIB_TUNE_FILE") or str(
+        Path(os.getenv("ROUTE_LOG_ROOT", "/data/routes")) / "calib_tune.json"
+    )
+    tune_manager = CalibTuneManager(
+        calibrator,
+        tune_file,
+        idle_getter=_tune_idle_state,
+    )
+
     if not args.no_dashboard:
         http = JetsonHttpServer(host=args.host, port=args.port)
         http.set_frame_getter(_frame_getter)
@@ -422,6 +440,12 @@ def main() -> None:
         http.set_presets_setter(_set_preset)
         http.set_preset_deleter(_delete_preset)
         http.set_routes_getter(_scan_routes)
+        http.set_tune_handlers(
+            getter=tune_manager.status,
+            applier=tune_manager.apply,
+            saver=tune_manager.save,
+            resetter=tune_manager.reset,
+        )
 
         http.start()
 

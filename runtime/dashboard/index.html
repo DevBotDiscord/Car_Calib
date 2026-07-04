@@ -32,6 +32,7 @@
     <div class="panel">
       <div class="tabs" role="tablist">
         <button class="tab active" data-tab="script" role="tab">Script</button>
+        <button class="tab" data-tab="tune" role="tab">Tune</button>
       </div>
       <div class="tab-pane active" data-pane="script">
       <h2>Route script builder</h2>
@@ -62,13 +63,7 @@
         <button id="presetSave">save current</button>
       </div>
 
-      <h3>Steps</h3>
-      <table id="steps">
-        <thead><tr><th style="width:50px">#</th><th>Action</th><th style="width:120px">Duration</th><th style="width:160px"></th></tr></thead>
-        <tbody></tbody>
-      </table>
-
-      <div class="row" style="margin-top:18px">
+      <div class="row route-runbar" style="margin-top:18px">
         <button id="run" class="primary">▶ run script (auto-record)</button>
         <button id="stop" class="danger">■ stop</button>
         <label class="switch" title="relay light toggle">
@@ -85,10 +80,27 @@
       <div class="progress"><div id="progressBar" style="width:0%"></div></div>
       <div class="progress-segments" id="progressSegments"></div>
 
+      <h3>Steps</h3>
+      <table id="steps">
+        <thead><tr><th style="width:50px">#</th><th>Action</th><th style="width:120px">Duration</th><th style="width:160px"></th></tr></thead>
+        <tbody></tbody>
+      </table>
+
       <h3>JSON preview</h3>
       <pre id="preview">{
   "steps": []
 }</pre>
+      </div>
+      <div class="tab-pane" data-pane="tune">
+        <h2>Calibration tune</h2>
+        <div class="row tune-actions">
+          <button id="tuneApply" class="primary" disabled>Apply</button>
+          <button id="tuneSave" disabled>Save</button>
+          <button id="tuneResetSaved" disabled>Reset saved</button>
+          <button id="tuneResetDefaults" class="danger" disabled>Reset defaults</button>
+          <span id="tuneStatus" class="muted">loading…</span>
+        </div>
+        <div id="tuneFields"></div>
       </div>
     </div>
   </div>

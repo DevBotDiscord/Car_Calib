@@ -53,11 +53,17 @@ h3 { font-size: 18px; margin: 20px 0 8px; color: #aaa; text-transform: uppercase
 .panel { background: #16171a; border: 1px solid #2a2c30; border-radius: 12px; padding: 20px; }
 img.stream { width: 85%; max-width: 960px; border: 1px solid #2a2c30; border-radius: 8px; background: #000; display: block; }
 .row { display: flex; gap: 12px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+.route-runbar {
+  border-top: 1px solid var(--bg-3);
+  padding-top: var(--sp-3);
+}
 select, input, button { background: #1f2125; color: #eee; border: 1px solid #3a3d42; padding: 11px 14px; border-radius: 7px; font-size: 17px; }
 select { min-width: 260px; }
 input[type=number] { width: 130px; }
 button { cursor: pointer; transition: background 0.12s; }
 button:hover { background: #2a2d33; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button:disabled:hover { background: #1f2125; }
 button.primary { background: #2a8c5a; border-color: #3fb37a; color: #fff; font-weight: 600; padding: 13px 22px; font-size: 18px; }
 button.primary:hover { background: #34a36b; }
 button.danger { background: #8c2a2a; border-color: #b34040; color: #fff; padding: 13px 22px; font-size: 18px; }
@@ -306,6 +312,8 @@ tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
 }
 
 /* tune panel form */
+.tune-actions { align-items: center; }
+#tuneStatus { flex: 1 1 240px; }
 .tune-field {
   display: grid; grid-template-columns: 140px 1fr 80px; gap: var(--sp-3);
   align-items: center; padding: var(--sp-2) 0;
