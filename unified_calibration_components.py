@@ -224,7 +224,7 @@ class VisionProcessor:
         )
         lines = [] if raw_lines is None else [
             (int(x1), int(y1), int(x2), int(y2))
-            for [[x1, y1, x2, y2]] in raw_lines.tolist()
+            for x1, y1, x2, y2 in raw_lines.reshape(-1, 4).tolist()
         ]
         hough_vis = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
         for x1, y1, x2, y2 in lines:

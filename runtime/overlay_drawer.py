@@ -1,3 +1,5 @@
+"""OpenCV overlay drawing helpers for live calibration frames."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -92,11 +94,10 @@ class OverlayDrawer:
         panel_h = 148
 
         self._fill_alpha_rect(frame, (panel_x, panel_y), (panel_x + panel_w, panel_y + panel_h), (0, 0, 0), 0.58)
-        self._draw_text(frame, "HUD / TELEMETRY", (panel_x + 12, panel_y + 24), self.theme.white, scale=0.58, thickness=1)
+        self._draw_text(frame, "HUD / TELEMETRY", (panel_x + 12, panel_y + 24), self.theme.white, scale=0.58)
 
         state_color = self._state_color(state)
         heading_error = raw_vp_angle - 90.0
-
         entries = [
             (f"STATE: {state}", state_color),
             (f"RAW VP ANGLE: {raw_vp_angle:.1f}", self.theme.white),
@@ -111,7 +112,7 @@ class OverlayDrawer:
 
         y = panel_y + 48
         for text, color in entries:
-            self._draw_text(frame, text, (panel_x + 12, y), color, scale=0.52, thickness=1)
+            self._draw_text(frame, text, (panel_x + 12, y), color, scale=0.52)
             y += 22
 
     def _draw_floor_visuals(
@@ -126,7 +127,7 @@ class OverlayDrawer:
         right_intercept_x: int | None,
     ) -> None:
         center_x = frame_w // 2
-        self._draw_dashed_vertical_line(frame, center_x, 0, frame_h - 1, self.theme.white, dash_len=14, gap_len=10, thickness=1)
+        self._draw_dashed_vertical_line(frame, center_x, 0, frame_h - 1, self.theme.white)
 
         margin = max(0, min(self.danger_margin_px, frame_w))
         if margin > 0:
@@ -137,9 +138,8 @@ class OverlayDrawer:
             x1, y1, x2, y2 = line
             line_color = self.theme.green
             bottom_x = self._line_bottom_x(line)
-            if bottom_x is not None:
-                if bottom_x < margin or bottom_x > (frame_w - margin):
-                    line_color = self.theme.red
+            if bottom_x is not None and (bottom_x < margin or bottom_x > (frame_w - margin)):
+                line_color = self.theme.red
             cv2.line(frame, (x1, y1), (x2, y2), line_color, 3, cv2.LINE_AA)
 
         self._draw_vp_crosshair(frame, vp_coord)
@@ -152,9 +152,8 @@ class OverlayDrawer:
     def _draw_vp_crosshair(self, frame: np.ndarray, vp_coord: tuple[int, int]) -> None:
         x, y = vp_coord
         size = 12
-        thickness = 2
-        cv2.line(frame, (x - size, y), (x + size, y), self.theme.vp_yellow, thickness, cv2.LINE_AA)
-        cv2.line(frame, (x, y - size), (x, y + size), self.theme.vp_yellow, thickness, cv2.LINE_AA)
+        cv2.line(frame, (x - size, y), (x + size, y), self.theme.vp_yellow, 2, cv2.LINE_AA)
+        cv2.line(frame, (x, y - size), (x, y + size), self.theme.vp_yellow, 2, cv2.LINE_AA)
         cv2.circle(frame, (x, y), 4, self.theme.vp_yellow, -1, cv2.LINE_AA)
 
     def _draw_hysteresis_gauge(self, frame: np.ndarray, *, frame_w: int, frame_h: int, raw_vp_angle: float) -> None:
@@ -166,42 +165,19 @@ class OverlayDrawer:
         y1 = y2 - gauge_h
 
         self._fill_alpha_rect(frame, (x1, y1), (x2, y2), (0, 0, 0), 0.58)
-        self._draw_text(frame, "ANGLE", (x1 + 10, y1 - 8), self.theme.white, scale=0.45, thickness=1)
+        self._draw_text(frame, "ANGLE", (x1 + 10, y1 - 8), self.theme.white, scale=0.45)
 
         left_angle = self.angle_center - self.angle_span
         right_angle = self.angle_center + self.angle_span
-        self._draw_angle_segment(frame, x1, y1, x2, y2, left_angle, self.angle_center - self.outer_thresh, (0, 0, 255))
-        self._draw_angle_segment(
-            frame,
-            x1,
-            y1,
-            x2,
-            y2,
-            self.angle_center - self.outer_thresh,
-            self.angle_center - self.inner_thresh,
-            (0, 255, 255),
-        )
-        self._draw_angle_segment(
-            frame,
-            x1,
-            y1,
-            x2,
-            y2,
-            self.angle_center - self.inner_thresh,
-            self.angle_center + self.inner_thresh,
-            (0, 220, 0),
-        )
-        self._draw_angle_segment(
-            frame,
-            x1,
-            y1,
-            x2,
-            y2,
-            self.angle_center + self.inner_thresh,
-            self.angle_center + self.outer_thresh,
-            (0, 255, 255),
-        )
-        self._draw_angle_segment(frame, x1, y1, x2, y2, self.angle_center + self.outer_thresh, right_angle, (0, 0, 255))
+        segments = [
+            (left_angle, self.angle_center - self.outer_thresh, self.theme.red),
+            (self.angle_center - self.outer_thresh, self.angle_center - self.inner_thresh, self.theme.yellow),
+            (self.angle_center - self.inner_thresh, self.angle_center + self.inner_thresh, self.theme.green),
+            (self.angle_center + self.inner_thresh, self.angle_center + self.outer_thresh, self.theme.yellow),
+            (self.angle_center + self.outer_thresh, right_angle, self.theme.red),
+        ]
+        for start, end, color in segments:
+            self._draw_angle_segment(frame, x1, y1, x2, y2, start, end, color)
 
         for angle in (
             left_angle,
@@ -217,10 +193,7 @@ class OverlayDrawer:
 
         indicator_x = self._angle_to_x(raw_vp_angle, x1, x2)
         cv2.line(frame, (indicator_x, y1 - 2), (indicator_x, y2 + 2), self.theme.white, 2, cv2.LINE_AA)
-        cv2.arrowedLine(frame, (indicator_x, y1 - 6), (indicator_x, y1 - 1), self.theme.white, 1, cv2.LINE_AA, tipLength=0.6)
-        cv2.arrowedLine(frame, (indicator_x, y2 + 6), (indicator_x, y2 + 1), self.theme.white, 1, cv2.LINE_AA, tipLength=0.6)
-
-        self._draw_text(frame, f"{raw_vp_angle:.1f} deg", (x1 + gauge_w - 92, y1 - 8), self.theme.white, scale=0.45, thickness=1)
+        self._draw_text(frame, f"{raw_vp_angle:.1f} deg", (x1 + gauge_w - 92, y1 - 8), self.theme.white, scale=0.45)
 
     def _draw_angle_segment(
         self,
@@ -249,15 +222,13 @@ class OverlayDrawer:
 
     def _marker_color(self, x: int, frame_w: int) -> tuple[int, int, int]:
         margin = max(0, min(self.danger_margin_px, frame_w))
-        if x < margin or x > (frame_w - margin):
-            return self.theme.red
-        return self.theme.green
+        return self.theme.red if x < margin or x > (frame_w - margin) else self.theme.green
 
     def _state_color(self, state: str) -> tuple[int, int, int]:
         normalized = state.upper()
-        if normalized == "TRACKING":
+        if normalized in {"TRACKING", "TRACKING_COAST", "TRACKING_PD"}:
             return self.theme.green
-        if normalized == "VISION_LOST":
+        if normalized in {"VISION_LOST", "GAPPING"}:
             return self.theme.yellow
         if normalized.startswith("DANGER"):
             return self.theme.red
@@ -324,9 +295,7 @@ class OverlayDrawer:
         x1, y1, x2, y2 = line
         if y1 == y2:
             return None
-        if y1 > y2:
-            return int(round(x1))
-        return int(round(x2))
+        return int(round(x1 if y1 > y2 else x2))
 
     def _normalize_lines(self, lines: Iterable[Any]) -> list[tuple[int, int, int, int]]:
         normalized: list[tuple[int, int, int, int]] = []
@@ -365,21 +334,3 @@ class OverlayDrawer:
 
     def _format_value(self, value: int | None) -> str:
         return "-" if value is None else str(value)
-
-
-if __name__ == "__main__":
-    dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    dummy_frame[:] = (35, 35, 35)
-    dummy_packet = {
-        "state": "TRACKING",
-        "raw_vp_angle": 92.5,
-        "left_intercept_x": 150,
-        "right_intercept_x": 490,
-        "final_steering_cmd": 90,
-        "lines": [(120, 470, 240, 120), (520, 470, 410, 120)],
-        "vp_coord": (340, 150),
-    }
-
-    drawer = OverlayDrawer(inner_thresh=3, outer_thresh=10, danger_margin_px=100)
-    annotated = drawer.draw(dummy_frame, dummy_packet)
-    print(f"Annotated frame ready: shape={annotated.shape}, dtype={annotated.dtype}")
