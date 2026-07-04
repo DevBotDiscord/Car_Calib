@@ -85,6 +85,11 @@ class JetsonServoDriver:
     def center(self) -> None:
         self.send_angle(self._center_angle)
 
+    def release(self) -> None:
+        if self._pwm is not None:
+            self._pwm.ChangeDutyCycle(0)
+        logger.debug("Jetson servo: PWM released")
+
     def close(self) -> None:
         if self._pwm is not None:
             self._pwm.stop()

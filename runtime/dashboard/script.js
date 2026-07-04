@@ -343,13 +343,16 @@ function renderMetricGrid(tel, rpiPayload, actuator) {
   const theta = t.theta != null ? Number(t.theta).toFixed(2) + "°" : "-";
   const visionServo = t.servo_angle != null ? Number(t.servo_angle).toFixed(1) + "°" : "-";
   const frame = safeText(t.frame_num);
-  const base = safeText(p.base_state);
+  const base = safeText(p.base_state || p.base);
   const rpiSteer = (p.steer_angle != null) ? Number(p.steer_angle).toFixed(1) + "°" : "-";
   const relay = p.relay_on ? "ON" : "OFF";
   const relayCls = p.relay_on ? "text-warn" : "";
   const mode = safeText(p.current_route_mode || t.route_mode);
   const modeCls = mode === "AUTO" ? "text-ok" : (mode === "-" ? "" : "text-warn");
   const route = safeText(t.route_id || "-");
+  const objectState = safeText(t.object_state || p.object_state || "none");
+  const objectError = t.object_detector_error || p.object_detector_error || "";
+  const objectCls = objectError ? "text-bad" : (objectState === "near" ? "text-bad" : (objectState === "far" ? "text-warn" : "text-ok"));
   // actuator label tracks the active path (ESP USB vs RPi GPIO)
   const actMode = detectMode(p);
   const steerLabel = actMode.kind === "esp" ? "Steer (ESP)" : "Steer (actuator)";
@@ -360,6 +363,7 @@ function renderMetricGrid(tel, rpiPayload, actuator) {
     {label: "Servo (vision)", value: visionServo},
     {label: steerLabel, value: rpiSteer},
     {label: "Base", value: base},
+    {label: "Object", value: objectError ? "error" : objectState, cls: objectCls},
     {label: "Relay", value: relay, cls: relayCls},
     {label: "Mode", value: mode, cls: modeCls},
     {label: "Frame", value: frame},
@@ -412,11 +416,15 @@ async function pollStatus() {
         const stepDur = (st.step && Number(st.step.duration_s)) || 0;
         const stepElapsed = Number(st.step_elapsed_s ?? st.elapsed_in_step_s ?? 0);
         const fillRatio = stepDur > 0 ? Math.min(1, stepElapsed / stepDur) : 0;
-        setPill("pill-running", `running ${currentRunningStep}/${total}`);
+        setPill(st.paused ? "pill-paused" : "pill-running", `${st.paused ? "paused" : "running"} ${currentRunningStep}/${total}`);
         const action = st.step ? safeText(st.step.action) : "";
+        const pauseReason = st.pause_reason === "object_detected" ? "object" : (st.pause_reason || "script");
         runDetail.textContent = action
           ? `${action} · ${stepElapsed.toFixed(1)} / ${stepDur.toFixed(1)}s`
           : "";
+        if (st.paused && action) {
+          runDetail.textContent = `${action} - paused ${safeText(pauseReason)} - ${stepElapsed.toFixed(1)} / ${stepDur.toFixed(1)}s`;
+        }
         const overallRatio = total ? ((currentRunningStep - 1 + fillRatio) / total) : 0;
         progressBar.style.width = (overallRatio * 100).toFixed(1) + "%";
         renderProgressSegments(total, currentRunningStep, fillRatio);
@@ -1057,6 +1065,8 @@ function renderHealthBanner(rpi) {
   const payload = (rpi && rpi.payload) || {};
   const stale = !rpi || !!rpi.stale;
   const estop = !!payload.estop_active;
+  const objectNear = !!payload.object_pause_active || payload.object_state === "near";
+  const objectError = payload.object_detector_error || "";
   if (estop) {
     el.className = "health-banner show bad";
     el.innerHTML = "";
@@ -1068,6 +1078,12 @@ function renderHealthBanner(rpi) {
     btn.onclick = estopReset;
     el.appendChild(span);
     el.appendChild(btn);
+  } else if (objectNear) {
+    el.className = "health-banner show bad";
+    el.textContent = "Object near - route paused, base stopped, servo released.";
+  } else if (objectError) {
+    el.className = "health-banner show warn";
+    el.textContent = "Object detector error - " + objectError;
   } else if (stale) {
     el.className = "health-banner show warn";
     el.textContent = "⚠ Actuator telemetry stale — MQTT peer offline or connection lost.";

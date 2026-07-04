@@ -80,6 +80,11 @@ class PigpioServoDriver:
         logger.info("pigpio servo: centering to %.2f deg", self._center_angle)
         self.send_angle(self._center_angle)
 
+    def release(self) -> None:
+        if self._pi is not None:
+            self._pi.set_servo_pulsewidth(self._pin, 0)
+        logger.debug("pigpio servo: PWM released")
+
     def close(self) -> None:
         if self._pi is not None:
             self._pi.set_servo_pulsewidth(self._pin, 0)

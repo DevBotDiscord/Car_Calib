@@ -54,6 +54,7 @@ from runtime.jetson_http import JetsonHttpServer
 from runtime.route_logging import RouteSession
 from runtime.jetson_script_runner import JetsonScriptRunner
 from runtime.calib_tuning import CalibTuneManager
+from runtime.object_detection import ObjectDetector, draw_object_boxes
 from unified_calibration_components import UnifiedCalibrator, CalibrationProcessingError
 
 logger = logging.getLogger("jetson")
@@ -294,6 +295,9 @@ def main() -> None:
         "theta": None, "theta_src": "none",
         "servo": 0.0, "loop_ms": 0.0,
         "base": "STOP", "relay_on": False, "power_pulsing": False,
+        "object_state": "none", "object_pause_active": False,
+        "object_count": 0, "object_label": None, "object_conf": None,
+        "object_boxes": [], "object_detector_error": None,
     }
     last_base_cmd = "STOP"
 
@@ -320,6 +324,13 @@ def main() -> None:
                 "servo_angle": tel.get("servo"),
                 "loop_ms": tel.get("loop_ms"),
                 "route_mode": tel.get("current_route_mode"),
+                "object_state": tel.get("object_state"),
+                "object_pause_active": tel.get("object_pause_active"),
+                "object_count": tel.get("object_count"),
+                "object_label": tel.get("object_label"),
+                "object_conf": tel.get("object_conf"),
+                "object_boxes": tel.get("object_boxes"),
+                "object_detector_error": tel.get("object_detector_error"),
             },
             "rpi_status": {
                 "online": True,
@@ -375,6 +386,7 @@ def main() -> None:
         tune_file,
         idle_getter=_tune_idle_state,
     )
+    object_detector = ObjectDetector.from_env()
 
     if not args.no_dashboard:
         http = JetsonHttpServer(host=args.host, port=args.port)
@@ -559,6 +571,21 @@ def main() -> None:
             if theta is not None:
                 last_known_theta = theta
 
+            object_status = object_detector.process(frame, now=time.monotonic())
+            display_frame = draw_object_boxes(display_frame, object_status.object_boxes)
+            object_pause_active = object_status.object_pause_active
+            if script_runner is not None:
+                script_runner.set_paused(
+                    object_pause_active,
+                    "object_detected" if object_pause_active else "",
+                )
+            if object_pause_active:
+                if last_base_cmd.upper() != "STOP":
+                    _base_handler("STOP")
+                release_servo = getattr(servo, "release", None)
+                if callable(release_servo):
+                    release_servo()
+
             # --- servo ---
             output_angle = map_calibrated_servo(
                 servo_angle,
@@ -566,7 +593,12 @@ def main() -> None:
                 limit_deg=_env_int(("MAX_STEERING_OFFSET",), 60),
                 reverse=_env_bool("SERVO_REVERSE", False),
             )
-            if script_runner is not None and script_runner.is_running() and script_runner.vision_pid_active():
+            if (
+                not object_pause_active
+                and script_runner is not None
+                and script_runner.is_running()
+                and script_runner.vision_pid_active()
+            ):
                 servo.send_angle(output_angle)
             final_angle = output_angle
 
@@ -623,6 +655,7 @@ def main() -> None:
                 "base": last_base_cmd,
                 "power_pulsing": relay.power_pulsing,
             })
+            tel.update(object_status.telemetry())
             if route_session is not None:
                 if route_csv_writer is None:
                     route_csv_file = (route_session.route_dir / "route_frames.csv").open(

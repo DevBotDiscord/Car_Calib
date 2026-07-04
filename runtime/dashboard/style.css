@@ -85,6 +85,7 @@ pre { background: #0a0a0c; padding: 12px; border-radius: 7px; max-height: 264px;
 .pill { display: inline-block; padding: 4px 11px; border-radius: 14px; font-size: 14px; font-weight: 600; letter-spacing: 0.4px; }
 .pill-idle { background: #2a2c30; color: #888; }
 .pill-running { background: #2a8c5a; color: #fff; }
+.pill-paused { background: var(--warn); color: #0b0c0e; }
 .pill-error { background: #8c2a2a; color: #fff; }
 .telemetry-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 10px; margin-top: 14px; }
 .tile { background: #1a1c20; border: 1px solid #2a2c30; border-radius: 7px; padding: 10px 12px; }
