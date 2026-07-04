@@ -212,9 +212,7 @@ rm -f "$remote_archive" "$REMOTE_ENV"
 
 cd "$current_dir"
 mkdir -p "$root_dir/data/logs" "$root_dir/data/routes"
-rm -rf logs routes
-ln -sfn "$root_dir/data/logs" logs
-ln -sfn "$root_dir/data/routes" routes
+export RPI_DEST_DIR="$root_dir"
 
 if ! command -v docker &>/dev/null; then
     echo "[remote] ERROR: Docker not installed."

@@ -23,8 +23,10 @@ services:
       - /dev/gpiomem:/dev/gpiomem
       - /dev/mem:/dev/mem
     volumes:
-      - ./logs:/data/logs
-      - ./routes:/data/routes
+      - ${RPI_DEST_DIR:-/opt/car-calib-control-direct}/data/logs:/data/logs
+      - ${RPI_DEST_DIR:-/opt/car-calib-control-direct}/data/routes:/data/routes
+      - ${RPI_DEST_DIR:-/opt/car-calib-control-direct}/data/logs:/app/logs
+      - ${RPI_DEST_DIR:-/opt/car-calib-control-direct}/data/routes:/app/routes
     command:
       - python
       - main_control_direct.py

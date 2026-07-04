@@ -2,6 +2,14 @@
 setlocal
 
 set "SCRIPT_DIR=%~dp0"
+set "PS_SCRIPT=%SCRIPT_DIR%deploy_control_direct_remote.ps1"
+
+if /I not "%USE_GIT_BASH_DEPLOY%"=="1" if exist "%PS_SCRIPT%" (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%PS_SCRIPT%" %*
+    set "EXIT_CODE=%ERRORLEVEL%"
+    endlocal & exit /b %EXIT_CODE%
+)
+
 set "BASH_EXE="
 
 if defined GIT_BASH_EXE if exist "%GIT_BASH_EXE%" set "BASH_EXE=%GIT_BASH_EXE%"
@@ -20,7 +28,7 @@ if not defined BASH_EXE (
     exit /b 1
 )
 
-"%BASH_EXE%" "%SCRIPT_DIR%deploy_production.sh" %*
+"%BASH_EXE%" "%SCRIPT_DIR%deploy_control_direct_remote.sh" %*
 set "EXIT_CODE=%ERRORLEVEL%"
 
 endlocal & exit /b %EXIT_CODE%
