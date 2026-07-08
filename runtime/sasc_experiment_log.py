@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,7 +82,7 @@ class ResourceSampler:
 class SascExperimentLogger:
     def __init__(self, path: str | Path, *, run_id: str, start_monotonic: float | None = None) -> None:
         self.path = Path(path)
-        self.run_id = _env_str("SASC_RUN_ID", run_id)
+        self.run_id = _compose_run_id(_env_str("SASC_RUN_ID", run_id))
         self.start_monotonic = time.monotonic() if start_monotonic is None else float(start_monotonic)
         self._sampler = ResourceSampler()
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -183,6 +184,19 @@ def _frame_quality_note(*, object_state: str, vision_lost: bool, danger_active: 
     if danger_active:
         return "danger_zone"
     return "normal"
+
+
+def _compose_run_id(base_run_id: str) -> str:
+    base = _id_part(base_run_id or time.strftime("RUN%Y%m%dT%H%M%SZ", time.gmtime()))
+    scene = _id_part(_env_str("SASC_SCENE_TYPE", "unknown"))
+    experiment = _id_part(_env_str("SASC_EXPERIMENT_ID", "EXP01"))
+    return f"{base}_{scene}_{experiment}"
+
+
+def _id_part(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9-]+", "-", str(value).strip())
+    normalized = normalized.strip("-")
+    return normalized or "unknown"
 
 
 def _ram_usage_mb() -> float | None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from runtime.sasc_experiment_log import SASC_FIELDNAMES, ResourceSample, build_sasc_row
+from runtime.sasc_experiment_log import SASC_FIELDNAMES, ResourceSample, SascExperimentLogger, build_sasc_row
 
 
 def test_sasc_row_matches_template_columns_and_maps_telemetry():
@@ -51,3 +51,12 @@ def test_sasc_row_matches_template_columns_and_maps_telemetry():
     assert row["width_error_px"] == 24
     assert row["lane_detect_success"] == 1
     assert row["frame_quality_note"] == "normal"
+
+def test_sasc_logger_composes_run_id_from_base_scene_and_experiment(tmp_path, monkeypatch):
+    monkeypatch.setenv("SASC_SCENE_TYPE", "straight road")
+    monkeypatch.setenv("SASC_EXPERIMENT_ID", "EXP01")
+    logger = SascExperimentLogger(tmp_path / "sasc.csv", run_id="route-abc", start_monotonic=0)
+    try:
+        assert logger.run_id == "route-abc_straight-road_EXP01"
+    finally:
+        logger.close()
