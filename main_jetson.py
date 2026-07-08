@@ -56,6 +56,7 @@ from runtime.jetson_script_runner import JetsonScriptRunner
 from runtime.calib_tuning import CalibTuneManager
 from runtime.object_detection import ObjectDetector, draw_object_boxes
 from unified_calibration_components import UnifiedCalibrator, CalibrationProcessingError
+from runtime.sasc_experiment_log import SascExperimentLogger
 
 logger = logging.getLogger("jetson")
 
@@ -370,6 +371,7 @@ def main() -> None:
     route_video_writer: cv2.VideoWriter | None = None
     route_csv_file: Any | None = None
     route_csv_writer: csv.DictWriter | None = None
+    sasc_logger: SascExperimentLogger | None = None
 
     def _tune_idle_state() -> tuple[bool, str]:
         if script_runner is not None and script_runner.is_running():
@@ -422,7 +424,7 @@ def main() -> None:
         script_runner.set_handlers(_base_handler, servo.send_angle, _relay_handler)
 
         def _submit_script(body: str) -> bool:
-            nonlocal route_session, route_video_writer, route_csv_file, route_csv_writer
+            nonlocal route_session, route_video_writer, route_csv_file, route_csv_writer, sasc_logger
             payload = json.loads(body)
             steps = payload.get("steps", [])
             ok = script_runner.submit(steps)
@@ -434,11 +436,15 @@ def main() -> None:
                     route_csv_file.close()
                     route_csv_file = None
                     route_csv_writer = None
+                if sasc_logger is not None:
+                    sasc_logger.close()
+                    sasc_logger = None
                 route_session = RouteSession(route_mode="SCRIPT")
                 route_session.attach_meta("script_steps", steps)
                 route_session.attach_meta("source", "dashboard_direct")
                 route_session.attach_meta("video_file", "")
                 route_session.attach_meta("csv_file", "route_frames.csv")
+                route_session.attach_meta("sasc_file", "sasc_baseline_log.csv")
                 route_session.start(time.monotonic())
                 logger.info("Route recording started: %s", route_session.route_id)
             return ok
@@ -462,7 +468,7 @@ def main() -> None:
         http.start()
 
     def _finalize_route(status: str) -> None:
-        nonlocal route_session, route_video_writer, route_csv_file, route_csv_writer
+        nonlocal route_session, route_video_writer, route_csv_file, route_csv_writer, sasc_logger
         if route_video_writer is not None:
             route_video_writer.release()
             route_video_writer = None
@@ -471,6 +477,9 @@ def main() -> None:
             route_csv_file.close()
             route_csv_file = None
             route_csv_writer = None
+        if sasc_logger is not None:
+            sasc_logger.close()
+            sasc_logger = None
         if route_session is None:
             return
         result = route_session.finalize(mono_now=time.monotonic(), status=status)
@@ -657,6 +666,7 @@ def main() -> None:
             })
             tel.update(object_status.telemetry())
             if route_session is not None:
+                mono_now = time.monotonic()
                 if route_csv_writer is None:
                     route_csv_file = (route_session.route_dir / "route_frames.csv").open(
                         "w",
@@ -674,6 +684,14 @@ def main() -> None:
                 route_csv_writer.writerow(tel)
                 if route_csv_file is not None:
                     route_csv_file.flush()
+                if sasc_logger is None:
+                    sasc_logger = SascExperimentLogger(
+                        route_session.route_dir / "sasc_baseline_log.csv",
+                        run_id=route_session.route_id,
+                        start_monotonic=getattr(route_session, "_start_monotonic", None),
+                    )
+                    logger.info("SASC CSV recording to %s", sasc_logger.path)
+                sasc_logger.write_frame(tel, frame_id=route_session.total_frames, mono_now=mono_now)
             _update_shared(display_frame, tel)
 
             # --- CSV telemetry (delegated to calibrator) ---

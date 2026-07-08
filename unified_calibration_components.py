@@ -25,6 +25,17 @@ def _normalize_debug_visualizer(value: Any) -> str:
     return mode if mode in {"imshow", "video", "both"} else ""
 
 
+def _get_optional_float(name: str) -> float | None:
+    value = _get_str(name, "").strip()
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        logging.getLogger(__name__).warning("Ignoring invalid %s=%r", name, value)
+        return None
+
+
 @dataclass(frozen=True)
 class CalibrationResult:
     """Central result returned by one unified calibration computation."""
@@ -194,7 +205,11 @@ class VisionProcessor:
                 "edges": blank,
                 "hough_vis": cv2.cvtColor(blank, cv2.COLOR_GRAY2BGR),
                 "grouped_vis": cv2.cvtColor(blank, cv2.COLOR_GRAY2BGR),
+                "roi_height": 1,
+                "edge_pixels": 0,
                 "lines_count": 0,
+                "left_candidate_lines": 0,
+                "right_candidate_lines": 0,
                 "selected_lines": [],
             }
 
@@ -229,6 +244,7 @@ class VisionProcessor:
         hough_vis = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
         for x1, y1, x2, y2 in lines:
             cv2.line(hough_vis, (x1, y1), (x2, y2), (80, 80, 255), 1)
+        left_candidates, right_candidates = self._candidate_line_counts(lines)
         return lines, {
             "gray": gray,
             "roi": roi_bgr,
@@ -236,9 +252,32 @@ class VisionProcessor:
             "edges": edges,
             "hough_vis": hough_vis,
             "grouped_vis": roi_bgr.copy(),
+            "roi_height": roi_height,
+            "edge_pixels": int(cv2.countNonZero(edges)),
             "lines_count": len(lines),
+            "left_candidate_lines": left_candidates,
+            "right_candidate_lines": right_candidates,
             "selected_lines": [],
         }
+
+    def _candidate_line_counts(
+        self,
+        lines: list[tuple[int, int, int, int]],
+    ) -> tuple[int, int]:
+        left = 0
+        right = 0
+        for x1, y1, x2, y2 in lines:
+            dx = x2 - x1
+            if dx == 0:
+                continue
+            slope = (y2 - y1) / dx
+            if abs(slope) < self._min_abs_slope:
+                continue
+            if slope < 0:
+                left += 1
+            elif slope > 0:
+                right += 1
+        return left, right
 
     def _apply_geometric_filter(
         self,
@@ -385,24 +424,41 @@ class TelemetryLogger:
             "utc_timestamp",
             "loop_ms",
             "loop_overrun_ms",
+            "frame_width",
+            "frame_height",
+            "roi_height",
+            "edge_pixels",
             "fsm_state",
             "danger_boundary",
             "recovery_direction",
             "danger_threshold_x",
+            "danger_zone_active",
+            "danger_margin_px",
+            "danger_action",
+            "vision_lost",
+            "lost_frames",
+            "recovery_active",
+            "recovery_angle",
             "calibration_active",
             "theta",
             "theta_source",
             "theta_for_overlay",
             "lines_count",
+            "total_hough_lines",
+            "left_candidate_lines",
+            "right_candidate_lines",
+            "selected_pair_found",
             "vp_location",
             "selected_left_line",
             "selected_left_slope",
             "selected_right_line",
             "selected_right_slope",
+            "tracking_active",
             "servo_angle",
             "servo_center_angle",
             "servo_offset",
             "pid_error",
+            "derivative_error",
             "pid_p_term",
             "pid_i_term",
             "pid_d_term",
@@ -417,6 +473,9 @@ class TelemetryLogger:
             "vp_angle",
             "left_intercept",
             "right_intercept",
+            "lane_width_px",
+            "expected_lane_width_px",
+            "width_error_px",
         ]
 
         self._draw_overlay_fn: Any = None
@@ -717,10 +776,12 @@ class UnifiedCalibrator:
         self._terminal_log_enabled = bool(self._system_configs.get("MAIN_TERMINAL_LOG", True))
         self._terminal_log_interval_sec = 1.0
         self._last_terminal_log_time = 0.0
+        self._lost_frames = 0
         self._camera_retry_limit = _get_int("MAIN_CAMERA_RETRY_LIMIT", 3)
         self._stream_configs = self._config.get_stream_configs()
         self._stream_enabled = bool(self._stream_configs.get("MAIN_HTTPS_STREAM_ENABLED", False))
         self._last_rendered_frame: np.ndarray | None = None
+        self._expected_lane_width_px = _get_optional_float("EXPECTED_LANE_WIDTH_PX")
         self._overlay_drawer = OverlayDrawer(
             inner_thresh=inner_thresh,
             outer_thresh=outer_thresh,
@@ -853,21 +914,40 @@ class UnifiedCalibrator:
             target_period_ms = 1000.0 / self._target_hz if self._target_hz > 0 else 0.0
             overrun_ms = max(0.0, loop_ms - target_period_ms) if target_period_ms > 0 else 0.0
             pid_error = 0.0 if vp_angle is None else float(vp_angle) - 90.0
+            derivative_error = pid_error - self._robot_state.pid_last_error
             pid_p = self._robot_state.pid.kp * pid_error
-            pid_d = self._robot_state.pid.kd * (pid_error - self._robot_state.pid_last_error)
+            pid_d = self._robot_state.pid.kd * derivative_error
             pid_i = self._robot_state.pid.ki * self._robot_state.pid_integral
             vp_location = self._geometry.classify_point(vp, frame_w, frame_h)
+            vision_lost = vp_angle is None or fsm_state == "GAPPING"
+            self._lost_frames = self._lost_frames + 1 if vision_lost else 0
+            recovery_direction = str(control_details.get("recovery_direction", "NONE"))
+            recovery_active = recovery_direction != "NONE"
             vision_debug["vp_x"] = None if vp is None else vp[0]
             vision_debug["vp_y"] = None if vp is None else vp[1]
             vision_debug["vp_location"] = vp_location
             vision_debug["left_intercept"] = left_intercept
             vision_debug["right_intercept"] = right_intercept
+            lane_width_px = (
+                None
+                if left_intercept is None or right_intercept is None
+                else int(right_intercept - left_intercept)
+            )
+            width_error_px = (
+                None
+                if lane_width_px is None or self._expected_lane_width_px is None
+                else float(lane_width_px) - self._expected_lane_width_px
+            )
             telemetry_data: dict[str, Any] = {
                 "frame_num": frame_num,
                 "mono_timestamp": f"{time.perf_counter():.6f}",
                 "utc_timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "loop_ms": f"{loop_ms:.3f}",
                 "loop_overrun_ms": f"{overrun_ms:.3f}",
+                "frame_width": frame_w,
+                "frame_height": frame_h,
+                "roi_height": vision_debug.get("roi_height"),
+                "edge_pixels": vision_debug.get("edge_pixels", 0),
                 "vp_x": None if vp is None else vp[0],
                 "vp_y": None if vp is None else vp[1],
                 "vp_location": vp_location,
@@ -876,8 +956,15 @@ class UnifiedCalibrator:
                 "theta_source": "none" if vp_angle is None else "live",
                 "theta_for_overlay": "" if vp_angle is None else f"{vp_angle:.6f}",
                 "lines_count": len(lines),
+                "total_hough_lines": len(lines),
+                "left_candidate_lines": vision_debug.get("left_candidate_lines", 0),
+                "right_candidate_lines": vision_debug.get("right_candidate_lines", 0),
+                "selected_pair_found": int(selected is not None),
                 "left_intercept": left_intercept,
                 "right_intercept": right_intercept,
+                "lane_width_px": lane_width_px,
+                "expected_lane_width_px": self._expected_lane_width_px,
+                "width_error_px": width_error_px,
                 "selected_left_line": selected_left_line,
                 "selected_right_line": selected_right_line,
                 "selected_left_slope": (
@@ -888,10 +975,19 @@ class UnifiedCalibrator:
                 ),
                 "fsm_state": fsm_state,
                 **control_details,
+                "tracking_active": int(fsm_state == "TRACKING_PD"),
+                "danger_zone_active": int(str(fsm_state).startswith("DANGER")),
+                "danger_margin_px": self._steering._danger_margin,
+                "danger_action": "NONE" if not recovery_active else f"NUDGE_{recovery_direction}",
+                "vision_lost": int(vision_lost),
+                "lost_frames": self._lost_frames,
+                "recovery_active": int(recovery_active),
+                "recovery_angle": steering_angle if recovery_active else 0.0,
                 "servo_angle": steering_angle,
                 "servo_center_angle": self._robot_state.servo_center_angle,
                 "servo_offset": steering_angle - self._robot_state.servo_center_angle,
                 "pid_error": f"{pid_error:.6f}",
+                "derivative_error": f"{derivative_error:.6f}",
                 "pid_p_term": f"{pid_p:.6f}",
                 "pid_i_term": f"{pid_i:.6f}",
                 "pid_d_term": f"{pid_d:.6f}",
