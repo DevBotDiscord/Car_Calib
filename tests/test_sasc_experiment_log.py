@@ -52,11 +52,17 @@ def test_sasc_row_matches_template_columns_and_maps_telemetry():
     assert row["lane_detect_success"] == 1
     assert row["frame_quality_note"] == "normal"
 
-def test_sasc_logger_composes_run_id_from_base_scene_and_experiment(tmp_path, monkeypatch):
-    monkeypatch.setenv("SASC_SCENE_TYPE", "straight road")
+def test_sasc_logger_composes_run_id_from_preset_scene_and_experiment(tmp_path, monkeypatch):
+    monkeypatch.setenv("SASC_SCENE_TYPE", "env scene")
     monkeypatch.setenv("SASC_EXPERIMENT_ID", "EXP01")
-    logger = SascExperimentLogger(tmp_path / "sasc.csv", run_id="route-abc", start_monotonic=0)
+    logger = SascExperimentLogger(
+        tmp_path / "sasc.csv",
+        run_id="route-abc",
+        scene_type="straight road",
+        start_monotonic=0,
+    )
     try:
         assert logger.run_id == "route-abc_straight-road_EXP01"
+        assert logger.scene_type == "straight road"
     finally:
         logger.close()

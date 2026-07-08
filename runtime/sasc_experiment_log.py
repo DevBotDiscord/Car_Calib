@@ -80,9 +80,17 @@ class ResourceSampler:
 
 
 class SascExperimentLogger:
-    def __init__(self, path: str | Path, *, run_id: str, start_monotonic: float | None = None) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        run_id: str,
+        scene_type: str | None = None,
+        start_monotonic: float | None = None,
+    ) -> None:
         self.path = Path(path)
-        self.run_id = _compose_run_id(_env_str("SASC_RUN_ID", run_id))
+        self.scene_type = _scene_type(scene_type)
+        self.run_id = _compose_run_id(_env_str("SASC_RUN_ID", run_id), scene_type=self.scene_type)
         self.start_monotonic = time.monotonic() if start_monotonic is None else float(start_monotonic)
         self._sampler = ResourceSampler()
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -97,6 +105,7 @@ class SascExperimentLogger:
         row = build_sasc_row(
             telemetry,
             run_id=self.run_id,
+            scene_type=self.scene_type,
             frame_id=frame_id,
             timestamp_ms=elapsed_ms,
             resources=resources,
@@ -113,6 +122,7 @@ def build_sasc_row(
     telemetry: dict[str, Any],
     *,
     run_id: str,
+    scene_type: str | None = None,
     frame_id: int,
     timestamp_ms: int,
     resources: ResourceSample | None = None,
@@ -125,13 +135,14 @@ def build_sasc_row(
     vision_lost = _int_bool(telemetry.get("vision_lost"))
     danger_active = _int_bool(telemetry.get("danger_zone_active"))
     object_state = str(telemetry.get("object_state") or "none")
+    resolved_scene_type = _scene_type(scene_type)
 
     return {
         "experiment_id": _env_str("SASC_EXPERIMENT_ID", "EXP01"),
         "run_id": run_id,
         "algorithm_version": _env_str("SASC_ALGORITHM_VERSION", "baseline_v1"),
         "adaptive_enabled": int(_env_bool("SASC_ADAPTIVE_ENABLED", False)),
-        "scene_type": _env_str("SASC_SCENE_TYPE", "unknown"),
+        "scene_type": resolved_scene_type,
         "frame_id": frame_id,
         "timestamp_ms": timestamp_ms,
         "frame_width": _clean(telemetry.get("frame_width")),
@@ -186,11 +197,17 @@ def _frame_quality_note(*, object_state: str, vision_lost: bool, danger_active: 
     return "normal"
 
 
-def _compose_run_id(base_run_id: str) -> str:
+def _compose_run_id(base_run_id: str, *, scene_type: str | None = None) -> str:
     base = _id_part(base_run_id or time.strftime("RUN%Y%m%dT%H%M%SZ", time.gmtime()))
-    scene = _id_part(_env_str("SASC_SCENE_TYPE", "unknown"))
+    scene = _id_part(_scene_type(scene_type))
     experiment = _id_part(_env_str("SASC_EXPERIMENT_ID", "EXP01"))
     return f"{base}_{scene}_{experiment}"
+
+
+def _scene_type(value: str | None) -> str:
+    if value is not None and str(value).strip():
+        return str(value).strip()
+    return _env_str("SASC_SCENE_TYPE", "unknown")
 
 
 def _id_part(value: str) -> str:

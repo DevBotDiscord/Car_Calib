@@ -372,6 +372,7 @@ def main() -> None:
     route_csv_file: Any | None = None
     route_csv_writer: csv.DictWriter | None = None
     sasc_logger: SascExperimentLogger | None = None
+    current_sasc_scene_type = ""
 
     def _tune_idle_state() -> tuple[bool, str]:
         if script_runner is not None and script_runner.is_running():
@@ -424,9 +425,10 @@ def main() -> None:
         script_runner.set_handlers(_base_handler, servo.send_angle, _relay_handler)
 
         def _submit_script(body: str) -> bool:
-            nonlocal route_session, route_video_writer, route_csv_file, route_csv_writer, sasc_logger
+            nonlocal route_session, route_video_writer, route_csv_file, route_csv_writer, sasc_logger, current_sasc_scene_type
             payload = json.loads(body)
             steps = payload.get("steps", [])
+            preset_name = str(payload.get("preset_name") or "").strip()
             ok = script_runner.submit(steps)
             if ok:
                 if route_video_writer is not None:
@@ -442,10 +444,12 @@ def main() -> None:
                 route_session = RouteSession(route_mode="SCRIPT")
                 route_session.attach_meta("script_steps", steps)
                 route_session.attach_meta("source", "dashboard_direct")
+                route_session.attach_meta("preset_name", preset_name)
                 route_session.attach_meta("video_file", "")
                 route_session.attach_meta("csv_file", "route_frames.csv")
                 route_session.attach_meta("sasc_file", "sasc_baseline_log.csv")
                 route_session.start(time.monotonic())
+                current_sasc_scene_type = preset_name
                 logger.info("Route recording started: %s", route_session.route_id)
             return ok
 
@@ -468,7 +472,7 @@ def main() -> None:
         http.start()
 
     def _finalize_route(status: str) -> None:
-        nonlocal route_session, route_video_writer, route_csv_file, route_csv_writer, sasc_logger
+        nonlocal route_session, route_video_writer, route_csv_file, route_csv_writer, sasc_logger, current_sasc_scene_type
         if route_video_writer is not None:
             route_video_writer.release()
             route_video_writer = None
@@ -490,6 +494,7 @@ def main() -> None:
             result.rejection_reason,
         )
         route_session = None
+        current_sasc_scene_type = ""
 
     def _open_route_video_writer(frame_w: int, frame_h: int) -> cv2.VideoWriter | None:
         if route_session is None:
@@ -688,6 +693,7 @@ def main() -> None:
                     sasc_logger = SascExperimentLogger(
                         route_session.route_dir / "sasc_baseline_log.csv",
                         run_id=route_session.route_id,
+                        scene_type=current_sasc_scene_type,
                         start_monotonic=getattr(route_session, "_start_monotonic", None),
                     )
                     logger.info("SASC CSV recording to %s", sasc_logger.path)
