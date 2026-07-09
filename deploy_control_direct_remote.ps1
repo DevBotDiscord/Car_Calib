@@ -199,7 +199,7 @@ ln -sfn "$release_dir" "$current_dir"
 rm -f "$remote_archive" "$REMOTE_ENV"
 
 cd "$current_dir"
-mkdir -p "$root_dir/data/logs" "$root_dir/data/routes"
+mkdir -p "$root_dir/data/logs" "$root_dir/data/routes" "$root_dir/data/models"
 export RPI_DEST_DIR="$root_dir"
 
 if ! command -v docker >/dev/null 2>&1; then
