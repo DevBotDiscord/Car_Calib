@@ -987,6 +987,7 @@ const tuneResetDefaultsBtn = document.getElementById("tuneResetDefaults");
 let tuneState = null;
 let tuneDraft = {};
 let tuneTouched = false;
+let tuneEditing = false;
 
 function tuneSame(a, b, schema) {
   if (!a || !b || !schema) return false;
@@ -1046,6 +1047,10 @@ function renderTuneFields() {
   renderTuneStatus();
 }
 
+function tuneInputFocused() {
+  return !!(tuneFields && document.activeElement && tuneFields.contains(document.activeElement));
+}
+
 async function refreshTune(forceRender) {
   if (!tuneFields) return;
   try {
@@ -1056,7 +1061,8 @@ async function refreshTune(forceRender) {
     }
     const data = await r.json();
     tuneState = data;
-    if (!tuneTouched || forceRender) {
+    const shouldRenderFields = forceRender || !tuneFields.hasChildNodes();
+    if (shouldRenderFields && !tuneEditing && !tuneInputFocused()) {
       tuneDraft = Object.assign({}, data.values || {});
       tuneTouched = false;
       renderTuneFields();
@@ -1070,6 +1076,7 @@ async function refreshTune(forceRender) {
 
 function updateTunePair(key, value) {
   document.querySelectorAll(`[data-tune-input][data-key="${key}"]`).forEach(input => {
+    if (input === document.activeElement && input.type === "number") return;
     input.value = String(value);
   });
 }
@@ -1096,6 +1103,14 @@ async function tunePost(path, body, method) {
 }
 
 if (tuneFields) {
+  tuneFields.addEventListener("focusin", e => {
+    if (e.target && e.target.dataset && e.target.dataset.tuneInput) tuneEditing = true;
+  });
+  tuneFields.addEventListener("focusout", () => {
+    setTimeout(() => {
+      tuneEditing = !!tuneInputFocused();
+    }, 0);
+  });
   tuneFields.addEventListener("input", e => {
     const input = e.target;
     if (!input || !input.dataset || !input.dataset.key || !tuneState) return;
