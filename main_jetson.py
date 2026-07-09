@@ -54,7 +54,7 @@ from runtime.jetson_http import JetsonHttpServer
 from runtime.route_logging import RouteSession
 from runtime.jetson_script_runner import JetsonScriptRunner
 from runtime.calib_tuning import CalibTuneManager
-from runtime.object_detection import ObjectDetector, draw_object_boxes
+from runtime.object_detection import ObjectDetectionStatus, ObjectDetector, draw_object_boxes
 from unified_calibration_components import UnifiedCalibrator, CalibrationProcessingError
 from runtime.sasc_experiment_log import SascExperimentLogger
 
@@ -390,6 +390,7 @@ def main() -> None:
         idle_getter=_tune_idle_state,
     )
     object_detector = ObjectDetector.from_env()
+    object_detection_script_only = _env_bool("OBJECT_DETECTION_SCRIPT_ONLY", False)
 
     if not args.no_dashboard:
         http = JetsonHttpServer(host=args.host, port=args.port)
@@ -585,7 +586,11 @@ def main() -> None:
             if theta is not None:
                 last_known_theta = theta
 
-            object_status = object_detector.process(frame, now=time.monotonic())
+            script_running = script_runner is not None and script_runner.is_running()
+            if object_detection_script_only and not script_running:
+                object_status = ObjectDetectionStatus("none", False, 0, None, None, ())
+            else:
+                object_status = object_detector.process(frame, now=time.monotonic())
             display_frame = draw_object_boxes(display_frame, object_status.object_boxes)
             object_pause_active = object_status.object_pause_active
             if script_runner is not None:
@@ -610,7 +615,7 @@ def main() -> None:
             if (
                 not object_pause_active
                 and script_runner is not None
-                and script_runner.is_running()
+                and script_running
                 and script_runner.vision_pid_active()
             ):
                 servo.send_angle(output_angle)
