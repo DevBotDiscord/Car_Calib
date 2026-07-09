@@ -714,6 +714,7 @@ def main() -> None:
         logger.info("Interrupted by user")
     finally:
         _finalize_route("INTERRUPTED")
+        object_detector.close()
         servo.center()
         time.sleep(0.3)
         base.stop()

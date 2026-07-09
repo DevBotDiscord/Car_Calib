@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -50,6 +51,8 @@ class ObjectDetectionConfig:
     model_path: str = ""
     conf_threshold: float = 0.5
     input_size: tuple[int, int] = (640, 640)
+    async_enabled: bool = True
+    interval_s: float = 0.2
     near_roi: str = "lower_center"
     near_area_ratio: float = 0.03
     detect_hold_s: float = 0.1
@@ -151,20 +154,31 @@ class ObjectDetector:
             logger.warning("Object detection model load failed: %s", exc)
 
     @classmethod
-    def from_env(cls) -> "ObjectDetector":
-        return cls(
-            ObjectDetectionConfig(
-                enabled=_env_bool("OBJECT_DETECTION_ENABLED", False),
-                model_path=os.getenv("OBJECT_DETECTION_MODEL", "").strip(),
-                conf_threshold=_env_float("OBJECT_DETECTION_CONF", 0.5),
-                input_size=_parse_size(os.getenv("OBJECT_DETECTION_INPUT_SIZE", "640x640")),
-                near_roi=os.getenv("OBJECT_NEAR_ROI", "lower_center").strip().lower() or "lower_center",
-                near_area_ratio=_env_float("OBJECT_NEAR_AREA_RATIO", 0.03),
-                detect_hold_s=_env_float("OBJECT_DETECT_HOLD_S", 0.1),
-                clear_hold_s=_env_float("OBJECT_CLEAR_HOLD_S", 0.5),
-                labels=_load_labels(os.getenv("OBJECT_DETECTION_LABELS", "")),
-            )
+    def from_env(cls) -> "ObjectDetector | AsyncObjectDetector":
+        config = ObjectDetectionConfig(
+            enabled=_env_bool("OBJECT_DETECTION_ENABLED", False),
+            model_path=os.getenv("OBJECT_DETECTION_MODEL", "").strip(),
+            conf_threshold=_env_float("OBJECT_DETECTION_CONF", 0.5),
+            input_size=_parse_size(os.getenv("OBJECT_DETECTION_INPUT_SIZE", "640x640")),
+            async_enabled=_env_bool("OBJECT_DETECTION_ASYNC", True),
+            interval_s=_env_float("OBJECT_DETECTION_INTERVAL_S", 0.2),
+            near_roi=os.getenv("OBJECT_NEAR_ROI", "lower_center").strip().lower() or "lower_center",
+            near_area_ratio=_env_float("OBJECT_NEAR_AREA_RATIO", 0.03),
+            detect_hold_s=_env_float("OBJECT_DETECT_HOLD_S", 0.1),
+            clear_hold_s=_env_float("OBJECT_CLEAR_HOLD_S", 0.5),
+            labels=_load_labels(os.getenv("OBJECT_DETECTION_LABELS", "")),
         )
+        detector = cls(config)
+        if config.enabled and config.async_enabled:
+            return AsyncObjectDetector(detector, interval_s=config.interval_s)
+        return detector
+
+    @property
+    def error(self) -> str | None:
+        return self._error
+
+    def close(self) -> None:
+        return None
 
     def process(self, frame: np.ndarray, now: float | None = None) -> ObjectDetectionStatus:
         if not self.config.enabled:
@@ -206,6 +220,63 @@ class ObjectDetector:
             self.config.conf_threshold,
             self.config.labels,
         )
+
+class AsyncObjectDetector:
+    """Runs DNN inference off the control loop and returns the latest result."""
+
+    def __init__(self, detector: ObjectDetector, *, interval_s: float) -> None:
+        self.config = detector.config
+        self._detector = detector
+        self._interval_s = max(0.0, float(interval_s))
+        self._lock = threading.Lock()
+        self._event = threading.Event()
+        self._closed = False
+        self._last_submit = 0.0
+        self._pending_frame: Any | None = None
+        self._pending_now: float | None = None
+        self._status = _status("none", False, (), detector.error)
+        self._thread = threading.Thread(
+            target=self._run,
+            name="object-detector",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def process(self, frame: np.ndarray, now: float | None = None) -> ObjectDetectionStatus:
+        ts = time.monotonic() if now is None else float(now)
+        with self._lock:
+            status = self._status
+            if self._closed or ts - self._last_submit < self._interval_s:
+                return status
+            self._last_submit = ts
+            self._pending_frame = frame.copy()
+            self._pending_now = ts
+            self._event.set()
+            return status
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._event.set()
+        self._thread.join(timeout=1.0)
+        self._detector.close()
+
+    def _run(self) -> None:
+        while True:
+            self._event.wait()
+            with self._lock:
+                if self._closed:
+                    return
+                frame = self._pending_frame
+                ts = self._pending_now
+                self._pending_frame = None
+                self._pending_now = None
+                self._event.clear()
+            if frame is None:
+                continue
+            status = self._detector.process(frame, now=ts)
+            with self._lock:
+                self._status = status
 
 
 def classify_near_far(
