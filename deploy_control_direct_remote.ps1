@@ -266,7 +266,8 @@ find . -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null \
 echo "[remote] Deploy complete"
 '@
     $RemoteScriptPath = Join-Path $env:TEMP "$ProjectName-$Version-remote.sh"
-    [System.IO.File]::WriteAllText($RemoteScriptPath, $RemoteScript, [System.Text.Encoding]::ASCII)
+    $RemoteScriptLf = ($RemoteScript -replace "`r`n", "`n") -replace "`r", "`n"
+    [System.IO.File]::WriteAllText($RemoteScriptPath, $RemoteScriptLf, [System.Text.Encoding]::ASCII)
     $RemoteScriptTarget = "/tmp/$ProjectName-$Version-remote.sh"
     Copy-ToRemote $RemoteScriptPath $RemoteScriptTarget
 
