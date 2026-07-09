@@ -80,6 +80,19 @@
       <div class="progress"><div id="progressBar" style="width:0%"></div></div>
       <div class="progress-segments" id="progressSegments"></div>
 
+      <div class="manual-override-panel" id="manualOverridePanel">
+        <div class="manual-override-head">
+          <h3>Emergency joystick</h3>
+          <span id="manualPill" class="pill pill-idle">idle</span>
+          <span id="manualDetail" class="muted"></span>
+        </div>
+        <div class="manual-joystick" id="manualJoystick" role="application" aria-label="Emergency manual joystick">
+          <div class="manual-joystick-cross horizontal"></div>
+          <div class="manual-joystick-cross vertical"></div>
+          <div class="manual-joystick-knob" id="manualJoystickKnob"></div>
+        </div>
+      </div>
+
       <h3>Steps</h3>
       <table id="steps">
         <thead><tr><th style="width:50px">#</th><th>Action</th><th style="width:120px">Duration</th><th style="width:160px"></th></tr></thead>

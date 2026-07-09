@@ -9,7 +9,8 @@ import pytest
 from runtime.jetson_script_runner import JetsonScriptRunner
 
 
-def test_runner_pause_freezes_step_elapsed_and_resume_republishes():
+@pytest.mark.parametrize("pause_reason", ["object_detected", "manual_override"])
+def test_runner_pause_freezes_step_elapsed_and_resume_republishes(pause_reason: str):
     base_cmds: list[str] = []
     servo_angles: list[float] = []
     runner = JetsonScriptRunner()
@@ -17,12 +18,12 @@ def test_runner_pause_freezes_step_elapsed_and_resume_republishes():
 
     assert runner.submit([{"action": "left", "duration_s": 0.25}]) is True
     time.sleep(0.08)
-    runner.set_paused(True, "object_detected")
+    runner.set_paused(True, pause_reason)
     paused = runner.status()
     elapsed = paused["step_elapsed_s"]
 
     assert paused["paused"] is True
-    assert paused["pause_reason"] == "object_detected"
+    assert paused["pause_reason"] == pause_reason
     time.sleep(0.16)
     assert runner.status()["step_elapsed_s"] == pytest.approx(elapsed, abs=0.02)
 

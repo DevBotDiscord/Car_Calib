@@ -35,9 +35,18 @@ const actionInput = document.getElementById("action");
 const durationInput = document.getElementById("duration");
 const addBtn = document.getElementById("add");
 const cancelEditBtn = document.getElementById("cancelEdit");
+const manualJoystick = document.getElementById("manualJoystick");
+const manualJoystickKnob = document.getElementById("manualJoystickKnob");
+const manualPill = document.getElementById("manualPill");
+const manualDetail = document.getElementById("manualDetail");
 let currentRunningStep = 0;
 let isRunning = false;
 let editingIndex = -1;
+let manualActive = false;
+let manualPointerId = null;
+let manualDrive = 0;
+let manualSteer = 0;
+let manualHeartbeat = null;
 
 function resetEditor() {
   editingIndex = -1;
@@ -212,6 +221,131 @@ async function sendPower(on) {
 }
 document.getElementById("powerOnBtn").onclick = () => sendPower(true);
 document.getElementById("powerOffBtn").onclick = () => sendPower(false);
+
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+
+function setManualUi(cls, text, detail) {
+  if (manualPill) {
+    manualPill.className = "pill " + cls;
+    manualPill.textContent = text;
+  }
+  if (manualDetail) manualDetail.textContent = detail || "";
+}
+
+function updateJoystickKnob(drive, steer) {
+  if (!manualJoystickKnob || !manualJoystick) return;
+  const rect = manualJoystick.getBoundingClientRect();
+  const radius = Math.max(1, rect.width / 2 - 24);
+  const x = steer * radius;
+  const y = -drive * radius;
+  manualJoystickKnob.style.transform = `translate(calc(-50% + ${x.toFixed(1)}px), calc(-50% + ${y.toFixed(1)}px))`;
+}
+
+function joystickAxesFromEvent(e) {
+  const rect = manualJoystick.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const radius = Math.max(1, rect.width / 2 - 24);
+  return {
+    drive: clamp(-(e.clientY - cy) / radius, -1, 1),
+    steer: clamp((e.clientX - cx) / radius, -1, 1),
+  };
+}
+
+async function sendManualOverride(active) {
+  const body = {
+    active: !!active,
+    drive: active ? manualDrive : 0,
+    steer: active ? manualSteer : 0,
+    ts: Date.now() / 1000,
+  };
+  try {
+    const r = await fetch("/api/manual_override" + qp, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      setManualUi("pill-error", "manual error", j.detail || String(r.status));
+      return;
+    }
+    if (active) {
+      setManualUi("pill-running", "manual active", `drive ${manualDrive.toFixed(2)} · steer ${manualSteer.toFixed(2)}`);
+    }
+  } catch (e) {
+    setManualUi("pill-error", "manual network", "release joystick");
+  }
+}
+
+function startManual(e) {
+  if (!manualJoystick || manualActive) return;
+  manualActive = true;
+  manualPointerId = e.pointerId;
+  manualJoystick.setPointerCapture(e.pointerId);
+  manualJoystick.classList.add("active");
+  const axes = joystickAxesFromEvent(e);
+  manualDrive = axes.drive;
+  manualSteer = axes.steer;
+  updateJoystickKnob(manualDrive, manualSteer);
+  sendManualOverride(true);
+  manualHeartbeat = setInterval(() => sendManualOverride(true), 100);
+}
+
+function moveManual(e) {
+  if (!manualActive || e.pointerId !== manualPointerId) return;
+  const axes = joystickAxesFromEvent(e);
+  manualDrive = axes.drive;
+  manualSteer = axes.steer;
+  updateJoystickKnob(manualDrive, manualSteer);
+}
+
+function stopManual() {
+  if (!manualActive) return;
+  const pointerId = manualPointerId;
+  manualActive = false;
+  manualPointerId = null;
+  manualDrive = 0;
+  manualSteer = 0;
+  if (manualHeartbeat) clearInterval(manualHeartbeat);
+  manualHeartbeat = null;
+  if (manualJoystick) {
+    if (pointerId !== null && manualJoystick.hasPointerCapture && manualJoystick.hasPointerCapture(pointerId)) {
+      manualJoystick.releasePointerCapture(pointerId);
+    }
+    manualJoystick.classList.remove("active");
+  }
+  updateJoystickKnob(0, 0);
+  setManualUi("pill-idle", "idle", "released");
+  sendManualOverride(false);
+}
+
+function renderManualStatus(tel) {
+  if (manualActive) return;
+  const t = tel || {};
+  const reason = t.manual_blocked_reason || "";
+  if (reason === "timeout") {
+    setManualUi("pill-error", "manual timeout", "base stopped");
+  } else if (reason) {
+    setManualUi("pill-paused", "blocked", reason);
+  } else if (t.manual_override_active) {
+    setManualUi("pill-running", "manual active", `drive ${Number(t.manual_drive || 0).toFixed(2)} · steer ${Number(t.manual_steer || 0).toFixed(2)}`);
+  } else {
+    setManualUi("pill-idle", "idle", "");
+  }
+}
+
+if (manualJoystick) {
+  manualJoystick.addEventListener("pointerdown", startManual);
+  manualJoystick.addEventListener("pointermove", moveManual);
+  manualJoystick.addEventListener("pointerup", stopManual);
+  manualJoystick.addEventListener("pointercancel", stopManual);
+  window.addEventListener("blur", stopManual);
+  document.addEventListener("visibilitychange", () => { if (document.hidden) stopManual(); });
+  updateJoystickKnob(0, 0);
+}
 
 document.querySelectorAll(".tab").forEach(btn => {
   btn.onclick = () => {
@@ -418,7 +552,9 @@ async function pollStatus() {
         const fillRatio = stepDur > 0 ? Math.min(1, stepElapsed / stepDur) : 0;
         setPill(st.paused ? "pill-paused" : "pill-running", `${st.paused ? "paused" : "running"} ${currentRunningStep}/${total}`);
         const action = st.step ? safeText(st.step.action) : "";
-        const pauseReason = st.pause_reason === "object_detected" ? "object" : (st.pause_reason || "script");
+        const pauseReason = st.pause_reason === "object_detected"
+          ? "object"
+          : (st.pause_reason === "manual_override" ? "manual" : (st.pause_reason || "script"));
         runDetail.textContent = action
           ? `${action} · ${stepElapsed.toFixed(1)} / ${stepDur.toFixed(1)}s`
           : "";
@@ -461,6 +597,7 @@ async function pollStatus() {
       renderTrendChart();
       renderFsmStrip();
       renderHealthBanner(rpi);
+      renderManualStatus(tel);
 
       const newRid = tel.route_id || null;
       if (lastRouteId !== undefined && lastRouteId !== newRid) {

@@ -28,6 +28,7 @@ import cv2
 import numpy as np
 
 from runtime.calib_tuning import TuneBlockedError, TuneValidationError
+from runtime.manual_override import ManualOverrideError
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +221,16 @@ class _RequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = self._request_path()
+        if path == "/api/manual_override":
+            handler = getattr(self.server, "manual_override_handler", None)
+            if not callable(handler):
+                self._json({"detail": "manual override unavailable"}, 404)
+                return
+            try:
+                self._json(handler(self._json_body()))
+            except (json.JSONDecodeError, ManualOverrideError) as exc:
+                self._json({"detail": str(exc)}, 400)
+            return
         if path == "/route/script":
             submitter = getattr(self.server, "script_submitter", None)
             body = self._json_body()
@@ -353,6 +364,7 @@ class JetsonHttpServer:
         self._tune_applier: Callable[[dict[str, Any]], dict[str, Any]] | None = None
         self._tune_saver: Callable[[], dict[str, Any]] | None = None
         self._tune_resetter: Callable[[str], dict[str, Any]] | None = None
+        self._manual_override_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None
         self._thread: threading.Thread | None = None
 
     def set_frame_getter(self, fn: Callable[[], np.ndarray | None]) -> None:
@@ -369,6 +381,10 @@ class JetsonHttpServer:
 
     def set_power_handler(self, fn: Callable[[str], None]) -> None:
         self._power_handler = fn
+
+    def set_manual_override_handler(self, fn: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
+        self._manual_override_handler = fn
+
     def set_script_runner(self, fn: Callable[[], dict[str, Any]]) -> None:
         self._script_runner = fn
 
@@ -426,6 +442,7 @@ class JetsonHttpServer:
         self._server.base_handler = self._base_handler
         self._server.relay_handler = self._relay_handler
         self._server.power_handler = self._power_handler
+        self._server.manual_override_handler = self._manual_override_handler
         self._server.script_runner = self._script_runner
         self._server.script_stopper = self._script_stopper
         self._server.script_submitter = self._script_submitter

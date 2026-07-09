@@ -94,6 +94,62 @@ pre { background: #0a0a0c; padding: 12px; border-radius: 7px; max-height: 264px;
 .progress { height: 7px; background: #1a1c20; border-radius: 4px; overflow: hidden; margin-top: 10px; }
 .progress > div { height: 100%; background: linear-gradient(90deg, #2a8c5a, #4cb37a); transition: width 0.2s; }
 
+.manual-override-panel {
+  margin-top: var(--sp-4);
+  border-top: 1px solid var(--bg-3);
+  padding-top: var(--sp-3);
+}
+.manual-override-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-2);
+}
+.manual-override-head h3 { margin: 0; }
+.manual-joystick {
+  position: relative;
+  width: 168px;
+  height: 168px;
+  border-radius: 50%;
+  background: #101215;
+  border: 2px solid #3a3d42;
+  box-shadow: inset 0 0 0 1px #0a0a0c;
+  touch-action: none;
+  user-select: none;
+}
+.manual-joystick.active { border-color: var(--warn); }
+.manual-joystick-cross {
+  position: absolute;
+  background: #30343b;
+  pointer-events: none;
+}
+.manual-joystick-cross.horizontal {
+  left: 24px;
+  right: 24px;
+  top: 50%;
+  height: 2px;
+}
+.manual-joystick-cross.vertical {
+  top: 24px;
+  bottom: 24px;
+  left: 50%;
+  width: 2px;
+}
+.manual-joystick-knob {
+  position: absolute;
+  width: 48px;
+  height: 48px;
+  left: 50%;
+  top: 50%;
+  border-radius: 50%;
+  background: #d7dde8;
+  border: 2px solid #ffffff;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 5px 16px rgba(0,0,0,0.45);
+  pointer-events: none;
+}
+
 .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none; align-items: flex-start; justify-content: center; z-index: 1000; padding: 30px 20px; overflow: auto; }
 .modal-bg.show { display: flex; }
 .modal { background: #16171a; border: 1px solid #2a2c30; border-radius: 12px; padding: 24px; max-width: 880px; width: 100%; box-shadow: 0 12px 40px rgba(0,0,0,0.6); }
@@ -156,6 +212,8 @@ tr.route-clickable:hover { background: rgba(80, 130, 200, 0.08); }
   .telemetry-grid { grid-template-columns: 1fr 1fr; }
   .metric-grid { grid-template-columns: 1fr 1fr; }
   .h-pill .lbl { display: none; }
+  .manual-joystick { width: 144px; height: 144px; }
+  .manual-joystick-knob { width: 44px; height: 44px; }
   /* phone: header pills become dots only */
   #routesTable th:nth-child(3),
   #routesTable td:nth-child(3),

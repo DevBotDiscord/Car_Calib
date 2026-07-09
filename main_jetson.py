@@ -54,6 +54,7 @@ from runtime.jetson_http import JetsonHttpServer
 from runtime.route_logging import RouteSession
 from runtime.jetson_script_runner import JetsonScriptRunner
 from runtime.calib_tuning import CalibTuneManager
+from runtime.manual_override import ManualOverrideController
 from runtime.object_detection import ObjectDetectionStatus, ObjectDetector, draw_object_boxes
 from unified_calibration_components import UnifiedCalibrator, CalibrationProcessingError
 from runtime.sasc_experiment_log import SascExperimentLogger
@@ -299,8 +300,12 @@ def main() -> None:
         "object_state": "none", "object_pause_active": False,
         "object_count": 0, "object_label": None, "object_conf": None,
         "object_boxes": [], "object_detector_error": None,
+        "manual_override_active": False, "manual_override_age_s": None,
+        "manual_drive": 0.0, "manual_steer": 0.0,
+        "manual_blocked_reason": "",
     }
     last_base_cmd = "STOP"
+    last_manual_servo_angle: float | None = None
 
     def _update_shared(frame: np.ndarray, tel: dict[str, Any]) -> None:
         nonlocal shared_frame, shared_telemetry
@@ -332,6 +337,11 @@ def main() -> None:
                 "object_conf": tel.get("object_conf"),
                 "object_boxes": tel.get("object_boxes"),
                 "object_detector_error": tel.get("object_detector_error"),
+                "manual_override_active": tel.get("manual_override_active"),
+                "manual_override_age_s": tel.get("manual_override_age_s"),
+                "manual_drive": tel.get("manual_drive"),
+                "manual_steer": tel.get("manual_steer"),
+                "manual_blocked_reason": tel.get("manual_blocked_reason"),
             },
             "rpi_status": {
                 "online": True,
@@ -391,6 +401,10 @@ def main() -> None:
     )
     object_detector = ObjectDetector.from_env()
     object_detection_script_only = _env_bool("OBJECT_DETECTION_SCRIPT_ONLY", False)
+    manual_override = ManualOverrideController.from_env(
+        center_angle=90.0 + _env_float(("SERVO_CENTER_ANGLE",), -8.0),
+        max_steer=_env_float(("MAX_STEERING_OFFSET",), 60.0),
+    )
 
     if not args.no_dashboard:
         http = JetsonHttpServer(host=args.host, port=args.port)
@@ -399,6 +413,7 @@ def main() -> None:
         http.set_base_handler(_base_handler)
         http.set_relay_handler(_relay_handler)
         http.set_power_handler(_power_handler)
+        http.set_manual_override_handler(lambda body: manual_override.submit(body))
         # Route script runner + presets
         presets_path = Path(os.getenv("ROUTE_LOG_ROOT", "/data/routes")) / "presets.json"
         try:
@@ -586,24 +601,59 @@ def main() -> None:
             if theta is not None:
                 last_known_theta = theta
 
+            now = time.monotonic()
             script_running = script_runner is not None and script_runner.is_running()
-            if object_detection_script_only and not script_running:
+            manual_wants_control = manual_override.wants_control(now=now)
+            if object_detection_script_only and not script_running and not manual_wants_control:
                 object_status = ObjectDetectionStatus("none", False, 0, None, None, ())
             else:
-                object_status = object_detector.process(frame, now=time.monotonic())
+                object_status = object_detector.process(frame, now=now)
             display_frame = draw_object_boxes(display_frame, object_status.object_boxes)
             object_pause_active = object_status.object_pause_active
-            if script_runner is not None:
-                script_runner.set_paused(
-                    object_pause_active,
-                    "object_detected" if object_pause_active else "",
-                )
-            if object_pause_active:
+
+            manual_decision = manual_override.evaluate(
+                now=now,
+                object_near=object_pause_active or object_status.object_state == "near",
+                estop_active=False,
+            )
+            if manual_decision.release_servo and not manual_decision.active:
                 if last_base_cmd.upper() != "STOP":
                     _base_handler("STOP")
                 release_servo = getattr(servo, "release", None)
                 if callable(release_servo):
                     release_servo()
+                last_manual_servo_angle = None
+
+            if script_runner is not None:
+                if manual_decision.pause_script:
+                    script_runner.set_paused(True, "manual_override")
+                else:
+                    script_runner.set_paused(
+                        object_pause_active,
+                        "object_detected" if object_pause_active else "",
+                    )
+
+            if object_pause_active and not manual_decision.active:
+                if last_base_cmd.upper() != "STOP":
+                    _base_handler("STOP")
+                release_servo = getattr(servo, "release", None)
+                if callable(release_servo):
+                    release_servo()
+            elif manual_decision.active:
+                if manual_decision.base_command != last_base_cmd.upper():
+                    _base_handler(manual_decision.base_command)
+                if manual_decision.release_servo:
+                    release_servo = getattr(servo, "release", None)
+                    if callable(release_servo):
+                        release_servo()
+                if manual_decision.servo_angle is not None and (
+                    last_manual_servo_angle is None
+                    or abs(last_manual_servo_angle - manual_decision.servo_angle) >= 0.5
+                ):
+                    servo.send_angle(manual_decision.servo_angle)
+                    last_manual_servo_angle = manual_decision.servo_angle
+            else:
+                last_manual_servo_angle = None
 
             # --- servo ---
             output_angle = map_calibrated_servo(
@@ -614,12 +664,17 @@ def main() -> None:
             )
             if (
                 not object_pause_active
+                and not manual_decision.active
                 and script_runner is not None
                 and script_running
                 and script_runner.vision_pid_active()
             ):
                 servo.send_angle(output_angle)
-            final_angle = output_angle
+            final_angle = (
+                manual_decision.servo_angle
+                if manual_decision.active and manual_decision.servo_angle is not None
+                else output_angle
+            )
 
             # --- telemetry ---
             loop_ms = (time.monotonic() - loop_start) * 1000.0
@@ -675,6 +730,7 @@ def main() -> None:
                 "power_pulsing": relay.power_pulsing,
             })
             tel.update(object_status.telemetry())
+            tel.update(manual_decision.telemetry())
             if route_session is not None:
                 mono_now = time.monotonic()
                 if route_csv_writer is None:
