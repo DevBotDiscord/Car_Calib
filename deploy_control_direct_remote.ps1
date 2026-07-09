@@ -259,7 +259,10 @@ $COMPOSE_CMD -f "$COMPOSE_FILE" ps 2>/dev/null || true
 docker logs --tail 30 "$CONTAINER_NAME" 2>/dev/null || true
 
 cd "${root_dir}/releases"
-ls -1dt */ 2>/dev/null | tail -n +4 | xargs -r rm -rf -- || true
+find . -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null \
+    | sort -r \
+    | awk -v current="$VERSION" '$0 == current { next } kept < 2 { kept++; next } { print }' \
+    | xargs -r rm -rf --
 echo "[remote] Deploy complete"
 '@
     $RemoteScriptPath = Join-Path $env:TEMP "$ProjectName-$Version-remote.sh"
