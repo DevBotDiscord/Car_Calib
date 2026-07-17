@@ -98,8 +98,12 @@ class SascExperimentLogger:
         self._writer = csv.DictWriter(self._file, fieldnames=SASC_FIELDNAMES, extrasaction="ignore")
         self._writer.writeheader()
         self._file.flush()
+        self.enabled = True
+        self.error = ""
 
-    def write_frame(self, telemetry: dict[str, Any], *, frame_id: int, mono_now: float) -> None:
+    def write_frame(self, telemetry: dict[str, Any], *, frame_id: int, mono_now: float) -> bool:
+        if not self.enabled:
+            return False
         elapsed_ms = max(0, int(round((float(mono_now) - self.start_monotonic) * 1000.0)))
         resources = self._sampler.sample()
         row = build_sasc_row(
@@ -110,12 +114,25 @@ class SascExperimentLogger:
             timestamp_ms=elapsed_ms,
             resources=resources,
         )
-        self._writer.writerow(row)
-        self._file.flush()
+        try:
+            self._writer.writerow(row)
+            self._file.flush()
+            return True
+        except OSError as exc:
+            self.enabled = False
+            self.error = str(exc)
+            self.close()
+            return False
 
     def close(self) -> None:
-        self._file.flush()
-        self._file.close()
+        try:
+            self._file.flush()
+        except OSError:
+            pass
+        try:
+            self._file.close()
+        except OSError:
+            pass
 
 
 def build_sasc_row(

@@ -8,6 +8,8 @@ import threading
 import time
 from typing import Any, Callable
 
+from runtime.resource_limits import validate_route_steps
+
 logger = logging.getLogger(__name__)
 
 BASE_MAP: dict[str, tuple[int, int, int]] = {
@@ -84,6 +86,7 @@ class JetsonScriptRunner:
             }
 
     def submit(self, steps: list[dict[str, Any]]) -> bool:
+        normalized_steps = validate_route_steps(steps)
         with self._lock:
             if self._running:
                 return False
@@ -92,7 +95,7 @@ class JetsonScriptRunner:
             self._pause_reason = ""
             self._step_elapsed_s = 0.0
             self._step_duration_s = 0.0
-            self._steps = steps
+            self._steps = normalized_steps
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return True

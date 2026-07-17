@@ -10,6 +10,12 @@ services:
     restart: unless-stopped
     network_mode: host
     privileged: true
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     env_file:
       - .env.control-direct
     environment:

@@ -13,9 +13,11 @@ Serves:
 from __future__ import annotations
 
 import json
+import hmac
 import logging
 import mimetypes
 import os
+import socket
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -24,7 +26,6 @@ from socketserver import ThreadingMixIn
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
-import cv2
 import numpy as np
 
 from runtime.calib_tuning import TuneBlockedError, TuneValidationError
@@ -35,11 +36,19 @@ logger = logging.getLogger(__name__)
 _DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
 
 
+class RequestBodyError(ValueError):
+    """An HTTP request body was malformed or exceeded the configured limit."""
+
+
 class _RequestHandler(BaseHTTPRequestHandler):
     """Minimal request handler with CORS support."""
 
     def log_message(self, fmt: str, *args: Any) -> None:
         logger.debug("HTTP %s", fmt % args)
+
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(float(getattr(self.server, "request_timeout_s", 5.0)))
 
     def _cors(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -61,6 +70,19 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body.encode())
 
+    def _authorized(self) -> bool:
+        token = str(getattr(self.server, "dashboard_token", ""))
+        if not token:
+            return True
+        candidate = (self._query().get("token") or [""])[0]
+        return hmac.compare_digest(candidate, token)
+
+    def _require_auth(self) -> bool:
+        if self._authorized():
+            return True
+        self._json({"detail": "unauthorized"}, 401)
+        return False
+
     def _request_path(self) -> str:
         return urlparse(self.path).path
 
@@ -68,11 +90,24 @@ class _RequestHandler(BaseHTTPRequestHandler):
         return parse_qs(urlparse(self.path).query)
 
     def _json_body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length") or "0")
+        raw_length = self.headers.get("Content-Length") or "0"
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            raise RequestBodyError("invalid Content-Length") from exc
         if length <= 0:
             return {}
-        raw = self.rfile.read(length).decode("utf-8")
-        return json.loads(raw) if raw else {}
+        max_bytes = int(getattr(self.server, "max_body_bytes", 64 * 1024))
+        if length > max_bytes:
+            raise RequestBodyError(f"request body exceeds {max_bytes} bytes")
+        try:
+            raw = self.rfile.read(length).decode("utf-8")
+            value = json.loads(raw) if raw else {}
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RequestBodyError("request body must be valid UTF-8 JSON") from exc
+        if not isinstance(value, dict):
+            raise RequestBodyError("JSON body must be an object")
+        return value
 
     def _script_status(self) -> dict[str, Any]:
         runner = getattr(self.server, "script_runner", None)
@@ -88,12 +123,21 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self._cors()
         self.send_header("Content-Type", content_type or "application/octet-stream")
         self.send_header("Cache-Control", "no-cache")
+        if path.name != "index.html":
+            self.send_header("Content-Length", str(path.stat().st_size))
         self.end_headers()
         if path.name == "index.html":
-            body = path.read_text(encoding="utf-8").replace("__STREAM_PATH__", "/stream")
+            token = json.dumps(str(getattr(self.server, "dashboard_token", "")))
+            body = (
+                path.read_text(encoding="utf-8")
+                .replace("__STREAM_PATH__", "/stream")
+                .replace('TOKEN: ""', f"TOKEN: {token}")
+            )
             self.wfile.write(body.encode())
             return
-        self.wfile.write(path.read_bytes())
+        with path.open("rb") as fileobj:
+            while chunk := fileobj.read(64 * 1024):
+                self.wfile.write(chunk)
 
     def do_OPTIONS(self) -> None:
         self.send_response(204)
@@ -102,12 +146,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = self._request_path()
-        # ---- Dashboard HTML ----
-        if path == "/" or path == "/dashboard":
-            self._file(_DASHBOARD_DIR / "index.html")
-            return
-
-        # ---- Static files ----
+        # Static assets contain no telemetry/control data and cannot carry a
+        # token in their URL, so the dashboard shell remains the auth boundary.
         if path.startswith("/dashboard/static/"):
             rel = path[len("/dashboard/static/"):]
             safe = rel.lstrip("/").replace("\\", "/")
@@ -116,23 +156,40 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 return
             self._file(_DASHBOARD_DIR / safe)
             return
+        if not self._require_auth():
+            return
+        # ---- Dashboard HTML ----
+        if path == "/" or path == "/dashboard":
+            self._file(_DASHBOARD_DIR / "index.html")
+            return
 
         # ---- MJPEG stream ----
         if path == "/stream":
+            broker = getattr(self.server, "stream_broker", None)
+            if broker is None:
+                self._text(503, "stream unavailable")
+                return
+            if not broker.acquire_client():
+                self._text(429, "stream client limit reached")
+                return
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
             self.end_headers()
-            getter = self.server.frame_getter
-            while True:
-                frame = getter() if callable(getter) else None
-                if frame is None:
-                    time.sleep(0.03)
-                    continue
-                _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
-                self.wfile.write(b"--frame\r\n")
-                self.wfile.write(b"Content-Type: image/jpeg\r\n\r\n")
-                self.wfile.write(jpeg.tobytes())
-                self.wfile.write(b"\r\n")
+            sequence = -1
+            try:
+                while True:
+                    jpeg, sequence = broker.wait_for_frame(sequence, timeout_s=5.0)
+                    if jpeg is None:
+                        continue
+                    self.wfile.write(b"--frame\r\n")
+                    self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                    self.wfile.write(f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii"))
+                    self.wfile.write(jpeg)
+                    self.wfile.write(b"\r\n")
+            except (BrokenPipeError, ConnectionResetError, socket.timeout):
+                pass
+            finally:
+                broker.release_client()
             return
 
         # ---- API /status ----
@@ -195,8 +252,13 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
         # ---- Routes list ----
         if path.startswith("/routes/list"):
-            rg = getattr(self.server, "routes_getter", None)
-            self._json({"routes": rg() if callable(rg) else []})
+            cached = getattr(self.server, "route_list_cache", None)
+            now = time.monotonic()
+            if cached is None or now - cached[0] >= self.server.route_list_cache_s:
+                rg = getattr(self.server, "routes_getter", None)
+                cached = (now, rg() if callable(rg) else [])
+                self.server.route_list_cache = cached
+            self._json({"routes": cached[1][:50]})
             return
         if path.startswith("/routes/") and path.endswith("/summary"):
             route_id = unquote(path[len("/routes/"):-len("/summary")])
@@ -220,6 +282,14 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self._text(404, "not found")
 
     def do_POST(self) -> None:
+        if not self._require_auth():
+            return
+        try:
+            self._do_POST()
+        except RequestBodyError as exc:
+            self._json({"detail": str(exc)}, 413 if "exceeds" in str(exc) else 400)
+
+    def _do_POST(self) -> None:
         path = self._request_path()
         if path == "/api/manual_override":
             handler = getattr(self.server, "manual_override_handler", None)
@@ -234,13 +304,21 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if path == "/route/script":
             submitter = getattr(self.server, "script_submitter", None)
             body = self._json_body()
-            ok = submitter(json.dumps(body)) if callable(submitter) else False
+            try:
+                ok = submitter(json.dumps(body)) if callable(submitter) else False
+            except ValueError as exc:
+                self._json({"detail": str(exc)}, 400)
+                return
             self._json({"ok": bool(ok)}, 200 if ok else 400)
             return
         if path == "/route/script/step":
             submitter = getattr(self.server, "script_submitter", None)
             step = self._json_body()
-            ok = submitter(json.dumps({"steps": [step]})) if callable(submitter) else False
+            try:
+                ok = submitter(json.dumps({"steps": [step]})) if callable(submitter) else False
+            except ValueError as exc:
+                self._json({"detail": str(exc)}, 400)
+                return
             self._json({"ok": bool(ok)}, 200 if ok else 400)
             return
         if path == "/route/script/stop":
@@ -294,6 +372,14 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self._text(404, "not found")
 
     def do_PUT(self) -> None:
+        if not self._require_auth():
+            return
+        try:
+            self._do_PUT()
+        except RequestBodyError as exc:
+            self._json({"detail": str(exc)}, 413 if "exceeds" in str(exc) else 400)
+
+    def _do_PUT(self) -> None:
         path = self._request_path()
         if path == "/api/tune":
             applier = getattr(self.server, "tune_applier", None)
@@ -312,13 +398,19 @@ class _RequestHandler(BaseHTTPRequestHandler):
             setter = getattr(self.server, "presets_setter", None)
             body = self._json_body()
             body["name"] = name
-            if callable(setter):
-                setter(json.dumps(body))
+            try:
+                if callable(setter):
+                    setter(json.dumps(body))
+            except ValueError as exc:
+                self._json({"detail": str(exc)}, 400)
+                return
             self._json({"ok": True, "preset": body})
             return
         self._text(404, "not found")
 
     def do_DELETE(self) -> None:
+        if not self._require_auth():
+            return
         path = self._request_path()
         if path.startswith("/presets/"):
             name = unquote(path.split("/presets/", 1)[1])
@@ -334,19 +426,71 @@ class _RequestHandler(BaseHTTPRequestHandler):
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-    """HTTP server with threading support."""
+    """Threaded HTTP server with a bounded number of live request threads."""
     allow_reuse_address = True
     daemon_threads = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        handler_class: type[BaseHTTPRequestHandler],
+        *,
+        max_threads: int,
+        request_timeout_s: float,
+        dashboard_token: str,
+        max_body_bytes: int,
+        route_list_cache_s: float,
+    ) -> None:
+        self._thread_slots = threading.BoundedSemaphore(max(1, max_threads))
+        self.request_timeout_s = max(0.5, request_timeout_s)
+        self.dashboard_token = dashboard_token
+        self.max_body_bytes = max(1, max_body_bytes)
+        self.route_list_cache_s = max(0.0, route_list_cache_s)
+        self.route_list_cache: tuple[float, list[dict[str, Any]]] | None = None
+        super().__init__(server_address, handler_class)
+
+    def process_request(self, request: socket.socket, client_address: tuple[str, int]) -> None:
+        if not self._thread_slots.acquire(blocking=False):
+            try:
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+            finally:
+                self.shutdown_request(request)
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request: socket.socket, client_address: tuple[str, int]) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._thread_slots.release()
 
 
 class JetsonHttpServer:
     """Embedded HTTP server for the Jetson Nano dashboard."""
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8080) -> None:
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 8080,
+        *,
+        token: str | None = None,
+        max_body_bytes: int | None = None,
+        request_timeout_s: float | None = None,
+        max_threads: int | None = None,
+        route_list_cache_s: float | None = None,
+    ) -> None:
         self._host = host
         self._port = port
+        self._token = (os.getenv("DASHBOARD_TOKEN", "") if token is None else token).strip()
+        self._max_body_bytes = int(os.getenv("DASHBOARD_MAX_BODY_BYTES", "65536")) if max_body_bytes is None else max_body_bytes
+        self._request_timeout_s = float(os.getenv("DASHBOARD_REQUEST_TIMEOUT_S", "5")) if request_timeout_s is None else request_timeout_s
+        self._max_threads = int(os.getenv("DASHBOARD_MAX_THREADS", "16")) if max_threads is None else max_threads
+        self._route_list_cache_s = float(os.getenv("DASHBOARD_ROUTE_LIST_CACHE_S", "5")) if route_list_cache_s is None else route_list_cache_s
         self._server: ThreadedHTTPServer | None = None
         self._frame_getter: Callable[[], np.ndarray | None] | None = None
+        self._stream_broker: Any | None = None
         self._status_getter: Callable[[], dict[str, Any]] | None = None
         self._base_handler: Callable[[str], None] | None = None
         self._relay_handler: Callable[[str], None] | None = None
@@ -369,6 +513,9 @@ class JetsonHttpServer:
 
     def set_frame_getter(self, fn: Callable[[], np.ndarray | None]) -> None:
         self._frame_getter = fn
+
+    def set_stream_broker(self, broker: Any) -> None:
+        self._stream_broker = broker
 
     def set_status_getter(self, fn: Callable[[], dict[str, Any]]) -> None:
         self._status_getter = fn
@@ -426,6 +573,8 @@ class JetsonHttpServer:
         self._tune_resetter = resetter
 
     def start(self) -> None:
+        if self._host not in {"127.0.0.1", "localhost", "::1"} and not self._token:
+            raise ValueError("DASHBOARD_TOKEN is required when DASHBOARD_HOST is not localhost")
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
         logger.info("Dashboard: http://%s:%d", self._host, self._port)
@@ -436,8 +585,17 @@ class JetsonHttpServer:
         logger.info("Dashboard: stopped")
 
     def _serve(self) -> None:
-        self._server = ThreadedHTTPServer((self._host, self._port), _RequestHandler)
+        self._server = ThreadedHTTPServer(
+            (self._host, self._port),
+            _RequestHandler,
+            max_threads=self._max_threads,
+            request_timeout_s=self._request_timeout_s,
+            dashboard_token=self._token,
+            max_body_bytes=self._max_body_bytes,
+            route_list_cache_s=self._route_list_cache_s,
+        )
         self._server.frame_getter = self._frame_getter
+        self._server.stream_broker = self._stream_broker
         self._server.status_getter = self._status_getter
         self._server.base_handler = self._base_handler
         self._server.relay_handler = self._relay_handler

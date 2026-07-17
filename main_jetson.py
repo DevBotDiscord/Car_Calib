@@ -56,6 +56,8 @@ from runtime.jetson_script_runner import JetsonScriptRunner
 from runtime.calib_tuning import CalibTuneManager
 from runtime.manual_override import ManualOverrideController
 from runtime.object_detection import ObjectDetectionStatus, ObjectDetector, draw_object_boxes
+from runtime.dashboard_stream import DashboardStreamBroker
+from runtime.resource_limits import ScriptValidationError, StorageManager, validate_route_steps
 from unified_calibration_components import UnifiedCalibrator, CalibrationProcessingError
 from runtime.sasc_experiment_log import SascExperimentLogger
 
@@ -291,7 +293,14 @@ def main() -> None:
     # Shared telemetry
     # ------------------------------------------------------------------ #
     telemetry_lock = threading.Lock()
-    shared_frame: np.ndarray | None = None
+    log_root = Path(args.csv).parent if Path(args.csv).is_absolute() else Path("logs")
+    route_root = Path(os.getenv("ROUTE_LOG_ROOT", "/data/routes"))
+    storage = StorageManager(log_root, route_root)
+    stream_broker = DashboardStreamBroker(
+        max_clients=_env_int(("DASHBOARD_STREAM_MAX_CLIENTS",), 2),
+        fps=_env_float(("DASHBOARD_STREAM_FPS",), 8.0),
+        jpeg_quality=_env_int(("DASHBOARD_STREAM_JPEG_QUALITY",), 60),
+    )
     shared_telemetry: dict[str, Any] = {
         "frame": 0, "fsm": "GAPPING", "calib_active": False,
         "theta": None, "theta_src": "none",
@@ -308,18 +317,20 @@ def main() -> None:
     last_manual_servo_angle: float | None = None
 
     def _update_shared(frame: np.ndarray, tel: dict[str, Any]) -> None:
-        nonlocal shared_frame, shared_telemetry
+        nonlocal shared_telemetry
+        stream_broker.submit(frame)
         with telemetry_lock:
-            shared_frame = frame.copy() if frame is not None else None
             shared_telemetry = dict(tel)
-
-    def _frame_getter() -> np.ndarray | None:
-        with telemetry_lock:
-            return shared_frame.copy() if shared_frame is not None else None
 
     def _status_getter() -> dict[str, Any]:
         with telemetry_lock:
             tel = dict(shared_telemetry)
+        storage_health = storage.health()
+        telemetry_health = (
+            calibrator._telemetry.logging_health()
+            if getattr(calibrator, "_telemetry", None) is not None
+            else {"telemetry_logging_enabled": False, "telemetry_logging_error": "telemetry unavailable"}
+        )
         return {
             "telemetry": {
                 "frame_num": tel.get("frame"),
@@ -353,6 +364,15 @@ def main() -> None:
                 "online": True,
                 "source": hardware_source,
             },
+            "resource_health": {
+                "storage_writable": storage_health.writable,
+                "storage_reason": storage_health.reason,
+                "disk_free_bytes": storage_health.free_bytes,
+                "managed_data_bytes": storage_health.managed_bytes,
+                "recording_active": route_session is not None,
+                **telemetry_health,
+                **stream_broker.health(),
+            },
         }
 
     def _base_handler(cmd: str) -> None:
@@ -379,10 +399,23 @@ def main() -> None:
     script_runner: JetsonScriptRunner | None = None
     route_session: RouteSession | None = None
     route_video_writer: cv2.VideoWriter | None = None
+    route_video_disabled = False
     route_csv_file: Any | None = None
     route_csv_writer: csv.DictWriter | None = None
     sasc_logger: SascExperimentLogger | None = None
     current_sasc_scene_type = ""
+
+    def _refresh_storage_active_paths() -> None:
+        active: list[Path] = []
+        telemetry_logger = getattr(calibrator, "_telemetry", None)
+        if telemetry_logger is not None:
+            active.extend(telemetry_logger.active_storage_paths())
+        if route_session is not None:
+            active.append(route_session.route_dir)
+        storage.set_active_paths(active)
+
+    _refresh_storage_active_paths()
+    storage.retain()
 
     def _tune_idle_state() -> tuple[bool, str]:
         if script_runner is not None and script_runner.is_running():
@@ -408,7 +441,7 @@ def main() -> None:
 
     if not args.no_dashboard:
         http = JetsonHttpServer(host=args.host, port=args.port)
-        http.set_frame_getter(_frame_getter)
+        http.set_stream_broker(stream_broker)
         http.set_status_getter(_status_getter)
         http.set_base_handler(_base_handler)
         http.set_relay_handler(_relay_handler)
@@ -424,12 +457,17 @@ def main() -> None:
             _presets = {}
 
         def _save_presets() -> None:
-            presets_path.parent.mkdir(parents=True, exist_ok=True)
-            presets_path.write_text(json.dumps(_presets, indent=2), encoding="utf-8")
+            try:
+                presets_path.parent.mkdir(parents=True, exist_ok=True)
+                presets_path.write_text(json.dumps(_presets, indent=2), encoding="utf-8")
+            except OSError as exc:
+                storage.mark_error(exc)
+                raise ScriptValidationError("preset storage is unavailable") from exc
 
         def _set_preset(body: str) -> None:
             data = json.loads(body)
-            _presets[data.get("name", "untitled")] = data.get("steps", [])
+            name = str(data.get("name", "untitled")).strip()[:80] or "untitled"
+            _presets[name] = validate_route_steps(data.get("steps", []))
             _save_presets()
 
         def _delete_preset(name: str) -> None:
@@ -441,39 +479,57 @@ def main() -> None:
         script_runner.set_handlers(_base_handler, servo.send_angle, _relay_handler)
 
         def _submit_script(body: str) -> bool:
-            nonlocal route_session, route_video_writer, route_csv_file, route_csv_writer, sasc_logger, current_sasc_scene_type
+            nonlocal route_session, route_video_writer, route_video_disabled, route_csv_file, route_csv_writer, sasc_logger, current_sasc_scene_type
             payload = json.loads(body)
-            steps = payload.get("steps", [])
+            steps = validate_route_steps(payload.get("steps", []))
             preset_name = str(payload.get("preset_name") or "").strip()
             ok = script_runner.submit(steps)
             if ok:
                 if route_video_writer is not None:
-                    route_video_writer.release()
+                    try:
+                        route_video_writer.release()
+                    except OSError as exc:
+                        storage.mark_error(exc)
                     route_video_writer = None
+                route_video_disabled = False
                 if route_csv_file is not None:
-                    route_csv_file.close()
+                    try:
+                        route_csv_file.close()
+                    except OSError as exc:
+                        storage.mark_error(exc)
                     route_csv_file = None
                     route_csv_writer = None
                 if sasc_logger is not None:
                     sasc_logger.close()
                     sasc_logger = None
-                route_session = RouteSession(route_mode="SCRIPT")
-                route_session.attach_meta("script_steps", steps)
-                route_session.attach_meta("source", "dashboard_direct")
-                route_session.attach_meta("preset_name", preset_name)
-                route_session.attach_meta("video_file", "")
-                route_session.attach_meta("csv_file", "route_frames.csv")
-                route_session.attach_meta("sasc_file", "sasc_baseline_log.csv")
-                route_session.start(time.monotonic())
-                current_sasc_scene_type = preset_name
-                logger.info("Route recording started: %s", route_session.route_id)
+                storage.retain()
+                if storage.recover_if_possible():
+                    try:
+                        route_session = RouteSession(route_mode="SCRIPT")
+                        _refresh_storage_active_paths()
+                        route_session.attach_meta("script_steps", steps)
+                        route_session.attach_meta("source", "dashboard_direct")
+                        route_session.attach_meta("preset_name", preset_name)
+                        route_session.attach_meta("video_file", "")
+                        route_session.attach_meta("csv_file", "route_frames.csv")
+                        route_session.attach_meta("sasc_file", "sasc_baseline_log.csv")
+                        route_session.start(time.monotonic())
+                        current_sasc_scene_type = preset_name
+                        logger.info("Route recording started: %s", route_session.route_id)
+                    except OSError as exc:
+                        route_session = None
+                        _refresh_storage_active_paths()
+                        storage.mark_error(exc)
+                        logger.warning("Route recording disabled: %s", exc)
+                else:
+                    logger.warning("Route recording disabled: %s", storage.health().reason)
             return ok
 
         http.set_script_runner(lambda: script_runner.status())
         http.set_script_stopper(script_runner.stop)
         http.set_script_submitter(_submit_script)
         http.set_steps_getter(lambda: _steps)
-        http.set_steps_setter(lambda body: _steps.extend(json.loads(body).get("steps", [])))
+        http.set_steps_setter(lambda body: _steps.extend(validate_route_steps(json.loads(body).get("steps", []))))
         http.set_presets_getter(lambda: [{"name": k, "steps": v, "steps_count": len(v)} for k, v in _presets.items()])
         http.set_presets_setter(_set_preset)
         http.set_preset_deleter(_delete_preset)
@@ -488,13 +544,19 @@ def main() -> None:
         http.start()
 
     def _finalize_route(status: str) -> None:
-        nonlocal route_session, route_video_writer, route_csv_file, route_csv_writer, sasc_logger, current_sasc_scene_type
+        nonlocal route_session, route_video_writer, route_video_disabled, route_csv_file, route_csv_writer, sasc_logger, current_sasc_scene_type
         if route_video_writer is not None:
-            route_video_writer.release()
+            try:
+                route_video_writer.release()
+            except OSError as exc:
+                storage.mark_error(exc)
             route_video_writer = None
         if route_csv_file is not None:
-            route_csv_file.flush()
-            route_csv_file.close()
+            try:
+                route_csv_file.flush()
+                route_csv_file.close()
+            except OSError as exc:
+                storage.mark_error(exc)
             route_csv_file = None
             route_csv_writer = None
         if sasc_logger is not None:
@@ -502,14 +564,21 @@ def main() -> None:
             sasc_logger = None
         if route_session is None:
             return
-        result = route_session.finalize(mono_now=time.monotonic(), status=status)
-        logger.info(
-            "Route recording finalized: %s accepted=%s reason=%s",
-            result.route_id,
-            result.accepted,
-            result.rejection_reason,
-        )
+        try:
+            result = route_session.finalize(mono_now=time.monotonic(), status=status)
+            logger.info(
+                "Route recording finalized: %s accepted=%s reason=%s",
+                result.route_id,
+                result.accepted,
+                result.rejection_reason,
+            )
+        except OSError as exc:
+            storage.mark_error(exc)
+            logger.warning("Route summary could not be written: %s", exc)
         route_session = None
+        route_video_disabled = False
+        _refresh_storage_active_paths()
+        storage.retain()
         current_sasc_scene_type = ""
 
     def _open_route_video_writer(frame_w: int, frame_h: int) -> cv2.VideoWriter | None:
@@ -688,19 +757,27 @@ def main() -> None:
             pid_error = 0.0 if theta is None else float(theta) - 90.0
             current_route_id = route_session.route_id if route_session is not None else None
             if route_session is not None:
-                if route_video_writer is None:
-                    frame_h, frame_w = display_frame.shape[:2]
-                    route_video_writer = _open_route_video_writer(frame_w, frame_h)
-                if route_video_writer is not None:
-                    route_video_writer.write(display_frame)
-                route_session.update_frame(
-                    mono_now=time.monotonic(),
-                    theta=theta,
-                    fsm_state=fsm_state,
-                    calibration_active=calibration.calibration_active,
-                )
-                if script_runner is None or not script_runner.is_running():
-                    _finalize_route("COMPLETED")
+                if not storage.health().writable:
+                    _finalize_route("STORAGE_ERROR")
+                else:
+                    try:
+                        if route_video_writer is None and not route_video_disabled:
+                            frame_h, frame_w = display_frame.shape[:2]
+                            route_video_writer = _open_route_video_writer(frame_w, frame_h)
+                            route_video_disabled = route_video_writer is None
+                        if route_video_writer is not None:
+                            route_video_writer.write(display_frame)
+                        route_session.update_frame(
+                            mono_now=time.monotonic(),
+                            theta=theta,
+                            fsm_state=fsm_state,
+                            calibration_active=calibration.calibration_active,
+                        )
+                    except OSError as exc:
+                        storage.mark_error(exc)
+                        _finalize_route("STORAGE_ERROR")
+                    if route_session is not None and (script_runner is None or not script_runner.is_running()):
+                        _finalize_route("COMPLETED")
 
             # Build dashboard telemetry, merging calibrator output with hardware state
             tel = dict(calibration.telemetry)
@@ -733,38 +810,47 @@ def main() -> None:
             tel.update(manual_decision.telemetry())
             if route_session is not None:
                 mono_now = time.monotonic()
-                if route_csv_writer is None:
-                    route_csv_file = (route_session.route_dir / "route_frames.csv").open(
-                        "w",
-                        newline="",
-                        encoding="utf-8",
-                    )
-                    fieldnames = sorted(tel.keys())
-                    route_csv_writer = csv.DictWriter(
-                        route_csv_file,
-                        fieldnames=fieldnames,
-                        extrasaction="ignore",
-                    )
-                    route_csv_writer.writeheader()
-                    logger.info("Route CSV recording to %s", route_session.route_dir / "route_frames.csv")
-                route_csv_writer.writerow(tel)
-                if route_csv_file is not None:
-                    route_csv_file.flush()
-                if sasc_logger is None:
-                    sasc_logger = SascExperimentLogger(
-                        route_session.route_dir / "sasc_baseline_log.csv",
-                        run_id=route_session.route_id,
-                        scene_type=current_sasc_scene_type,
-                        start_monotonic=getattr(route_session, "_start_monotonic", None),
-                    )
-                    logger.info("SASC CSV recording to %s", sasc_logger.path)
-                sasc_logger.write_frame(tel, frame_id=route_session.total_frames, mono_now=mono_now)
+                try:
+                    if route_csv_writer is None:
+                        route_csv_file = (route_session.route_dir / "route_frames.csv").open(
+                            "w",
+                            newline="",
+                            encoding="utf-8",
+                        )
+                        fieldnames = sorted(tel.keys())
+                        route_csv_writer = csv.DictWriter(
+                            route_csv_file,
+                            fieldnames=fieldnames,
+                            extrasaction="ignore",
+                        )
+                        route_csv_writer.writeheader()
+                        logger.info("Route CSV recording to %s", route_session.route_dir / "route_frames.csv")
+                    route_csv_writer.writerow(tel)
+                    if route_csv_file is not None:
+                        route_csv_file.flush()
+                    if sasc_logger is None:
+                        sasc_logger = SascExperimentLogger(
+                            route_session.route_dir / "sasc_baseline_log.csv",
+                            run_id=route_session.route_id,
+                            scene_type=current_sasc_scene_type,
+                            start_monotonic=getattr(route_session, "_start_monotonic", None),
+                        )
+                        logger.info("SASC CSV recording to %s", sasc_logger.path)
+                    if not sasc_logger.write_frame(tel, frame_id=route_session.total_frames, mono_now=mono_now):
+                        raise OSError(sasc_logger.error or "SASC logger disabled")
+                except OSError as exc:
+                    storage.mark_error(exc)
+                    _finalize_route("STORAGE_ERROR")
             _update_shared(display_frame, tel)
 
             # --- CSV telemetry (delegated to calibrator) ---
             calibration.telemetry.update({"final_servo_angle": final_angle})
             if calibrator._telemetry is not None:
                 calibrator._telemetry.log_state(frame_num, calibration.telemetry)
+                _refresh_storage_active_paths()
+                logging_error = calibrator._telemetry.logging_health().get("telemetry_logging_error", "")
+                if logging_error:
+                    storage.mark_error(str(logging_error))
 
             # --- sleep remainder ---
             remaining = target_period - (time.monotonic() - loop_start)
@@ -785,6 +871,7 @@ def main() -> None:
         cap.release()
         if http is not None:
             http.stop()
+        stream_broker.close()
         try:
             cv2.destroyAllWindows()
         except cv2.error:

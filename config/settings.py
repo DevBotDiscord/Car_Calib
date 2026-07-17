@@ -71,6 +71,10 @@ MAIN_DEBUG_OVERLAY_SCALE = _get_float("MAIN_DEBUG_OVERLAY_SCALE", 0.75)
 MAIN_CAMERA_RETRY_LIMIT = _get_int("MAIN_CAMERA_RETRY_LIMIT", 3)
 MAIN_VIDEO_RETRY_LIMIT = _get_int("MAIN_VIDEO_RETRY_LIMIT", 5)
 MAIN_HARDWARE_RETRY_LIMIT = _get_int("MAIN_HARDWARE_RETRY_LIMIT", 5)
+LOG_ROTATE_MB = _get_int("LOG_ROTATE_MB", 64)
+DATA_RETENTION_DAYS = _get_int("DATA_RETENTION_DAYS", 7)
+DATA_MAX_BYTES = _get_int("DATA_MAX_BYTES", 2 * 1024 * 1024 * 1024)
+DISK_MIN_FREE_BYTES = _get_int("DISK_MIN_FREE_BYTES", 512 * 1024 * 1024)
 
 MAIN_HTTPS_STREAM_ENABLED = _get_bool("MAIN_HTTPS_STREAM_ENABLED", False)
 MAIN_HTTPS_STREAM_HOST = _get_str("MAIN_HTTPS_STREAM_HOST", "127.0.0.1")
@@ -83,6 +87,18 @@ MAIN_HTTPS_TOKEN = _get_str("MAIN_HTTPS_TOKEN", "")
 MAIN_HTTPS_CERT_FILE = _get_str("MAIN_HTTPS_CERT_FILE", "certs/main_stream_cert.pem")
 MAIN_HTTPS_KEY_FILE = _get_str("MAIN_HTTPS_KEY_FILE", "certs/main_stream_key.pem")
 MAIN_HTTPS_SELF_SIGNED_DAYS = _get_int("MAIN_HTTPS_SELF_SIGNED_DAYS", 365)
+
+# --------------------------------------------------------------------------- #
+# Direct dashboard resource and access limits
+# --------------------------------------------------------------------------- #
+DASHBOARD_TOKEN = _get_str("DASHBOARD_TOKEN", "")
+DASHBOARD_STREAM_MAX_CLIENTS = _get_int("DASHBOARD_STREAM_MAX_CLIENTS", 2)
+DASHBOARD_STREAM_FPS = _get_float("DASHBOARD_STREAM_FPS", 8.0)
+DASHBOARD_STREAM_JPEG_QUALITY = _get_int("DASHBOARD_STREAM_JPEG_QUALITY", 60)
+DASHBOARD_MAX_BODY_BYTES = _get_int("DASHBOARD_MAX_BODY_BYTES", 64 * 1024)
+DASHBOARD_REQUEST_TIMEOUT_S = _get_float("DASHBOARD_REQUEST_TIMEOUT_S", 5.0)
+DASHBOARD_MAX_THREADS = _get_int("DASHBOARD_MAX_THREADS", 16)
+DASHBOARD_ROUTE_LIST_CACHE_S = _get_float("DASHBOARD_ROUTE_LIST_CACHE_S", 5.0)
 
 # --------------------------------------------------------------------------- #
 # Process video settings
@@ -205,6 +221,9 @@ ROUTE_DIRECTION_EPS_DEG = _get_float("ROUTE_DIRECTION_EPS_DEG", 1.0)
 ROUTE_ACCEPT_MIN_FRAMES = _get_int("ROUTE_ACCEPT_MIN_FRAMES", 60)
 ROUTE_ACCEPT_MAX_HW_ERRORS = _get_int("ROUTE_ACCEPT_MAX_HW_ERRORS", 0)
 ROUTE_ACCEPT_MAX_GAP_RATIO = _get_float("ROUTE_ACCEPT_MAX_GAP_RATIO", 0.25)
+ROUTE_MAX_STEPS = _get_int("ROUTE_MAX_STEPS", 64)
+ROUTE_MAX_STEP_DURATION_S = _get_float("ROUTE_MAX_STEP_DURATION_S", 30.0)
+ROUTE_MAX_TOTAL_DURATION_S = _get_float("ROUTE_MAX_TOTAL_DURATION_S", 300.0)
 
 
 __all__ = [name for name in globals() if name.isupper() or name.startswith("_get_")]

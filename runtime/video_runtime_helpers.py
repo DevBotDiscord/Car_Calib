@@ -16,6 +16,78 @@ import numpy as np
 from runtime.overlay_drawer import OverlayDrawer
 
 
+class RotatingCsvLogger:
+    """Flush-safe CSV sink that rotates before a log can grow without bound."""
+
+    def __init__(self, path: str | Path, fieldnames: list[str], *, max_bytes: int) -> None:
+        self._base_path = Path(path)
+        self._fieldnames = list(fieldnames)
+        self._max_bytes = max(1, int(max_bytes))
+        self._index = 0
+        self._file: TextIO | None = None
+        self._writer: csv.DictWriter | None = None
+        self.enabled = True
+        self.error = ""
+        self._open_current()
+
+    @property
+    def path(self) -> Path:
+        return self._current_path()
+
+    def write(self, row: dict[str, Any]) -> bool:
+        if not self.enabled:
+            return False
+        try:
+            if self._file is None or self._writer is None:
+                self._open_current()
+            assert self._writer is not None and self._file is not None
+            self._writer.writerow(row)
+            self._file.flush()
+            if self._file.tell() >= self._max_bytes:
+                self._rotate()
+            return True
+        except OSError as exc:
+            self.disable(exc)
+            return False
+
+    def disable(self, error: BaseException | str) -> None:
+        self.enabled = False
+        self.error = str(error)
+        self.close()
+
+    def close(self) -> None:
+        if self._file is not None:
+            try:
+                self._file.close()
+            except OSError:
+                pass
+        self._file = None
+        self._writer = None
+
+    def _rotate(self) -> None:
+        self.close()
+        self._index += 1
+        self._open_current()
+
+    def _current_path(self) -> Path:
+        if self._index == 0:
+            return self._base_path
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return self._base_path.with_name(
+            f"{self._base_path.stem}.{stamp}.{self._index}{self._base_path.suffix or '.csv'}"
+        )
+
+    def _open_current(self) -> None:
+        path = self._current_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        exists = path.exists() and path.stat().st_size > 0
+        self._file = path.open("a", newline="", encoding="utf-8")
+        self._writer = csv.DictWriter(self._file, fieldnames=self._fieldnames)
+        if not exists:
+            self._writer.writeheader()
+            self._file.flush()
+
+
 def init_csv_logger(
     path: str,
     fieldnames: list[str],

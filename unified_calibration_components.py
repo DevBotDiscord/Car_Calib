@@ -488,7 +488,10 @@ class TelemetryLogger:
         )
         self._csv_writer: Any = None
         self._csv_file: TextIO | None = None
+        self._csv_sink: Any = None
+        self._logging_error = ""
         self._video_writer: Any = None
+        self._video_path: Path | None = None
         self._video_width = _get_int("MAIN_FRAME_WIDTH", 640)
         self._video_height = _get_int("MAIN_FRAME_HEIGHT", 480)
         self._run_id = self._build_run_id()
@@ -526,18 +529,27 @@ class TelemetryLogger:
         self._build_vision_debug_panel_fn = getattr(helpers, "build_vision_debug_panel", None)
         self._sleep_remainder_fn = getattr(helpers, "sleep_remainder", None)
         init_csv_logger = getattr(helpers, "init_csv_logger", None)
+        rotating_csv_logger = getattr(helpers, "RotatingCsvLogger", None)
         init_video_writer = getattr(helpers, "init_video_writer", None)
 
-        if callable(init_csv_logger):
+        if callable(rotating_csv_logger):
             csv_path = _get_str("MAIN_CSV_LOG_FILE", "run_logs.csv")
             resolved_csv_path = self._resolve_run_artifact_path(csv_path, "run_logs.csv")
-            self._csv_writer, self._csv_file = init_csv_logger(
-                resolved_csv_path,
-                self._csv_fieldnames,
-                use_daily_layout=False,
-            )
-            if self._csv_file is not None:
-                self._logger.info("Telemetry CSV logging to %s", self._csv_file.name)
+            try:
+                self._csv_sink = rotating_csv_logger(
+                    resolved_csv_path,
+                    self._csv_fieldnames,
+                    max_bytes=max(1, _get_int("LOG_ROTATE_MB", 64)) * 1024 * 1024,
+                )
+                self._logger.info("Telemetry CSV logging to %s", self._csv_sink.path)
+            except OSError as exc:
+                self._logging_error = str(exc)
+                self._logger.warning("Telemetry CSV disabled: %s", exc)
+        elif callable(init_csv_logger):
+            # Compatibility fallback for installations that still ship old helpers.
+            csv_path = _get_str("MAIN_CSV_LOG_FILE", "run_logs.csv")
+            resolved_csv_path = self._resolve_run_artifact_path(csv_path, "run_logs.csv")
+            self._csv_writer, self._csv_file = init_csv_logger(resolved_csv_path, self._csv_fieldnames, use_daily_layout=False)
 
         legacy_video_enabled = bool(self._video_configs.get("MAIN_WRITE_DEBUG_VIDEO", False))
         visualizer_video_enabled = self._debug_mode_enabled and (
@@ -553,6 +565,7 @@ class TelemetryLogger:
                 self._video_width,
                 self._video_height,
             )
+            self._video_path = Path(resolved_video_path)
             self._logger.info("Telemetry debug video logging to %s", resolved_video_path)
 
     def _load_stream_bridge(self) -> None:
@@ -599,13 +612,47 @@ class TelemetryLogger:
 
     def log_state(self, frame_num: int, telemetry_data: dict[str, Any]) -> None:
         """Persist one telemetry row in CSV format when CSV logger exists."""
+        if self._csv_sink is not None:
+            row = {key: telemetry_data.get(key, "") for key in self._csv_fieldnames}
+            row["frame_num"] = frame_num
+            if not self._csv_sink.write(row):
+                self._logging_error = self._csv_sink.error or "telemetry CSV disabled"
+            return
         if self._csv_writer is None:
             return
         row = {key: telemetry_data.get(key, "") for key in self._csv_fieldnames}
         row["frame_num"] = frame_num
-        self._csv_writer.writerow(row)
-        if self._csv_file is not None:
-            self._csv_file.flush()
+        try:
+            self._csv_writer.writerow(row)
+            if self._csv_file is not None:
+                self._csv_file.flush()
+        except OSError as exc:
+            self._logging_error = str(exc)
+            self._csv_writer = None
+            if self._csv_file is not None:
+                try:
+                    self._csv_file.close()
+                except OSError:
+                    pass
+                self._csv_file = None
+
+    def logging_health(self) -> dict[str, Any]:
+        """Expose a non-fatal CSV sink state to the dashboard runtime."""
+        enabled = self._csv_writer is not None
+        if self._csv_sink is not None:
+            enabled = bool(self._csv_sink.enabled)
+        return {"telemetry_logging_enabled": enabled, "telemetry_logging_error": self._logging_error}
+
+    def active_storage_paths(self) -> tuple[Path, ...]:
+        """Return files currently owned by live telemetry sinks."""
+        paths: list[Path] = []
+        if self._csv_sink is not None:
+            paths.append(Path(self._csv_sink.path))
+        elif self._csv_file is not None:
+            paths.append(Path(self._csv_file.name))
+        if self._video_path is not None:
+            paths.append(self._video_path)
+        return tuple(paths)
 
     def update_visuals(
         self,
@@ -716,6 +763,8 @@ class TelemetryLogger:
 
     def close(self) -> None:
         """Release legacy resources if initialized."""
+        if self._csv_sink is not None:
+            self._csv_sink.close()
         if self._csv_file is not None:
             self._csv_file.close()
         if self._video_writer is not None:
