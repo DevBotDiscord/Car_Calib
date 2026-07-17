@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from runtime.object_detection import DetectionBox, ObjectPauseGate, classify_near_far, has_label
+from runtime.object_detection import (
+    DetectionBox,
+    ObjectPauseGate,
+    classify_near_far,
+    has_label,
+    is_critical_detection,
+)
 
 
 def test_classify_near_far_uses_lower_center_roi_and_area_ratio():
@@ -39,3 +45,20 @@ def test_person_label_is_case_insensitive_and_bypasses_detect_hold():
     # Once person disappears, retain stop long enough to avoid flicker.
     assert gate.update(False, now=1.0) is True
     assert gate.update(False, now=1.6) is False
+
+
+def test_any_detected_box_can_trigger_the_same_immediate_stop_gate():
+    boxes = (DetectionBox(x=10, y=10, w=20, h=20, label="bicycle", conf=0.9),)
+    assert is_critical_detection(
+        boxes,
+        stop_on_any_detection=True,
+        person_detected=False,
+    )
+    assert not is_critical_detection(
+        boxes,
+        stop_on_any_detection=False,
+        person_detected=False,
+    )
+
+    gate = ObjectPauseGate(detect_hold_s=5.0, clear_hold_s=0.5)
+    assert gate.trigger_immediately() is True

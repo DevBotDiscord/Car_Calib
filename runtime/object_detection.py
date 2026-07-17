@@ -57,6 +57,7 @@ class ObjectDetectionConfig:
     near_area_ratio: float = 0.03
     detect_hold_s: float = 0.1
     clear_hold_s: float = 0.5
+    stop_on_any_detection: bool = True
     stop_on_person: bool = True
     person_label: str = "person"
     labels: tuple[str, ...] = ()
@@ -175,6 +176,7 @@ class ObjectDetector:
             near_area_ratio=_env_float("OBJECT_NEAR_AREA_RATIO", 0.03),
             detect_hold_s=_env_float("OBJECT_DETECT_HOLD_S", 0.1),
             clear_hold_s=_env_float("OBJECT_CLEAR_HOLD_S", 0.5),
+            stop_on_any_detection=_env_bool("OBJECT_STOP_ON_ANY_DETECTION", True),
             stop_on_person=_env_bool("OBJECT_STOP_ON_PERSON", True),
             person_label=os.getenv("OBJECT_PERSON_LABEL", "person").strip().casefold() or "person",
             labels=_load_labels(os.getenv("OBJECT_DETECTION_LABELS", "")),
@@ -213,14 +215,20 @@ class ObjectDetector:
                 self.config.person_label,
             )
             near_detected = any(box.state == "near" for box in boxes)
-            # A detected person is a hard-stop event; do not wait for the
-            # generic near-object debounce.  The clear debounce still applies.
+            critical_detected = is_critical_detection(
+                boxes,
+                stop_on_any_detection=self.config.stop_on_any_detection,
+                person_detected=person_detected,
+            )
+            # Any configured critical detection is a hard-stop event; do not
+            # wait for the generic near-object debounce. The clear debounce
+            # still applies once the detector no longer sees the object.
             active = (
                 self._gate.trigger_immediately()
-                if person_detected
+                if critical_detected
                 else self._gate.update(near_detected, now)
             )
-            raw_state = "near" if (near_detected or person_detected) else ("far" if boxes else "none")
+            raw_state = "near" if (near_detected or critical_detected) else ("far" if boxes else "none")
             return _status(raw_state, active, boxes, None)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Object detection failed: %s", exc)
@@ -325,6 +333,17 @@ def has_label(boxes: Iterable[DetectionBox], label: str) -> bool:
     """Return whether a detector result contains a case-insensitive label."""
     wanted = label.strip().casefold()
     return bool(wanted) and any(box.label.strip().casefold() == wanted for box in boxes)
+
+
+def is_critical_detection(
+    boxes: Iterable[DetectionBox],
+    *,
+    stop_on_any_detection: bool,
+    person_detected: bool,
+) -> bool:
+    """Apply the configured hard-stop policy to accepted detector boxes."""
+    box_tuple = tuple(boxes)
+    return bool(box_tuple) and (stop_on_any_detection or person_detected)
 
 
 def draw_object_boxes(frame: np.ndarray, boxes: Iterable[DetectionBox]) -> np.ndarray:
