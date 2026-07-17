@@ -57,6 +57,8 @@ class ObjectDetectionConfig:
     near_area_ratio: float = 0.03
     detect_hold_s: float = 0.1
     clear_hold_s: float = 0.5
+    stop_on_person: bool = True
+    person_label: str = "person"
     labels: tuple[str, ...] = ()
 
 
@@ -115,6 +117,13 @@ class ObjectPauseGate:
                 self._clear_since = None
         return self._active
 
+    def trigger_immediately(self) -> bool:
+        """Latch a confirmed critical object without the normal detect debounce."""
+        self._near_since = None
+        self._clear_since = None
+        self._active = True
+        return True
+
 
 class ObjectDetector:
     """OpenCV DNN ONNX detector with near/far safety classification."""
@@ -166,6 +175,8 @@ class ObjectDetector:
             near_area_ratio=_env_float("OBJECT_NEAR_AREA_RATIO", 0.03),
             detect_hold_s=_env_float("OBJECT_DETECT_HOLD_S", 0.1),
             clear_hold_s=_env_float("OBJECT_CLEAR_HOLD_S", 0.5),
+            stop_on_person=_env_bool("OBJECT_STOP_ON_PERSON", True),
+            person_label=os.getenv("OBJECT_PERSON_LABEL", "person").strip().casefold() or "person",
             labels=_load_labels(os.getenv("OBJECT_DETECTION_LABELS", "")),
         )
         detector = cls(config)
@@ -197,8 +208,19 @@ class ObjectDetector:
                 near_roi=self.config.near_roi,
                 near_area_ratio=self.config.near_area_ratio,
             )
-            raw_state = "near" if any(box.state == "near" for box in boxes) else ("far" if boxes else "none")
-            active = self._gate.update(raw_state == "near", now)
+            person_detected = self.config.stop_on_person and has_label(
+                boxes,
+                self.config.person_label,
+            )
+            near_detected = any(box.state == "near" for box in boxes)
+            # A detected person is a hard-stop event; do not wait for the
+            # generic near-object debounce.  The clear debounce still applies.
+            active = (
+                self._gate.trigger_immediately()
+                if person_detected
+                else self._gate.update(near_detected, now)
+            )
+            raw_state = "near" if (near_detected or person_detected) else ("far" if boxes else "none")
             return _status(raw_state, active, boxes, None)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Object detection failed: %s", exc)
@@ -297,6 +319,12 @@ def classify_near_far(
         near = in_roi and (box.w * box.h) >= min_area
         classified.append(replace(box, state="near" if near else "far"))
     return tuple(classified)
+
+
+def has_label(boxes: Iterable[DetectionBox], label: str) -> bool:
+    """Return whether a detector result contains a case-insensitive label."""
+    wanted = label.strip().casefold()
+    return bool(wanted) and any(box.label.strip().casefold() == wanted for box in boxes)
 
 
 def draw_object_boxes(frame: np.ndarray, boxes: Iterable[DetectionBox]) -> np.ndarray:

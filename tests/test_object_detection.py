@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from runtime.object_detection import DetectionBox, ObjectPauseGate, classify_near_far
+from runtime.object_detection import DetectionBox, ObjectPauseGate, classify_near_far, has_label
 
 
 def test_classify_near_far_uses_lower_center_roi_and_area_ratio():
@@ -28,3 +28,14 @@ def test_object_pause_gate_holds_detect_and_clear_transitions():
     assert gate.update(False, now=1.2) is True
     assert gate.update(False, now=1.69) is True
     assert gate.update(False, now=1.71) is False
+
+
+def test_person_label_is_case_insensitive_and_bypasses_detect_hold():
+    boxes = (DetectionBox(x=10, y=10, w=20, h=20, label="PERSON", conf=0.9),)
+    assert has_label(boxes, "person")
+
+    gate = ObjectPauseGate(detect_hold_s=5.0, clear_hold_s=0.5)
+    assert gate.trigger_immediately() is True
+    # Once person disappears, retain stop long enough to avoid flicker.
+    assert gate.update(False, now=1.0) is True
+    assert gate.update(False, now=1.6) is False
