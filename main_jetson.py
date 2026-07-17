@@ -58,6 +58,7 @@ from runtime.manual_override import ManualOverrideController
 from runtime.object_detection import ObjectDetectionStatus, ObjectDetector, draw_object_boxes
 from runtime.dashboard_stream import DashboardStreamBroker
 from runtime.resource_limits import ScriptValidationError, StorageManager, validate_route_steps
+from runtime.ultrasonic_safety import SonarConfig, UltrasonicSafety
 from unified_calibration_components import UnifiedCalibrator, CalibrationProcessingError
 from runtime.sasc_experiment_log import SascExperimentLogger
 
@@ -289,6 +290,16 @@ def main() -> None:
         )
         hardware_source = "jetson"
 
+    # HC-SR04 is only available on the pigpio/Raspberry Pi direct-control path.
+    # Its Echo timing is callback-based; update() below never waits for a pulse.
+    if args.hardware == "pigpio":
+        sonar = UltrasonicSafety.from_env(
+            host=os.getenv("PIGPIO_HOST", "127.0.0.1"),
+            port=int(os.getenv("PIGPIO_PORT", "8888")),
+        )
+    else:
+        sonar = UltrasonicSafety(SonarConfig(enabled=False))
+
     # ------------------------------------------------------------------ #
     # Shared telemetry
     # ------------------------------------------------------------------ #
@@ -309,6 +320,9 @@ def main() -> None:
         "object_state": "none", "object_pause_active": False,
         "object_count": 0, "object_label": None, "object_conf": None,
         "object_boxes": [], "object_detector_error": None,
+        "sonar_enabled": False, "sonar_available": False,
+        "sonar_blocked": False, "sonar_distance_cm": None,
+        "sonar_age_s": None, "sonar_reason": "",
         "manual_override_active": False, "manual_override_age_s": None,
         "manual_drive": 0.0, "manual_steer": 0.0,
         "manual_blocked_reason": "",
@@ -348,6 +362,12 @@ def main() -> None:
                 "object_conf": tel.get("object_conf"),
                 "object_boxes": tel.get("object_boxes"),
                 "object_detector_error": tel.get("object_detector_error"),
+                "sonar_enabled": tel.get("sonar_enabled"),
+                "sonar_available": tel.get("sonar_available"),
+                "sonar_blocked": tel.get("sonar_blocked"),
+                "sonar_distance_cm": tel.get("sonar_distance_cm"),
+                "sonar_age_s": tel.get("sonar_age_s"),
+                "sonar_reason": tel.get("sonar_reason"),
                 "manual_override_active": tel.get("manual_override_active"),
                 "manual_override_age_s": tel.get("manual_override_age_s"),
                 "manual_drive": tel.get("manual_drive"),
@@ -679,10 +699,13 @@ def main() -> None:
                 object_status = object_detector.process(frame, now=now)
             display_frame = draw_object_boxes(display_frame, object_status.object_boxes)
             object_pause_active = object_status.object_pause_active
+            sonar_status = sonar.update(now=now)
+            sonar_pause_active = sonar_status.blocked
+            safety_pause_active = object_pause_active or sonar_pause_active
 
             manual_decision = manual_override.evaluate(
                 now=now,
-                object_near=object_pause_active or object_status.object_state == "near",
+                object_near=safety_pause_active or object_status.object_state == "near",
                 estop_active=False,
             )
             if manual_decision.release_servo and not manual_decision.active:
@@ -696,13 +719,15 @@ def main() -> None:
             if script_runner is not None:
                 if manual_decision.pause_script:
                     script_runner.set_paused(True, "manual_override")
+                elif sonar_pause_active:
+                    script_runner.set_paused(True, f"sonar_{sonar_status.reason or 'blocked'}")
                 else:
                     script_runner.set_paused(
                         object_pause_active,
                         "object_detected" if object_pause_active else "",
                     )
 
-            if object_pause_active and not manual_decision.active:
+            if safety_pause_active and not manual_decision.active:
                 if last_base_cmd.upper() != "STOP":
                     _base_handler("STOP")
                 release_servo = getattr(servo, "release", None)
@@ -732,7 +757,7 @@ def main() -> None:
                 reverse=_env_bool("SERVO_REVERSE", False),
             )
             if (
-                not object_pause_active
+                not safety_pause_active
                 and not manual_decision.active
                 and script_runner is not None
                 and script_running
@@ -807,6 +832,8 @@ def main() -> None:
                 "power_pulsing": relay.power_pulsing,
             })
             tel.update(object_status.telemetry())
+            tel.update(sonar_status.telemetry())
+            tel["safety_pause_active"] = safety_pause_active
             tel.update(manual_decision.telemetry())
             if route_session is not None:
                 mono_now = time.monotonic()
@@ -862,6 +889,7 @@ def main() -> None:
     finally:
         _finalize_route("INTERRUPTED")
         object_detector.close()
+        sonar.close()
         servo.center()
         time.sleep(0.3)
         base.stop()
