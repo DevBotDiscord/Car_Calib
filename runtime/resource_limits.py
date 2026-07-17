@@ -22,6 +22,12 @@ VALID_ROUTE_ACTIONS = frozenset({
     "forward", "backward", "straight", "left", "right", "turn_left", "turn_right", "stop", "pause",
 })
 
+# Dashboard configuration is persistent control data, not disposable telemetry.
+# Keep this explicit even when a deployment accidentally mounts log_root and
+# route_root to the same host directory.
+PROTECTED_STORAGE_NAMES = frozenset({"presets.json", "calib_tune.json"})
+LOG_ARTIFACT_SUFFIXES = frozenset({".csv", ".log"})
+
 
 class ScriptValidationError(ValueError):
     """Raised when dashboard-provided route steps exceed safe limits."""
@@ -137,12 +143,11 @@ class StorageManager:
             if not root.exists():
                 continue
             for child in root.iterdir():
-                if route_only and not (
-                    (child.is_dir() and child.name.startswith("route-"))
-                    or (child.is_file() and child.suffix == ".zip")
-                ):
+                if child.name in PROTECTED_STORAGE_NAMES:
                     continue
-                if not route_only and child.is_dir() and child.name.startswith("route-"):
+                if route_only and not self._is_route_artifact(child):
+                    continue
+                if not route_only and not self._is_log_artifact(child):
                     continue
                 if self._is_active(child):
                     continue
@@ -151,6 +156,18 @@ class StorageManager:
                 except OSError:
                     continue
         return sorted(entries, key=lambda item: item[2])
+
+    @staticmethod
+    def _is_route_artifact(path: Path) -> bool:
+        """Only completed route directories and their matching archives expire."""
+        return path.name.startswith("route-") and (
+            path.is_dir() or (path.is_file() and path.suffix.lower() == ".zip")
+        )
+
+    @staticmethod
+    def _is_log_artifact(path: Path) -> bool:
+        """Never treat arbitrary files beneath a log mount as disposable logs."""
+        return path.is_file() and path.suffix.lower() in LOG_ARTIFACT_SUFFIXES
 
     def _is_active(self, candidate: Path) -> bool:
         try:

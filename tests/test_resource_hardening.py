@@ -49,6 +49,33 @@ def test_storage_retention_keeps_active_artifacts(tmp_path, monkeypatch) -> None
     assert active_route.exists()
 
 
+def test_storage_retention_never_deletes_presets_or_metadata(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(resource_limits, "DATA_RETENTION_DAYS", 1)
+    monkeypatch.setattr(resource_limits, "DATA_MAX_BYTES", 1)
+    root = tmp_path / "shared-data"
+    root.mkdir()
+    presets = root / "presets.json"
+    presets.write_text('{"square": []}', encoding="utf-8")
+    tune = root / "calib_tune.json"
+    tune.write_text("{}", encoding="utf-8")
+    unrelated = root / "notes.zip"
+    unrelated.write_bytes(b"keep")
+    old_route = root / "route-old"
+    old_route.mkdir()
+    (old_route / "route_frames.csv").write_bytes(b"discard")
+    old_time = time.time() - 3 * 86400
+    for path in (presets, tune, unrelated, old_route):
+        os.utime(path, (old_time, old_time))
+
+    # Exercise the dangerous deployment shape: both mounts resolve to one root.
+    StorageManager(root, root).retain()
+
+    assert presets.exists()
+    assert tune.exists()
+    assert unrelated.exists()
+    assert not old_route.exists()
+
+
 def test_stream_broker_shares_one_bounded_stream() -> None:
     broker = DashboardStreamBroker(max_clients=1, fps=30, jpeg_quality=60)
     try:
